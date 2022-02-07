@@ -1,0 +1,25 @@
+# this file contains an example of the input parameters to transform a mosaic or sequence of mosaics into patches
+#patchsize
+patchSize 100
+
+# for each mosaic to be considered, include folder prefix, mosaic file name, number of layers and  as well as file names finaly, also include output folder name
+mosaic /media/yago/workDrive/Experiments/forests/ZaoProcessing/data/ Z1.jpg Z1treetop.jpg 3 sickfir Z1sickfir.jpg healthyfir Z1healthyfir.jpg deciduous Z1deciduous.jpg patches1
+
+mosaic /media/yago/workDrive/Experiments/forests/ZaoProcessing/data/ Z2.jpg Z2treetop.jpg 3 sickfir Z2sickfir.jpg healthyfir Z2healthyfir.jpg deciduous Z2deciduous.jpg patches2
+
+mosaic /media/yago/workDrive/Experiments/forests/ZaoProcessing/data/ Z3.jpg Z3treetop.jpg 3 sickfir Z3sickfir.jpg healthyfir Z3healthyfir.jpg deciduous Z3deciduous.jpg patches3
+
+mosaic /media/yago/workDrive/Experiments/forests/ZaoProcessing/data/ Z4.jpg Z4treetop.jpg 3 sickfir Z4sickfir.jpg healthyfir Z4healthyfir.jpg deciduous Z4deciduous.jpg patches4
+
+mosaic /media/yago/workDrive/Experiments/forests/ZaoProcessing/data/ Z5.jpg Z5treetop.jpg 3 sickfir Z5sickfir.jpg healthyfir Z5healthyfir.jpg deciduous Z5deciduous.jpg patches5
+
+mosaic /media/yago/workDrive/Experiments/forests/ZaoProcessing/data/ Z6.jpg Z6treetop.jpg 3 sickfir Z6sickfir.jpg healthyfir Z6healthyfir.jpg deciduous Z6deciduous.jpg patches6
+
+mosaic /media/yago/workDrive/Experiments/forests/ZaoProcessing/data/ Z7.jpg Z7treetop.jpg 3 sickfir Z7sickfir.jpg healthyfir Z7healthyfir.jpg deciduous Z7deciduous.jpg patches7
+
+mosaic /media/yago/workDrive/Experiments/forests/ZaoProcessing/data/ Z8.jpg Z8treetop.jpg 3 sickfir Z8sickfir.jpg healthyfir Z8healthyfir.jpg deciduous Z8deciduous.jpg patches8
+
+mosaic /media/yago/workDrive/Experiments/forests/ZaoProcessing/data/ Z9.jpg Z9treetop.jpg 3 sickfir Z9sickfir.jpg healthyfir Z9healthyfir.jpg deciduous Z9deciduous.jpg patches9
+
+important sickfir
+#unimportant deciduous
