@@ -416,6 +416,7 @@ def main():
     ap.add_argument("-ref", "--refine", required=False, help="yes/no, do we refine the results by fusing nearby points?")
     ap.add_argument("-refRad", "--refineRadius", required=False, help="Radius for global refinement")
     ap.add_argument("-ts", "--topStep", required=True, help="Steps when choosing tree tops")
+    ap.add_argument("-two", "--twoBands", required=False, help="Whether or not we do two bands")
     args = vars(ap.parse_args())
 
     #minNumPointsTree=2500
@@ -429,7 +430,10 @@ def main():
     maxNumPointsTree=1950
     lowerPercent=1
 
-    print(args["dem"])
+    if (args["twoBands"] is not None) and (args["twoBands"]=="yes"):doLower=True
+    else:doLower=False
+
+    #print(args["dem"])
     dem2 = gdal.Open(args["dem"], gdal.GA_ReadOnly)
 
     dem=dem2.GetRasterBand(dem2.RasterCount).ReadAsArray().astype(float)
@@ -449,17 +453,21 @@ def main():
     #cv2.imwrite("blurred.jpg",(gray*(255/maxDem)).astype("uint8"))
     #gray=dem
 
-    if args["percentile"] is not None:perc=int(args["percentile"])
-    else: perc=70
+    if doLower:
+        if args["percentile"] is not None:perc=int(args["percentile"])
+        else: perc=70
 
-    grayForPercentile=gray.copy()
-    grayForPercentile[grayForPercentile==0]=np.nan
-    cutOff=np.nanpercentile(grayForPercentile, perc)
-    lowerCutOff=np.nanpercentile(grayForPercentile,lowerPercent)
-    print("cutoff!!! "+str(cutOff)+" of "+str(maxDem)+"  at percentile "+str(perc)+" and lower at "+str(lowerCutOff))
+        grayForPercentile=gray.copy()
+        grayForPercentile[grayForPercentile==0]=np.nan
+        cutOff=np.nanpercentile(grayForPercentile, perc)
+        lowerCutOff=np.nanpercentile(grayForPercentile,lowerPercent)
+        print("cutoff!!! "+str(cutOff)+" of "+str(maxDem)+"  at percentile "+str(perc)+" and lower at "+str(lowerCutOff))
 
-    firstBand=ut.thresholdDEM(gray,cutOff,maxDem)
-    secondBand=ut.thresholdDEM(gray,lowerCutOff,maxDem)
+        firstBand=ut.thresholdDEM(gray,cutOff,maxDem)
+        secondBand=ut.thresholdDEM(gray,lowerCutOff,maxDem)
+    else:
+        firstBand=gray
+        cutOff=0
 
     # loop over the sliding window for the first band of intensities
     seeds=[]
@@ -471,33 +479,29 @@ def main():
         if np.sum(window>0)>minNumPointsTree:
             thisWindowSeeds=processWindow(window,args,minNumPointsTop,maxNumPointsTree,-1)
 
-
         if(len(thisWindowSeeds))>0:
             for localSeed in thisWindowSeeds:seeds.append((x+localSeed[1],y+localSeed[0]))
             #print("found seeds "+str(len(seeds)))
 
-        #now loop again with lower seeds
-        lowerWindow=secondBand[y:y + int(args["size"]), x:x + int(args["size"])]
-        thisWindowLowerSeeds=[]
-        #if False:
-        if np.sum(lowerWindow>0)>minNumPointsTreeLower:
-            #print("                              going to process lower window ")
-            thisWindowLowerSeeds=processWindow(lowerWindow,args,minNumPointsTopLower,maxNumPointsTree,cutOff)
+        if doLower:
+            #now loop again with lower seeds
+            lowerWindow=secondBand[y:y + int(args["size"]), x:x + int(args["size"])]
+            thisWindowLowerSeeds=[]
+            #if False:
+            if np.sum(lowerWindow>0)>minNumPointsTreeLower:
+                #print("                              going to process lower window ")
+                thisWindowLowerSeeds=processWindow(lowerWindow,args,minNumPointsTopLower,maxNumPointsTree,cutOff)
 
-        #else:
-        #    print("                     NOT PROCESSING +LOWERERT window "+str(np.sum(window>0))+" vs "+str(minNumPointsTree))
-
-
-        if(len(thisWindowLowerSeeds))>0:
-            for localSeed in thisWindowLowerSeeds:lowerSeeds.append((x+localSeed[1],y+localSeed[0]))
-            #print("found lower seeds "+str(len(lowerSeeds)))
+            if(len(thisWindowLowerSeeds))>0:
+                for localSeed in thisWindowLowerSeeds:lowerSeeds.append((x+localSeed[1],y+localSeed[0]))
+                #print("found lower seeds "+str(len(lowerSeeds)))
 
     #print("going to refine Lower")
     if len(lowerSeeds)>0:refinedLower=refineLower(gray,seeds,lowerSeeds,args)
     else: refinedLower=[]
     print("Finished two bands with "+str(len(seeds))+" "+str(len(refinedLower)))
-    highSeeds=list(seeds)
 
+    highSeeds=list(seeds)
     outputImages(dem,highSeeds,refinedLower,args,cutOff)
 
 if __name__ == "__main__":

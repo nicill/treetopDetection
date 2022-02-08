@@ -1,0 +1,7 @@
+Herve/
+output/
+*.zip
+*.jpg
+*.png
+*.tif
+*.pyc

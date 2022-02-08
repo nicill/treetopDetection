@@ -4,7 +4,7 @@
 #this needs to be called from inside a proper python environment!
 
 #Example call
-#bash crownSegmTestEPSHerve.sh /media/yago/workDrive/Experiments/forests/ZaoProcessing /media/yago/workDrive/Experiments/forests/ZaoProcessing/output/ /media/yago/workDrive/Experiments/forests/ZaoProcessing/Herve/lowres/ ce test8 no 1 5
+#bash crownSegmTestEPSHerve.sh /media/yago/workDrive/Experiments/forests/treetopDetection/ /media/yago/workDrive/Experiments/forests/treetopDetection/output/ /media/yago/workDrive/Experiments/forests/treetopDetection/Herve/lowres/ ce ONEBAND yes 1
 
 sourceDir=$1
 outputDir=$2
@@ -13,13 +13,15 @@ whatToDo=$4
 methodInput=$5
 refine=$6
 refineRadius=$7
-percentile=$8
+#percentile=$8
 
 
 #mosaicString="site1_mav_ft site1_mav_nft site1_p4_ft site1_p4_nft"
-mosaicString="site1_mav_ft site1_mav_nft site1_p4_ft site1_p4_nft"
-epsilon=8
-	
+mosaicString="site1_mav_ft site1_mav_nft"
+#epsilon=8
+
+epsilonString="6 8 10 12"	
+
 hausFile=$outputDir/$methodInput"haus.txt"
 eucFile=$outputDir/$methodInput"euc.txt"
 percentFile=$outputDir/$methodInput"percent.txt"
@@ -100,9 +102,10 @@ echo "method $mosaicString " > $repeatedFile
 			if [[ $compute = 1 ]];then
 		
 				START=$(date +%s)
-				echo "python $sourceDir/sliding_window.py -d" $dataPrefix"/"$i"_chm.tif $params -o $outputFileName -perc $percentile -ref $refine -refRad $refineRadius"			
+				#python $sourceDir/sliding_window.py -d"$dataPrefix"/"$i"_chm.tif $params -o $outputFileName -perc $percentile -ref $refine -refRad $refineRadius
 
-				python $sourceDir/sliding_window.py -d"$dataPrefix"/"$i"_chm.tif $params -o $outputFileName -perc $percentile -ref $refine -refRad $refineRadius
+				echo "python $sourceDir/sliding_window.py -d" $dataPrefix"/"$i"_chm.tif $params -o $outputFileName -ref $refine -refRad $refineRadius"			
+				python $sourceDir/sliding_window.py -d"$dataPrefix"/"$i"_chm.tif $params -o $outputFileName  -ref $refine -refRad $refineRadius
 
 				END=$(date +%s)
 				DIFF=$(( $END - $START ))
@@ -112,13 +115,23 @@ echo "method $mosaicString " > $repeatedFile
 
 
 			if [[ $evaluate = 1 ]];then
-	
+
+				for epsilon in $epsilonString
+				do
+					# Evaluate matched percent
+					python $sourceDir/crownSegmenterEvaluator.py 1 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName $epsilon >> $percentFile
+					python $sourceDir/crownSegmenterEvaluator.py 1 $outputFileName $dataPrefix"/"$i"_tops.png" $roiMaskFileName $epsilon >> $reversePercentFile
+
+					#euclidean matched
+					python $sourceDir/crownSegmenterEvaluator.py 5 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName $epsilon >> $eucMatchedFile
+
+					#repeated count
+					python $sourceDir/crownSegmenterEvaluator.py 6 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName $epsilon >> $repeatedFile
+				done
+
+
 				# Evaluate Hausdorff
 				python $sourceDir/crownSegmenterEvaluator.py 0 $dataPrefix"/"$i"_tops.png" $outputFileName >> $hausFile
-
-				# Evaluate matched percent
-				python $sourceDir/crownSegmenterEvaluator.py 1 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName $epsilon >> $percentFile
-				python $sourceDir/crownSegmenterEvaluator.py 1 $outputFileName $dataPrefix"/"$i"_tops.png" $roiMaskFileName $epsilon >> $reversePercentFile
 
 				# Evaluate number of points difference
 				python $sourceDir/crownSegmenterEvaluator.py 2 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName >> $pointDiffFile
@@ -126,11 +139,6 @@ echo "method $mosaicString " > $repeatedFile
 				# Evaluate Euclidean
 				python $sourceDir/crownSegmenterEvaluator.py 4 $dataPrefix"/"$i"_tops.png" $outputFileName >> $eucFile
 
-				#euclidean matched
-				python $sourceDir/crownSegmenterEvaluator.py 5 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName $epsilon >> $eucMatchedFile
-
-				#repeated count
-				python $sourceDir/crownSegmenterEvaluator.py 6 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName $epsilon >> $repeatedFile
 
 			fi
 		done
