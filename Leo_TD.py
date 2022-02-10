@@ -25,9 +25,9 @@ def execute_algorithm(image,min_hieght,result_file,result_image):
     im_plateu = cv2.compare(blurred,im_erode,cv2.CMP_GT)
     im_and = cv2.bitwise_and(im_comp,im_plateu)
 
-    cv2.imshow("IM_AND",im_and)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    #cv2.imshow("IM_AND",im_and)
+    #cv2.waitKey(0)
+    #cv2.destroyAllWindows()
 
     output = cv2.connectedComponentsWithStats(im_and,4,cv2.CV_32S)
     (numLabels,labels,stats,centroids) = output
@@ -59,7 +59,7 @@ def execute_algorithm(image,min_hieght,result_file,result_image):
     # dim = (width, height)
     # resized = cv2.resize(im_show,dim,interpolation=cv2.INTER_AREA)
     # return resized
-    return im_show
+    #return im_show
 
 
 if __name__ == '__main__':
@@ -71,11 +71,11 @@ if __name__ == '__main__':
     #If needed can copy lines 66,68,69 and add more images, needs to change the name of the variables
     original_image = cv2.imread(path_image,cv2.IMREAD_UNCHANGED)
 
-    treetops = execute_algorithm(original_image,min_tree_height,result_file,result_image)
+    execute_algorithm(original_image,min_tree_height,result_file,result_image)
 
     #shows images with opencv viewer
-    cv2.imshow("Result Image",treetops)
+    #cv2.imshow("Result Image",treetops)
 
 
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    #cv2.waitKey(0)
+    #cv2.destroyAllWindows()
