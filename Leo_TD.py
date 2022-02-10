@@ -67,7 +67,7 @@ if __name__ == '__main__':
     path_image = sys.argv[1]
     result_image = sys.argv[2]
     result_file = sys.argv[3] # set name of results file
-    min_tree_height = int(sys.argv[4]) #set minimun tree height
+    min_tree_height = float(sys.argv[4]) #set minimun tree height
     kernelSize=int(sys.argv[5])
     morphIterations=int(sys.argv[6])
     #If needed can copy lines 66,68,69 and add more images, needs to change the name of the variables

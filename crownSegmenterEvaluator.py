@@ -37,26 +37,18 @@ def listFromBinary(fileName,ROIFILE=None):
         numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(mask)
         #print("crownSegmenterEvaluator, found "+str(numLabels)+" "+str(len(centroids))+" points for file "+fileName)
 
-        #im2 = 255 * np. ones(shape=[im.shape[0], im.shape[1], 1], dtype=np. uint8)
-
-        #print(" listFromBinary, found  "+str(len(centroids)))
-        #print(centroids)
-
         newCentroids=[]
-        ROI=cv2.imread(ROIFILE,cv2.IMREAD_GRAYSCALE)
-        if ROI is None:
-        #    print("roi in "+str(ROIFILE)+" was none")
-            newCentroids=centroids
+        if ROIFILE is not None:
+            ROI=cv2.imread(ROIFILE,cv2.IMREAD_GRAYSCALE)
+            if ROI is None:
+            #    print("roi in "+str(ROIFILE)+" was none")
+                newCentroids=centroids
+            else:
+                ROI[ROI<50]=0
+                for c in centroids:
+                    if pointInROI(ROI,c):newCentroids.append(c)
         else:
-            ROI[ROI<50]=0
-            for c in centroids:
-                if pointInROI(ROI,c):newCentroids.append(c)
-
-        #print(" listFromBinary, refined  "+str(len(newCentroids)))
-        #aux=ROI.copy()
-        #aux[im>255]=255
-        #cv2.imwrite("roi.jpg",aux)
-        #sys.exit()
+            newCentroids=centroids
 
         #print(newCentroids)
         #print("list form binary outputting "+str(len(newCentroids[1:])))
