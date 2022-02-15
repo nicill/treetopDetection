@@ -167,22 +167,19 @@ def main(argv):
         print("tree tops lost in dem "+str(countLostTops(dem,treeTops)))
     elif (int(argv[1]))==1: # paint the treeTops bigger
 
-        dem = cv2.imread(argv[2],0)
-        if dem is None:raise Exception("demUtils no DEM at "+str(argv[2]))
-
-        treeTops = cv2.imread(argv[3],0)
-        if treeTops is None:raise Exception("demUtils no treeTops at "+str(argv[3]))
+        treeTops = cv2.imread(argv[2],0)
+        if treeTops is None:raise Exception("demUtils no treeTops at "+str(argv[2]))
 
         maskImage=treeTops.copy()
-        mask = cv2.threshold(255-treeTops, 80, 255, cv2.THRESH_BINARY)[1]
+        mask = cv2.threshold(255-treeTops, 10, 255, cv2.THRESH_BINARY)[1]
         #compute connected components
         numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(mask)
 
-        circleSize=20
+        circleSize=2
         for seed in centroids[1:]:
             cv2.circle(maskImage, (int(seed[0]),int(seed[1])), circleSize, 20, -1)
 
-        cv2.imwrite(argv[4],maskImage)
+        cv2.imwrite(argv[3],maskImage)
 
     elif (int(argv[1]))==2: # threshold the DEM and see how many tops remain
 

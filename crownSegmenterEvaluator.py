@@ -22,7 +22,7 @@ def pointInROI(ROI,p):
     #return True
 
 # Function to take a binary image and output the center of masses of its connected regions
-def listFromBinary(fileName,ROIFILE=None):
+def listFromBinary(fileName,ROIFILE=None,deleteSmall=None):
 
     #open filename
     im=cv2.imread(fileName,cv2.IMREAD_GRAYSCALE)
@@ -33,47 +33,64 @@ def listFromBinary(fileName,ROIFILE=None):
     else:
         mask = cv2.threshold(255-im, 40, 255, cv2.THRESH_BINARY)[1]
 
-        #compute connected components
-        numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(mask)
-        #print("crownSegmenterEvaluator, found "+str(numLabels)+" "+str(len(centroids))+" points for file "+fileName)
-
-        newCentroids=[]
+        #first, eliminate all treetops outside of the ROI
+        """
         if ROIFILE is not None:
             ROI=cv2.imread(ROIFILE,cv2.IMREAD_GRAYSCALE)
-            if ROI is None:
-            #    print("roi in "+str(ROIFILE)+" was none")
-                newCentroids=centroids
-            else:
+            if ROI is not None:
                 ROI[ROI<50]=0
-                for c in centroids:
-                    if pointInROI(ROI,c):newCentroids.append(c)
+                ROI[ROI>50]=255
+                mask[ROI!=0]=0
+                #cv2.imwrite("papap.jpg",mask)
+                #print("FILE "+fileName)
+                #sys.exit()
+        """
+
+        #clean up small regions
+        if ROIFILE is not None and deleteSmall is not None:
+
+            ROI=cv2.imread(ROIFILE,cv2.IMREAD_GRAYSCALE)
+            if ROI is not None:
+                ROI[ROI<50]=0
+                ROI[ROI>50]=255
+                mask[ROI!=0]=0
+
+            #compute connected components
+            numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(mask)
+            #print("crownSegmenterEvaluator, found "+str(numLabels)+" "+str(len(centroids))+" points for file "+fileName)
+
+
+            minTopSize=deleteSmall
+            #print("doing con comp of "+str(fileName))
+            newCentroids=[]
+            index=1
+            for l in range(1,numLabels):
+                currentCount=np.count_nonzero(labelImage==l)
+                if currentCount>minTopSize:newCentroids.append(centroids[index])
+                index+=1
+            #print("output "+str(len(newCentroids)))
         else:
-            newCentroids=centroids
 
-        #print(newCentroids)
-        #print("list form binary outputting "+str(len(newCentroids[1:])))
+            #compute connected components
+            numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(mask)
+            #print("crownSegmenterEvaluator, found "+str(numLabels)+" "+str(len(centroids))+" points for file "+fileName)
 
-        return newCentroids[1:]
 
-def listFromImage(im):
-    mask = cv2.threshold(255-im, 40, 255, cv2.THRESH_BINARY)[1]
+            newCentroids=[]
+            if ROIFILE is not None:
+                ROI=cv2.imread(ROIFILE,cv2.IMREAD_GRAYSCALE)
+                if ROI is None:
+                #    print("roi in "+str(ROIFILE)+" was none")
+                    newCentroids=centroids
+                else:
+                    ROI[ROI<50]=0
+                    for c in centroids[1:]:
+                        if pointInROI(ROI,c):newCentroids.append(c)
+            else:
+                newCentroids=centroids
 
-    #compute connected components
-    numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(mask)
-    #print("crownSegmenterEvaluator, found "+str(numLabels)+" "+str(len(centroids))+" points for file "+fileName)
-
-    #im2 = 255 * np. ones(shape=[im.shape[0], im.shape[1], 1], dtype=np. uint8)
-
-    #print(" listFromBinary, found  "+str(len(centroids)))
-    #print(centroids)
-
-    newCentroids=[]
-    for c in centroids: newCentroids.append(c)
-    #print(" listFromBinary, refined  "+str(len(newCentroids)))
-    #print(newCentroids)
-
-    return newCentroids[1:]
-
+        #print("list form binary outputting "+str(len(newCentroids)))
+        return newCentroids
 
 def hausdorfDistance(u,v): # computes Hausdorf distance between two lists of point
     if len(u)==0 or len(v)==0: return -1
@@ -177,10 +194,7 @@ def main(argv):
     #first, turn the binary masks of files 1 and 2 into lists of points
     #print("List1 ")
     list1=listFromBinary(file1,ROIFile)
-    #list2=listFromBinary(file2,ROIFile)
-    #print("List2 ")
-    list2=listFromBinary(file2,None) # in the case of the second file, we also count points outside the ROI to allow for inside outside matrching
-    list3=listFromBinary(file2,ROIFile)
+    list2=listFromBinary(file2,ROIFile)
 
     # Now, compute the distance between sets indicated by the option
     if option == 0: # compute hausdorff distance between two masks
@@ -193,12 +207,12 @@ def main(argv):
     elif option==2: # point difference
     # the ground truth file should be the first
         realPointsNumber=len(list1)
-        predictedPointsNumber=len(list3)
+        predictedPointsNumber=len(listFromBinary(file2,ROIFile,12))
         #print("real "+str(realPointsNumber)+" predicted "+str(predictedPointsNumber))
         print(format(100*(realPointsNumber-predictedPointsNumber)/realPointsNumber,'.2f'),end=" ")
     elif option==3:
         #simply count point
-        print(str(len(list1))+" "+str(len(list3)))
+        print(str(len(list1))+" "+str(len(list2)))
     elif option==4:
         #return average euclidean distance
         print(format(avEucDistance(list1,list2),'.2f'),end=" ")
