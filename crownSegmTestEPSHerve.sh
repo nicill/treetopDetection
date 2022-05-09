@@ -17,10 +17,12 @@ refineRadius=$7
 
 
 #mosaicString="site1_mav_ft site1_mav_nft site1_p4_ft site1_p4_nft"
-mosaicString="site1_mav_ft site1_mav_nft"
-#epsilon=8
+#mosaicString="site1_mav_ft site1_mav_nft"
+#mosaicString="site2_p4_ft site2_p4_nft"
+mosaicString="site2_p4_nft"
 
-epsilonString="6 8 10 12"	
+#epsilonString="3 6 8 10 12"	
+epsilonString="3 5 7 10"	
 
 hausFile=$outputDir/$methodInput"haus.txt"
 eucFile=$outputDir/$methodInput"euc.txt"
@@ -53,9 +55,9 @@ echo "method $mosaicString " > $eucMatchedFile
 echo "method $mosaicString " > $repeatedFile
 
 
-	wSizes="50 100 250 500"
-	thresholds="5 10 25 50"
-	minDists="0.005 0.01 0.05 0.25 "
+	wSizes="75 100 250 500 1000"
+	thresholds="1 2 5 10"
+	minDists="0.1 0.5 1"
 	for ws in $wSizes
 	do
 		for th in $thresholds
@@ -93,8 +95,9 @@ echo "method $mosaicString " > $repeatedFile
 				
 			echo "doing method $method with mosaic $i and params $params "
 			outputFileName=$dataPrefix"/OUT"$i"_binaryMethod"$method$paramString"Radius"$refineRadius"Percentile"$percentile".png"
-			roiMaskFileName=$dataPrefix"/"$i"_fir.png"
-			
+			#roiMaskFileName=$dataPrefix"/"$i"_fir.png"
+			roiMaskFileName=$dataPrefix"/"$i"_cedar.png"
+
 			echo $roiMaskFileName 
 
 			#echo "outputFile $outputFileName " 
@@ -120,10 +123,10 @@ echo "method $mosaicString " > $repeatedFile
 				do
 					# Evaluate matched percent
 					python $sourceDir/crownSegmenterEvaluator.py 1 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName $epsilon >> $percentFile
-					python $sourceDir/crownSegmenterEvaluator.py 1 $outputFileName $dataPrefix"/"$i"_tops.png" $roiMaskFileName $epsilon >> $reversePercentFile
+					#python $sourceDir/crownSegmenterEvaluator.py 1 $outputFileName $dataPrefix"/"$i"_tops.png" $roiMaskFileName $epsilon >> $reversePercentFile
 
 					#euclidean matched
-					python $sourceDir/crownSegmenterEvaluator.py 5 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName $epsilon >> $eucMatchedFile
+					#python $sourceDir/crownSegmenterEvaluator.py 5 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName $epsilon >> $eucMatchedFile
 
 					#repeated count
 					python $sourceDir/crownSegmenterEvaluator.py 6 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName $epsilon >> $repeatedFile
@@ -131,13 +134,13 @@ echo "method $mosaicString " > $repeatedFile
 
 
 				# Evaluate Hausdorff
-				python $sourceDir/crownSegmenterEvaluator.py 0 $dataPrefix"/"$i"_tops.png" $outputFileName >> $hausFile
+				#python $sourceDir/crownSegmenterEvaluator.py 0 $dataPrefix"/"$i"_tops.png" $outputFileName >> $hausFile
 
 				# Evaluate number of points difference
 				python $sourceDir/crownSegmenterEvaluator.py 2 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName >> $pointDiffFile
 
 				# Evaluate Euclidean
-				python $sourceDir/crownSegmenterEvaluator.py 4 $dataPrefix"/"$i"_tops.png" $outputFileName >> $eucFile
+				#python $sourceDir/crownSegmenterEvaluator.py 4 $dataPrefix"/"$i"_tops.png" $outputFileName >> $eucFile
 
 
 			fi
@@ -153,4 +156,4 @@ echo "method $mosaicString " > $repeatedFile
 		
 
 	done
-done
+
