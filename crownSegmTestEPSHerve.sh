@@ -19,10 +19,10 @@ refineRadius=$7
 #mosaicString="site1_mav_ft site1_mav_nft site1_p4_ft site1_p4_nft"
 #mosaicString="site1_mav_ft site1_mav_nft"
 #mosaicString="site2_p4_ft site2_p4_nft"
-mosaicString="site2_p4_nft"
+mosaicString="DEM"
 
 #epsilonString="3 6 8 10 12"	
-epsilonString="3 5 7 10"	
+epsilonString="10 20 25"	
 
 hausFile=$outputDir/$methodInput"haus.txt"
 eucFile=$outputDir/$methodInput"euc.txt"
@@ -55,9 +55,9 @@ echo "method $mosaicString " > $eucMatchedFile
 echo "method $mosaicString " > $repeatedFile
 
 
-	wSizes="75 100 250 500 1000"
-	thresholds="1 2 5 10"
-	minDists="0.1 0.5 1"
+	wSizes="100 250 1000 2500"
+	thresholds="10 25 50 100"
+	minDists="0.25 0.5 1"
 	for ws in $wSizes
 	do
 		for th in $thresholds
@@ -96,7 +96,8 @@ echo "method $mosaicString " > $repeatedFile
 			echo "doing method $method with mosaic $i and params $params "
 			outputFileName=$dataPrefix"/OUT"$i"_binaryMethod"$method$paramString"Radius"$refineRadius"Percentile"$percentile".png"
 			#roiMaskFileName=$dataPrefix"/"$i"_fir.png"
-			roiMaskFileName=$dataPrefix"/"$i"_cedar.png"
+			#roiMaskFileName=$dataPrefix"/"$i"_cedar.png"
+			roiMaskFileName=$dataPrefix"/"$i"_ROI.png"
 
 			echo $roiMaskFileName 
 
@@ -105,10 +106,8 @@ echo "method $mosaicString " > $repeatedFile
 			if [[ $compute = 1 ]];then
 		
 				START=$(date +%s)
-				#python $sourceDir/sliding_window.py -d"$dataPrefix"/"$i"_chm.tif $params -o $outputFileName -perc $percentile -ref $refine -refRad $refineRadius
-
-				echo "python $sourceDir/sliding_window.py -d" $dataPrefix"/"$i"_chm.tif $params -o $outputFileName -ref $refine -refRad $refineRadius"			
-				python $sourceDir/sliding_window.py -d"$dataPrefix"/"$i"_chm.tif $params -o $outputFileName  -ref $refine -refRad $refineRadius
+				echo "python $sourceDir/sliding_window.py -d" $dataPrefix"/"$i".tif $params -o $outputFileName -ref $refine -refRad $refineRadius"			
+				python $sourceDir/sliding_window.py -d"$dataPrefix"/"$i".tif $params -o $outputFileName  -ref $refine -refRad $refineRadius
 
 				END=$(date +%s)
 				DIFF=$(( $END - $START ))
@@ -121,6 +120,9 @@ echo "method $mosaicString " > $repeatedFile
 
 				for epsilon in $epsilonString
 				do
+
+					echo "EVAL EPSILON in $epsilon "
+
 					# Evaluate matched percent
 					python $sourceDir/crownSegmenterEvaluator.py 1 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName $epsilon >> $percentFile
 					#python $sourceDir/crownSegmenterEvaluator.py 1 $outputFileName $dataPrefix"/"$i"_tops.png" $roiMaskFileName $epsilon >> $reversePercentFile
@@ -129,8 +131,10 @@ echo "method $mosaicString " > $repeatedFile
 					#python $sourceDir/crownSegmenterEvaluator.py 5 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName $epsilon >> $eucMatchedFile
 
 					#repeated count
-					python $sourceDir/crownSegmenterEvaluator.py 6 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName $epsilon >> $repeatedFile
+					#python $sourceDir/crownSegmenterEvaluator.py 6 $dataPrefix"/"$i"_tops.png" $outputFileName $roiMaskFileName $epsilon >> $repeatedFile
 				done
+
+				echo "NON EPSILON EVAL "
 
 
 				# Evaluate Hausdorff
@@ -142,6 +146,7 @@ echo "method $mosaicString " > $repeatedFile
 				# Evaluate Euclidean
 				#python $sourceDir/crownSegmenterEvaluator.py 4 $dataPrefix"/"$i"_tops.png" $outputFileName >> $eucFile
 
+				echo "Finished EVAL "
 
 			fi
 		done

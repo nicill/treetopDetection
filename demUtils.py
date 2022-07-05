@@ -2,7 +2,7 @@ import numpy as np
 import cv2
 import sys
 import crownSegmenterEvaluator as CSE
-from osgeo import gdal
+#from osgeo import gdal
 
 from scipy.spatial.distance import directed_hausdorff
 from sklearn.neighbors import KDTree
@@ -136,13 +136,13 @@ def thresholdDEM(dem,th1,th2):
     #print(np.sum(demAux>0))
     return demAux
 
-def thresholdDEMBinarised(dem,th1,th2):
+def thresholdDEMBinarised(dem,th1,th2 = None):
     #print("thresholding at "+str(th1)+" "+str(th2))
     #threshold DEM
     demAux=dem.copy()
 
     demAux[dem<th1]=0
-    demAux[dem>th2]=0
+    if th2 is not None: demAux[dem>th2]=0
     demAux[demAux!=0]=255
     #print("                bigger than zero "+str(np.sum(demAux>0)))
 

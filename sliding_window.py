@@ -19,7 +19,7 @@ from sklearn.neighbors import KDTree
 #import floorExtractor as fe
 #import clusteringMethods as cm
 import demUtils as ut
-from osgeo import gdal
+#from osgeo import gdal
 
 def sliding_window(image, stepSize, windowSize, allImage=False):
     if allImage:
@@ -101,7 +101,7 @@ def refineSeedsWithMaximums(inpImage,maskImage,refineRadius=40,seeds=None):
 
     return coordList
 #lower=-1 means not lower, otherwise contains the value where to start sampling
-def findTops(comp,args,minPix,maxPix,lower): #receive a grayscale image of a connected component, threshold it repeatedly until you find all tree tops
+def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscale image of a connected component, threshold it repeatedly until you find all tree tops
     #pixMinConComp=int(args["minPixTop"])
     pixMinConComp=minPix
 
@@ -112,13 +112,9 @@ def findTops(comp,args,minPix,maxPix,lower): #receive a grayscale image of a con
     #print("MAX "+str(maxTrees))
     #print("MIN "+str(minTrees))
 
-    #check that there are enogh gradients to have some trees
-    gradientIm=pureGradient(comp)
-    gradientPixelPerc=np.sum(gradientIm!=0)/minPix
-
     #print("gradpixperc "+str(gradientPixelPerc))
-    #print("This image should contains between "+str(minTrees)+" and "+str(maxTrees)+" Trees ")
-    if nonBlack<minPix:return []
+    if verbose: print("This image should contains between "+str(minTrees)+" and "+str(maxTrees)+" Trees ")
+    #if nonBlack<minPix:return []
 
     #loop over different bands of the DEM, from top to bottom
     #if lower!=-1:
@@ -129,6 +125,11 @@ def findTops(comp,args,minPix,maxPix,lower): #receive a grayscale image of a con
     demNumSteps=demLength/demIstep
 
     maxIt=int(1*demNumSteps)
+
+    #check that there are enogh gradients to have some trees
+    """
+    gradientIm=pureGradient(comp)
+    gradientPixelPerc=np.sum(gradientIm!=0)/minPix
 
     if lower==-1:
         if gradientPixelPerc<0.025:return []
@@ -143,20 +144,22 @@ def findTops(comp,args,minPix,maxPix,lower): #receive a grayscale image of a con
             demIstep=demIstep*2
         else:
             demIstep=demIstep*1.2
+    """
 
     numIterations=1
     finished=False
     numberTopsFoundList=[]
     tops=[]
-    aupo=0
+    #aupo=0
     while demIstart+demIstep>demIend:
         # First get the upper band of the DEM
         #cv2.imwrite(str(aupo)+"comp.png",comp)
         #aupo+=1
-        thisBand=ut.thresholdDEMBinarised(comp,demIstart,demIstart+demIstep*numIterations)
+        if verbose: print("::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::findtops between "+str(demIstart)+" and "+str(demIstart+demIstep*numIterations))
+        thisBand=ut.thresholdDEMBinarised(comp,demIstart)
 
-        erosionKernel=np.ones((1,1),np.uint8)
-        thisBand=cv2.erode(thisBand,erosionKernel,iterations=2)
+        #erosionKernel=np.ones((1,1),np.uint8)
+        #thisBand=cv2.erode(thisBand,erosionKernel,iterations=2)
 
         # compute connected components here
         numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(thisBand)
@@ -168,7 +171,7 @@ def findTops(comp,args,minPix,maxPix,lower): #receive a grayscale image of a con
             thisTopLabel=labelImage[top[0],top[1]]
             if thisTopLabel not in labelDict: labelDict[thisTopLabel]=[comp[top[0],top[1]]]
             else: labelDict[thisTopLabel].append(comp[top[0],top[1]])
-        #print("Label dictionary "+str(labelDict))
+        if verbose: print("Label dictionary "+str(labelDict))
 
         for label,listOfHeights in labelDict.items():
             # also update the maximum if necessary, and if this happens this is bad
@@ -178,7 +181,7 @@ def findTops(comp,args,minPix,maxPix,lower): #receive a grayscale image of a con
             (minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(auxWin)
 
             if maxVal>max(listOfHeights):
-                #print("found valley! "+str(maxVal)+" "+str(max(listOfHeights)))
+                if verbose: print("found valley! "+str(maxVal)+" "+str(max(listOfHeights)))
                 tops.append((int(maxLoc[1]),int(maxLoc[0])))
 
 
@@ -194,6 +197,10 @@ def findTops(comp,args,minPix,maxPix,lower): #receive a grayscale image of a con
 
                 (minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(auxWin)
                 candidateTops.append((int(maxLoc[1]),int(maxLoc[0])))
+                if verbose: print("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^appending top with altitude "+str(maxVal))
+            elif verbose :
+                if l in labelDict : print("existing label "+str(l))
+                else: print("small top "+str(currentCount))
 
         tops.extend(candidateTops)
 
@@ -212,19 +219,36 @@ def findTops(comp,args,minPix,maxPix,lower): #receive a grayscale image of a con
 
     return tops
 
+# Given a window, eliminate possible outliers and get only the top pixels
+def binarizeWindow(win):
+
+    lowerPerc = 1
+    higherPerc = 99
+    fromRatio = 0.02
+
+    winRet = win.copy()
+    winPerc = win.copy()
+    winPerc[winPerc==0]=np.nan
+    minWin = np.nanpercentile(winPerc,lowerPerc)
+    maxWin = np.nanpercentile(winPerc,higherPerc)
+    #print("slidingWindow, binarizeWindow, window height "+str(minWin)+" "+str(minWin+ (maxWin-minWin)*fromRatio)+" "+str(maxWin))
+
+    winRet[win>maxWin] = maxWin
+    winRet[win<minWin + (maxWin-minWin)*fromRatio] = 0
+
+    return winRet
+
+
 # isLower = -1 means not lower window, otherwise it contains the value from wich to start
 # if isLower != -1 then listOfTops will contain existing tops
 def processWindow(win,args,minNumPointsTree,maxNumPointsTree,isLower=-1):
     # binarize image, erode it a little, compute connected connectedComponents
-#    nonBlack=np.sum(win>0)
-#    if nonBlack>0:
-#        print("NON BLACK!!! "+str(nonBlack))
-#        cv2.imwrite("binarised.jpg",win)
-#        cv2.imwrite("binarised.png",win)
 
-    binarized=win.copy()
-    binarized[win<0.001]=0
-    binarized[win>=0.001]=255
+    #binarized=win.copy()
+    #binarized[win<0.001]=0
+    #binarized[win>=0.001]=255
+
+    binarized = binarizeWindow(win)
 
     #erode
     # TODO the kernel may now be too big
@@ -238,12 +262,15 @@ def processWindow(win,args,minNumPointsTree,maxNumPointsTree,isLower=-1):
 
     seeds=[]
 
+    #print("processWindow:: Processing Window, found number of con comp: "+str(numLabels))
+
+    # find tree tops only in connected components that may contain a tree
     for l in range(1,numLabels):
         #for each label, count tops
-        thisComponent=win.copy()
-        thisComponent[labelImage!=l]=0
-        # find tree tops only in connected components that may contain a tree
-        if np.sum(thisComponent!=0)>minNumPointsTree:
+        if stats[l,cv2.CC_STAT_AREA] > minNumPointsTree:
+            #print("                                  processWindow:: window of size : "+str(stats[l,cv2.CC_STAT_AREA]))
+            thisComponent=win.copy()
+            thisComponent[labelImage!=l] = 0
             thisCompTops=findTops(thisComponent,args,minNumPointsTree,maxNumPointsTree,isLower)
             seeds.extend(thisCompTops)
 
@@ -296,8 +323,8 @@ def paintTopsTrimNonCanopy(dem,seeds,circleSize,cutoff):
             thisBandLowerTop=x[0][1]
             thisBandHigherTop=x[0][1]
             lowerBand=(thisBandHigherTop<cutoff)
+            #print("checking "+str(thisTop)+" "+str(thisTopHeight))
             for thisTop,thisTopHeight in x:
-                #print("checking "+str(thisTop)+" "+str(thisTopHeight))
                 if thisBandLowerTop>thisTopHeight:thisBandLowerTop=thisTopHeight
                 if thisBandHigherTop<thisTopHeight:thisBandHigherTop=thisTopHeight
                 #paint lower tops with bigger radius
@@ -421,7 +448,7 @@ def main():
 
     #minNumPointsTree=2500
     #minNumPointsTreeLower=10000
-    minNumPointsTree=25
+    minNumPointsTree=400
     minNumPointsTreeLower=100
 
     minNumPointsTop=int(args["minPixTop"])
@@ -433,25 +460,66 @@ def main():
     if (args["twoBands"] is not None) and (args["twoBands"]=="yes"):doLower=True
     else:doLower=False
 
-    #print(args["dem"])
-    dem2 = gdal.Open(args["dem"], gdal.GA_ReadOnly)
+    print(args["dem"])
+    #dem2 = gdal.Open(args["dem"], gdal.GA_ReadOnly)
+    #dem=dem2.GetRasterBand(dem2.RasterCount).ReadAsArray().astype(float)
+    #del dem2
+    dem = cv2.imread(args["dem"],cv2.IMREAD_UNCHANGED)
+    if dem is None:
+        print(str(args["dem"])+ "not found ")
+        exit(0)
 
-    dem=dem2.GetRasterBand(dem2.RasterCount).ReadAsArray().astype(float)
-    del dem2
-
+    #Filter non values and outliers
     dem[dem<0]=0 #eliminate non values
+    #dem[dem>50]=0
+
+    # take out the min (sort of)
+    demPerc=dem.copy()
+    demPerc[demPerc==0]=np.nan
+    minDem = np.nanpercentile(demPerc,1)
+
+    dem = dem - minDem
+    dem[dem<0] = 0
+    gray = dem
 
     maxDem=np.max(dem)
+
+    #cv2.imwrite("dem.jpg",(gray*(255/maxDem)).astype("uint8"))
+
+    """
+    demPerc=dem.copy()
+    demPerc[demPerc==0]=np.nan
+    percList =[10,25,50,75,85,90,95,99]
+    valList = [ np.nanpercentile(demPerc,x) for x in percList]
+
+    print("DEM MAX "+str(maxDem))
+    for i in range(len(percList)): print("DEM p"+str(percList[i])+" :"+str(valList[i]))
 
     #print(" shape of the DEM!!!!"+str(dem.shape))
     if dem is None:raise Exception("no DEM at "+str(args["dem"]))
     gray = dem
     #blurred=cv2.GaussianBlur(dem,(15,15),0)
     #blurred[dem==0]=0
+    #write full DEM
+    lastP = valList[-1]
+    realisticMax = lastP + (maxDem-lastP)*0.10
+    cv2.imwrite("dem.jpg",(gray*(255/maxDem)).astype("uint8"))
+    for i in range(len(percList)):
+        paint=gray.copy()
+        paint[paint<valList[i]]=0
+        currentRange=realisticMax-valList[i]
+        print("RANGE "+str(currentRange))
+        paint=paint-valList[i]
+        paint=paint*(255/(currentRange))
+        paint[paint>255]=255
+        cv2.imwrite("dem"+str(percList[i])+".jpg",paint.astype("uint8"))
+    """
 
-    #cv2.imwrite("dem.jpg",(gray*(255/maxDem)).astype("uint8"))
+    #sys.exit()
     #cv2.imwrite("blurred.jpg",(gray*(255/maxDem)).astype("uint8"))
     #gray=dem
+
+
 
     if doLower:
         if args["percentile"] is not None:perc=int(args["percentile"])
@@ -473,11 +541,11 @@ def main():
     seeds=[]
     lowerSeeds=[]
     #countLower=0
-    for (x, y, window) in sliding_window(firstBand, stepSize=int(args["size"]), windowSize=(int(args["size"]), int(args["size"])),allImage=False):
+    for (x, y, window) in sliding_window(firstBand, stepSize=int(args["size"])//2, windowSize=(int(args["size"]), int(args["size"])),allImage=False):
         #print("window "+str(x)+" "+str(y))
         thisWindowSeeds=[]
         if np.sum(window>0)>minNumPointsTree:
-            thisWindowSeeds=processWindow(window,args,minNumPointsTop,maxNumPointsTree,-1)
+            thisWindowSeeds = processWindow(window,args,minNumPointsTop,maxNumPointsTree,-1)
 
         if(len(thisWindowSeeds))>0:
             for localSeed in thisWindowSeeds:seeds.append((x+localSeed[1],y+localSeed[0]))
