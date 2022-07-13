@@ -19,10 +19,10 @@ refineRadius=$7
 #mosaicString="site1_mav_ft site1_mav_nft site1_p4_ft site1_p4_nft"
 #mosaicString="site1_mav_ft site1_mav_nft"
 #mosaicString="site2_p4_ft site2_p4_nft"
-mosaicString="DEM"
+mosaicString="north south"
 
 #epsilonString="3 6 8 10 12"	
-epsilonString="10 20 25"	
+epsilonString="5 10 20"	
 
 hausFile=$outputDir/$methodInput"haus.txt"
 eucFile=$outputDir/$methodInput"euc.txt"
@@ -55,9 +55,9 @@ echo "method $mosaicString " > $eucMatchedFile
 echo "method $mosaicString " > $repeatedFile
 
 
-	wSizes="100 250 1000 2500"
-	thresholds="10 25 50 100"
-	minDists="0.25 0.5 1"
+	wSizes="250 500 750 100 1000"
+	thresholds="5 10 15 25 50 75 100"
+	minDists="0.05 0.1 0.25 0.5"
 	for ws in $wSizes
 	do
 		for th in $thresholds

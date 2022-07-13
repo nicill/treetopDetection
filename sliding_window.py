@@ -19,18 +19,10 @@ from sklearn.neighbors import KDTree
 #import floorExtractor as fe
 #import clusteringMethods as cm
 import demUtils as ut
+from imageUtils import sliding_window, binarizeWindow,refineTopDict,dictToTopsList
 #from osgeo import gdal
 
-def sliding_window(image, stepSize, windowSize, allImage=False):
-    if allImage:
-        yield(0,0,image[:,:])
-    else:
-        # slide a window across the image
-        for y in range(0, image.shape[0], stepSize):
-            for x in range(0, image.shape[1], stepSize):
-                # yield the current window
-                yield (x, y, image[y:y + windowSize[1], x:x + windowSize[0]])
-
+stupidCount = 0
 
 def pureGradient(img):
 
@@ -100,6 +92,7 @@ def refineSeedsWithMaximums(inpImage,maskImage,refineRadius=40,seeds=None):
     #print("entered the loop "+str(count)+" length "+str(len(coordList)))
 
     return coordList
+
 #lower=-1 means not lower, otherwise contains the value where to start sampling
 def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscale image of a connected component, threshold it repeatedly until you find all tree tops
     #pixMinConComp=int(args["minPixTop"])
@@ -116,6 +109,9 @@ def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscal
     if verbose: print("This image should contains between "+str(minTrees)+" and "+str(maxTrees)+" Trees ")
     #if nonBlack<minPix:return []
 
+    # retieve epsilon
+    epsilon = int(args["refineRadius"])
+
     #loop over different bands of the DEM, from top to bottom
     #if lower!=-1:
     demIstep=float(args["topStep"])
@@ -126,29 +122,9 @@ def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscal
 
     maxIt=int(1*demNumSteps)
 
-    #check that there are enogh gradients to have some trees
-    """
-    gradientIm=pureGradient(comp)
-    gradientPixelPerc=np.sum(gradientIm!=0)/minPix
-
-    if lower==-1:
-        if gradientPixelPerc<0.025:return []
-        elif gradientPixelPerc<1:
-            demIstep=demIstep*2
-    else:#lower!!!!
-        if gradientPixelPerc<0.15:
-            return []
-        elif gradientPixelPerc<1:
-            demIstep=demIstep*5
-        elif gradientPixelPerc<1.2:
-            demIstep=demIstep*2
-        else:
-            demIstep=demIstep*1.2
-    """
-
     numIterations=1
     finished=False
-    numberTopsFoundList=[]
+    #numberTopsFoundList=[]
     tops=[]
     #aupo=0
     while demIstart+demIstep>demIend:
@@ -158,9 +134,6 @@ def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscal
         if verbose: print("::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::findtops between "+str(demIstart)+" and "+str(demIstart+demIstep*numIterations))
         thisBand=ut.thresholdDEMBinarised(comp,demIstart)
 
-        #erosionKernel=np.ones((1,1),np.uint8)
-        #thisBand=cv2.erode(thisBand,erosionKernel,iterations=2)
-
         # compute connected components here
         numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(thisBand)
         #print("this band has this many connected components "+str(numLabels))
@@ -169,31 +142,39 @@ def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscal
         labelDict={}
         for top in tops:
             thisTopLabel=labelImage[top[0],top[1]]
-            if thisTopLabel not in labelDict: labelDict[thisTopLabel]=[comp[top[0],top[1]]]
-            else: labelDict[thisTopLabel].append(comp[top[0],top[1]])
+            if thisTopLabel not in labelDict: labelDict[thisTopLabel]=[(comp[top[0],top[1]],top)]
+            else: labelDict[thisTopLabel].append( (comp[top[0],top[1]],top)  )
         if verbose: print("Label dictionary "+str(labelDict))
 
-        for label,listOfHeights in labelDict.items():
+        # for each component already in the dict, add the top point forcefully if necessary
+        for label,tupList in labelDict.items():
             # also update the maximum if necessary, and if this happens this is bad
+            listOfHeights = [x for x,y in tupList]
+
             auxWin=comp.copy()
             auxWin[labelImage!=label]=0
 
             (minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(auxWin)
 
-            if maxVal>max(listOfHeights):
-                if verbose: print("found valley! "+str(maxVal)+" "+str(max(listOfHeights)))
-                tops.append((int(maxLoc[1]),int(maxLoc[0])))
+            if maxVal>max(listOfHeights): labelDict[label].append( (comp[top[0],top[1]],top))
 
 
-        # traverse all current labels (but the background), the centroids of those not in the dictionary get added as tree tops
+        # Now call function to clean up inside connected components, keep higher within those at distance 2 epsilon
+        labelDict = refineTopDict(labelDict,epsilon)
+        if verbose: print("Label dictionary after refinement "+str(labelDict))
+
+        tops = dictToTopsList(labelDict)
+
+
+        # traverse all current labels (but the background), the highest point of ALL get added as candidate tree tops
         candidateTops=[]
         for l in range(1,numLabels):
             currentCount=np.count_nonzero(labelImage==l)
             if currentCount>pixMinConComp and not l in labelDict:
-            #if currentCount>pixMinConComp:
+            #if currentCount>pixMinConComp :
                 # find the highest point in this connected component
-                auxWin=comp.copy()
-                auxWin[labelImage!=l]=0
+                auxWin = comp.copy()
+                auxWin[labelImage != l ] = 0
 
                 (minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(auxWin)
                 candidateTops.append((int(maxLoc[1]),int(maxLoc[0])))
@@ -207,7 +188,7 @@ def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscal
         #print("now have "+str(len(tops))+" treeTops ")
         demIstart-=demIstep
         numIterations+=1
-        numberTopsFoundList.append(len(tops))
+        #numberTopsFoundList.append(len(tops))
 
         if numIterations>=maxIt :
             #print("Ofinished tops in "+str(numIterations)+", finding "+str(len(tops))+" "+str(numberTopsFoundList)+"\n\n\n")
@@ -219,45 +200,15 @@ def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscal
 
     return tops
 
-# Given a window, eliminate possible outliers and get only the top pixels
-def binarizeWindow(win):
-
-    lowerPerc = 1
-    higherPerc = 99
-    fromRatio = 0.02
-
-    winRet = win.copy()
-    winPerc = win.copy()
-    winPerc[winPerc==0]=np.nan
-    minWin = np.nanpercentile(winPerc,lowerPerc)
-    maxWin = np.nanpercentile(winPerc,higherPerc)
-    #print("slidingWindow, binarizeWindow, window height "+str(minWin)+" "+str(minWin+ (maxWin-minWin)*fromRatio)+" "+str(maxWin))
-
-    winRet[win>maxWin] = maxWin
-    winRet[win<minWin + (maxWin-minWin)*fromRatio] = 0
-
-    return winRet
-
+#stupidCount = 0
 
 # isLower = -1 means not lower window, otherwise it contains the value from wich to start
 # if isLower != -1 then listOfTops will contain existing tops
 def processWindow(win,args,minNumPointsTree,maxNumPointsTree,isLower=-1):
     # binarize image, erode it a little, compute connected connectedComponents
-
-    #binarized=win.copy()
-    #binarized[win<0.001]=0
-    #binarized[win>=0.001]=255
-
     binarized = binarizeWindow(win)
 
-    #erode
-    # TODO the kernel may now be too big
-    #erosionKernel=np.ones((5,5),np.uint8)
-    #erosion=cv2.erode(binarized.astype("uint8"),erosionKernel,iterations=1)
-    #cv2.imwrite("eroded.jpg",erosion)
-
     # now, for every connected component, find tops
-    #numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(erosion)
     numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(binarized.astype("uint8"))
 
     seeds=[]
