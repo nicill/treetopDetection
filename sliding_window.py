@@ -1,26 +1,16 @@
 # import the necessary packages
 import argparse
-import time
+
 import cv2
-import os
-from matplotlib import pyplot as plt
-import sys
 import numpy as np
 import math
 
-# peak local max imports
-from skimage import data, img_as_float
-from scipy import ndimage as ndi
-from skimage.feature import peak_local_max
+import os
+import sys
 
 # for the function to turn binary files into lists of points
-import crownSegmenterEvaluator as CSE
-from sklearn.neighbors import KDTree
-#import floorExtractor as fe
-#import clusteringMethods as cm
 import demUtils as ut
 from imageUtils import sliding_window, binarizeWindow,refineTopDict,dictToTopsList
-#from osgeo import gdal
 
 stupidCount = 0
 
@@ -397,8 +387,6 @@ def main():
     ap.add_argument("-two", "--twoBands", required=False, help="Whether or not we do two bands")
     args = vars(ap.parse_args())
 
-    #minNumPointsTree=2500
-    #minNumPointsTreeLower=10000
     minNumPointsTree=400
     minNumPointsTreeLower=100
 
@@ -412,9 +400,6 @@ def main():
     else:doLower=False
 
     print(args["dem"])
-    #dem2 = gdal.Open(args["dem"], gdal.GA_ReadOnly)
-    #dem=dem2.GetRasterBand(dem2.RasterCount).ReadAsArray().astype(float)
-    #del dem2
     dem = cv2.imread(args["dem"],cv2.IMREAD_UNCHANGED)
     if dem is None:
         print(str(args["dem"])+ "not found ")
@@ -422,7 +407,6 @@ def main():
 
     #Filter non values and outliers
     dem[dem<0]=0 #eliminate non values
-    #dem[dem>50]=0
 
     # take out the min (sort of)
     demPerc=dem.copy()
@@ -438,6 +422,7 @@ def main():
     #cv2.imwrite("dem.jpg",(gray*(255/maxDem)).astype("uint8"))
 
     """
+    # views of different percentile cuts of teh DEM
     demPerc=dem.copy()
     demPerc[demPerc==0]=np.nan
     percList =[10,25,50,75,85,90,95,99]
@@ -466,12 +451,6 @@ def main():
         cv2.imwrite("dem"+str(percList[i])+".jpg",paint.astype("uint8"))
     """
 
-    #sys.exit()
-    #cv2.imwrite("blurred.jpg",(gray*(255/maxDem)).astype("uint8"))
-    #gray=dem
-
-
-
     if doLower:
         if args["percentile"] is not None:perc=int(args["percentile"])
         else: perc=70
@@ -491,8 +470,9 @@ def main():
     # loop over the sliding window for the first band of intensities
     seeds=[]
     lowerSeeds=[]
+    windowOverlap = 0.2
     #countLower=0
-    for (x, y, window) in sliding_window(firstBand, stepSize=int(args["size"])//2, windowSize=(int(args["size"]), int(args["size"])),allImage=False):
+    for (x, y, window) in sliding_window(firstBand, stepSize=int(int(args["size"])*(1-windowOverlap)), windowSize=(int(args["size"]), int(args["size"])),allImage=False):
         #print("window "+str(x)+" "+str(y))
         thisWindowSeeds=[]
         if np.sum(window>0)>minNumPointsTree:

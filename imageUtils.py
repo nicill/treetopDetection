@@ -132,34 +132,33 @@ def binarizeWindowReturnDEM(win, lowerPerc = 20, eroKernS = 2, eroIt = 3):
 
 
 # Given a window, eliminate possible outliers and get only the top pixels
-def binarizeWindow(win, lowerPerc = 40, eroKernS = 3, eroIt = 10):
+def binarizeWindow(win, lowerPerc = 20, eroKernS = 2, eroIt = 3):
 
     #global stupidCount
     #stupidCount+=1
 
-    lowerPerc = 40
     higherPerc = 99
-    fromRatio = 0.02
 
     winRet = win.copy()
     winPerc = win.copy()
+
     winPerc[winPerc==0]=np.nan
     minWin = np.nanpercentile(winPerc,lowerPerc)
     maxWin = np.nanpercentile(winPerc,higherPerc)
     #print("slidingWindow, binarizeWindow, window height "+str(minWin)+" "+str(minWin+ (maxWin-minWin)*fromRatio)+" "+str(maxWin))
 
     winRet[win>maxWin] = maxWin
-    winRet[win<minWin + (maxWin-minWin)*fromRatio] = 0
+    #winRet[win<minWin + (maxWin-minWin)*fromRatio] = 0
+    winRet[win<minWin] = 0
 
-    #cv2.imwrite(str(stupidCount)+"noteroded.jpg",winRet)
 
-    winRet[winRet>0] = 255
+    winRet = winRet-minWin
+    winRet = winRet*(255/(maxWin-minWin))
 
     erosionKernel=np.ones((eroKernS,eroKernS),np.uint8)
     erosion=cv2.erode(winRet,erosionKernel,iterations = eroIt)
 
-    winRet[winRet>0] = 255
-
+    #cv2.imwrite(str(stupidCount)+"noteroded.jpg",winRet)
     #cv2.imwrite(str(stupidCount)+"eroded.jpg",erosion)
 
     return winRet

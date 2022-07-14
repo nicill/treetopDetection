@@ -55,9 +55,9 @@ echo "method $mosaicString " > $eucMatchedFile
 echo "method $mosaicString " > $repeatedFile
 
 
-	wSizes="250 500 750 100 1000"
-	thresholds="5 10 15 25 50 75 100"
-	minDists="0.05 0.1 0.25 0.5"
+	wSizes="500 750 1000 100"
+	thresholds="2 5 10 15 25 50 75 100"
+	minDists="0.1 0.25 0.5"
 	for ws in $wSizes
 	do
 		for th in $thresholds
