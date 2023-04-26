@@ -373,6 +373,23 @@ def refineLower(dem,seeds,lowerSeeds,args):
 
     return outputLowerSeeds
 
+def morphologyOperations(image, kernel_size, min_height):
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(kernel_size,kernel_size))
+    ret,thresh = cv2.threshold(image,min_height,255,cv2.THRESH_TOZERO)
+    im_erode = cv2.erode(thresh,kernel,iterations=iter)
+       
+    blurred = cv2.GaussianBlur(im_erode,(kernel_size,kernel_size),0)
+    
+    
+    im_dilate = cv2.dilate(blurred,kernel,iterations=iter)
+    im_comp = cv2.compare(blurred,im_dilate,cv2.CMP_GE)
+
+    im_erode = cv2.erode(blurred,kernel,iterations=1)
+    im_plateu = cv2.compare(blurred,im_erode,cv2.CMP_GT)
+    im_and = cv2.bitwise_and(im_comp,im_plateu)
+
+    return im_and
+
 def main():
 
     ap = argparse.ArgumentParser()
@@ -406,7 +423,10 @@ def main():
         exit(0)
 
     #Filter non values and outliers
-    dem[dem<0]=0 #eliminate non values
+    origin[origin<0]=0 #eliminate non values
+
+    #Apply morphology
+    dem = morphologyOperations(origin, siz, min_hieght)
 
     # take out the min (sort of)
     demPerc=dem.copy()
