@@ -1,5 +1,8 @@
 Herve/
+Herve2/
 output/
+DataKOI/
+__pycache__/
 *.zip
 *.jpg
 *.png

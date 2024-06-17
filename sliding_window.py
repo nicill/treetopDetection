@@ -382,7 +382,7 @@ def main():
     ap.add_argument("-perc", "--percentile", required=False, help="The height percentile where most tops are expected to be")
     ap.add_argument("-mpt", "--minPixTop", required=True, help="Minimum pixels per top")
     ap.add_argument("-ref", "--refine", required=False, help="yes/no, do we refine the results by fusing nearby points?")
-    ap.add_argument("-refRad", "--refineRadius", required=False, help="Radius for global refinement")
+    ap.add_argument("-refRad", "--refineRadius", required=True, help="Radius for global refinement")
     ap.add_argument("-ts", "--topStep", required=True, help="Steps when choosing tree tops")
     ap.add_argument("-two", "--twoBands", required=False, help="Whether or not we do two bands")
     args = vars(ap.parse_args())
