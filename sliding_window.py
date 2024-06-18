@@ -309,7 +309,7 @@ def outputImages(dem,highSeeds,seeds,args,cutoff,index=None):
 
         #then, refine the lower seeds
         circleSize=int(args["refineRadius"])
-        print("CIRCLESIZE "+str(circleSize))
+        #print("CIRCLESIZE "+str(circleSize))
 
         seeds.extend(highSeeds)
 
@@ -373,14 +373,15 @@ def refineLower(dem,seeds,lowerSeeds,args):
 
     return outputLowerSeeds
 
-def morphologyOperations(image, kernel_size, min_height):
+def morphologyOperations(image, kernel_size, min_height,iter=1):
+
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,(kernel_size,kernel_size))
     ret,thresh = cv2.threshold(image,min_height,255,cv2.THRESH_TOZERO)
     im_erode = cv2.erode(thresh,kernel,iterations=iter)
-       
+
     blurred = cv2.GaussianBlur(im_erode,(kernel_size,kernel_size),0)
-    
-    
+
+
     im_dilate = cv2.dilate(blurred,kernel,iterations=iter)
     im_comp = cv2.compare(blurred,im_dilate,cv2.CMP_GE)
 
@@ -423,23 +424,30 @@ def main():
         exit(0)
 
     #Filter non values and outliers
-    origin[origin<0]=0 #eliminate non values
-
-    #Apply morphology
-    dem = morphologyOperations(origin, siz, min_hieght)
+    dem[ dem<0 ] = 0 #eliminate non values
 
     # take out the min (sort of)
     demPerc=dem.copy()
-    demPerc[demPerc==0]=np.nan
+    demPerc[demPerc==0] = np.nan
     minDem = np.nanpercentile(demPerc,1)
+
+    print("Minimum value for this DEM was "+str(minDem))
 
     dem = dem - minDem
     dem[dem<0] = 0
     gray = dem
 
-    maxDem=np.max(dem)
+    #Apply morphology
+    #sizeMorph = 5
+    #iterMorph = 1
+    #dem2 = morphologyOperations(dem.copy(), sizeMorph, 0, iter = iterMorph)
+    #cv2.imwrite("dem2.jpg",dem2)
 
-    #cv2.imwrite("dem.jpg",(gray*(255/maxDem)).astype("uint8"))
+    maxDem=np.max(dem)
+    print("Maximum value for this DEM was "+str(maxDem))
+
+    cv2.imwrite("dem.jpg",(gray*(255/maxDem)).astype("uint8"))
+
 
     """
     # views of different percentile cuts of teh DEM
