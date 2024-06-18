@@ -349,7 +349,7 @@ def outputImages(dem,highSeeds,seeds,args,cutoff,index=None):
     else: out_binary = filename + "_binaryMethodCCHEIGHT"+ file_extension
 
     if index is not None: out_binary=out_binary[:-4] +str(index)+ out_binary[-4:]
-    print("out binary will be "+out_binary)
+    #print("out binary will be "+out_binary)
 
     #cv2.imwrite(out_dem, dem)
     cv2.imwrite(out_binary, maskImage)
