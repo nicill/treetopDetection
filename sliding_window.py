@@ -328,7 +328,7 @@ def outputImages(dem,highSeeds,seeds,args,cutoff,index=None):
         print("Skipping seed refinement!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         seeds.extend(highSeeds)
         outputSeeds=seeds
-    print("number of refined seeds! "+str(len(outputSeeds)))
+    #print("number of refined seeds! "+str(len(outputSeeds)))
 
     # Once the method is finished, paint the detected points
     # paint them as circles over the DEM and the image
