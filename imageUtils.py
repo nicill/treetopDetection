@@ -125,7 +125,7 @@ def binarizeWindowReturnDEM(win, lowerPerc = 20, eroKernS = 2, eroIt = 3):
 
 
 # Given a window, eliminate possible outliers and get only the top pixels
-def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 2, eroIt = 3, ):
+def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 2, eroIt = 1, ):
 
 
     higherPerc = 99
@@ -142,17 +142,16 @@ def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 2, eroIt = 3, ):
     #winRet[win<minWin + (maxWin-minWin)*fromRatio] = 0
     winRet[win<minWin] = 0
 
-
     winRet = winRet-minWin
     winRet = winRet*(255/(maxWin-minWin))
 
     # DO NOT ERODE
-    #erosionKernel=np.ones((eroKernS,eroKernS),np.uint8)
-    #erosion=cv2.erode(winRet,erosionKernel,iterations = eroIt)
+    erosionKernel=np.ones((eroKernS,eroKernS),np.uint8)
+    erosion=cv2.erode(winRet,erosionKernel,iterations = eroIt)
 
     # code to visualize the output of the erosion
     if True:
-        erosion = winRet
+        #erosion = winRet
         sambomba1 = cv2.resize(win*(255/maxWin), (win.shape[1]*10, win.shape[0]*10), interpolation = cv2.INTER_LINEAR)
         cv2.imwrite("./out/"+str(stupidCount)+"noteroded.jpg",sambomba1)
         sambomba2 = cv2.resize(erosion, (erosion.shape[1]*10, erosion.shape[0]*10), interpolation = cv2.INTER_LINEAR)
