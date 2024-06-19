@@ -14,6 +14,7 @@ from imageUtils import sliding_window, binarizeWindow,refineTopDict,dictToTopsLi
 
 stupidCount = 0
 
+
 def pureGradient(img):
 
     #cv2.imwrite("aaa.jpg",img)
@@ -116,11 +117,10 @@ def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscal
     finished=False
     #numberTopsFoundList=[]
     tops=[]
-    #aupo=0
+    aupo=0
     while demIstart+demIstep>demIend:
         # First get the upper band of the DEM
-        #cv2.imwrite(str(aupo)+"comp.png",comp)
-        #aupo+=1
+        aupo+=1
         if verbose: print("::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::findtops between "+str(demIstart)+" and "+str(demIstart+demIstep*numIterations))
         thisBand=ut.thresholdDEMBinarised(comp,demIstart)
 
@@ -131,14 +131,16 @@ def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscal
         # for every existing top, make a note of its label in this class in a dictionary
         labelDict={}
         for top in tops:
-            thisTopLabel=labelImage[top[0],top[1]]
+            thisTopLabel = labelImage[top[0],top[1]]
             if thisTopLabel not in labelDict: labelDict[thisTopLabel]=[(comp[top[0],top[1]],top)]
             else: labelDict[thisTopLabel].append( (comp[top[0],top[1]],top)  )
         if verbose: print("Label dictionary "+str(labelDict))
 
-        # for each component already in the dict, add the top point forcefully if necessary
+        # for each component already in the dict,
+        # add the top point forcefully if necessary
         for label,tupList in labelDict.items():
-            # also update the maximum if necessary, and if this happens this is bad
+            # also update the maximum if necessary,
+            # and if this happens this is bad
             listOfHeights = [x for x,y in tupList]
 
             auxWin=comp.copy()
@@ -188,15 +190,24 @@ def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscal
     #if  len(tops)>maxTrees or len(tops)<minTrees:
     #    print("WRONG NUMBER!!!!!!!!!!!!!! was:"+str(len(tops))+" SHOULD HAVE BEEN between "+str(minTrees)+" and "+str(maxTrees)+" Trees ")
 
+        if False:
+            #show band and found tops
+            # visualization purposes only
+            comp2 = thisBand.copy()
+            for x,y in tops:
+                cv2.circle(comp2, (y,x), 2, 155, -1)
+            comp2 = cv2.resize(comp2, (comp2.shape[1]*10, comp2.shape[0]*10), interpolation = cv2.INTER_LINEAR)
+            cv2.imwrite("./out/COMPONENT"+str(stupidCount)+"IS"+str(aupo)+"comp.png",comp2)
+
     return tops
 
-#stupidCount = 0
 
 # isLower = -1 means not lower window, otherwise it contains the value from wich to start
 # if isLower != -1 then listOfTops will contain existing tops
 def processWindow(win,args,minNumPointsTree,maxNumPointsTree,isLower=-1):
     # binarize image, erode it a little, compute connected connectedComponents
-    binarized = binarizeWindow(win)
+    global stupidCount
+    binarized,stupidCount = binarizeWindow(win,stupidCount,lowerPerc = int(args["thpercentile"]))
 
     # now, for every connected component, find tops
     numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(binarized.astype("uint8"))
@@ -293,29 +304,18 @@ def paintTopsTrimNonCanopy(dem,seeds,circleSize,cutoff):
     #cv2.imwrite("PartialFinal.jpg",255-erosion)
     return maskImage
 
-def outputImages(dem,highSeeds,seeds,args,cutoff,index=None):
+def outputImages(dem,seeds,args,cutoff,index=None):
 
     #If refine, paint the high seeds first and carefully paint the others after
     if (args["refine"] is not None) and (args["refine"]=="yes") and (args["refineRadius"] is not None):
 
         maskImage=255*np.ones((dem.shape[0],dem.shape[1],1),dtype=np.uint8)
-        #First, paint the high seeds
-        #circleSize=40
-        #for seed in highSeeds:
-            # create binary result image
-        #    cv2.circle(maskImage, seed, circleSize, 0, -1)
-
-        #cv2.imwrite("highSeeds.jpg", maskImage)
-
-        #then, refine the lower seeds
         circleSize=int(args["refineRadius"])
         #print("CIRCLESIZE "+str(circleSize))
 
-        seeds.extend(highSeeds)
-
         if(len(seeds)>0):
             #prepare for refinement, disconnect floor and lower regions
-            maskImageLow=paintTopsTrimNonCanopy(dem,seeds,circleSize,cutoff)
+            maskImageLow = paintTopsTrimNonCanopy(dem,seeds,circleSize,cutoff)
 
             #join the two masks
             maskImage[maskImageLow==0]=0
@@ -326,8 +326,6 @@ def outputImages(dem,highSeeds,seeds,args,cutoff,index=None):
         outputSeeds=refineSeedsWithMaximums(dem,maskImage,int(args["refineRadius"]),seeds)
     else:
         print("Skipping seed refinement!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-        seeds.extend(highSeeds)
-        outputSeeds=seeds
     #print("number of refined seeds! "+str(len(outputSeeds)))
 
     # Once the method is finished, paint the detected points
@@ -336,7 +334,7 @@ def outputImages(dem,highSeeds,seeds,args,cutoff,index=None):
 
     circleSize=2
     maskImage=255*np.ones((dem.shape[0],dem.shape[1],1),dtype=np.uint8)
-    for seed in outputSeeds:
+    for seed in seeds:
         cv2.circle(dem, seed, circleSize, (255, 255, 255), -1)
         # also create binary result image
         cv2.circle(maskImage, seed, circleSize, 0, -1)
@@ -381,7 +379,6 @@ def morphologyOperations(image, kernel_size, min_height,iter=1):
 
     blurred = cv2.GaussianBlur(im_erode,(kernel_size,kernel_size),0)
 
-
     im_dilate = cv2.dilate(blurred,kernel,iterations=iter)
     im_comp = cv2.compare(blurred,im_dilate,cv2.CMP_GE)
 
@@ -392,12 +389,11 @@ def morphologyOperations(image, kernel_size, min_height,iter=1):
     return im_and
 
 def main():
-
     ap = argparse.ArgumentParser()
     ap.add_argument("-d", "--dem", required=True, help="Path to Digital Elevation Map (DEM)")
     ap.add_argument("-s", "--size", required=True, help="Window size (squared)")
     ap.add_argument("-o", "--binOut", required=False, help="Path of the resulting binary image")
-    ap.add_argument("-perc", "--percentile", required=False, help="The height percentile where most tops are expected to be")
+    ap.add_argument("-thPerc", "--thpercentile", required=True, help="The height percentile at which local windows are thresholded")
     ap.add_argument("-mpt", "--minPixTop", required=True, help="Minimum pixels per top")
     ap.add_argument("-ref", "--refine", required=False, help="yes/no, do we refine the results by fusing nearby points?")
     ap.add_argument("-refRad", "--refineRadius", required=True, help="Radius for global refinement")
@@ -413,9 +409,6 @@ def main():
 
     maxNumPointsTree=1950
     lowerPercent=1
-
-    if (args["twoBands"] is not None) and (args["twoBands"]=="yes"):doLower=True
-    else:doLower=False
 
     print(args["dem"])
     dem = cv2.imread(args["dem"],cv2.IMREAD_UNCHANGED)
@@ -479,27 +472,12 @@ def main():
         cv2.imwrite("dem"+str(percList[i])+".jpg",paint.astype("uint8"))
     """
 
-    if doLower:
-        if args["percentile"] is not None:perc=int(args["percentile"])
-        else: perc=70
-
-        grayForPercentile=gray.copy()
-        grayForPercentile[grayForPercentile==0]=np.nan
-        cutOff=np.nanpercentile(grayForPercentile, perc)
-        lowerCutOff=np.nanpercentile(grayForPercentile,lowerPercent)
-        print("cutoff!!! "+str(cutOff)+" of "+str(maxDem)+"  at percentile "+str(perc)+" and lower at "+str(lowerCutOff))
-
-        firstBand=ut.thresholdDEM(gray,cutOff,maxDem)
-        secondBand=ut.thresholdDEM(gray,lowerCutOff,maxDem)
-    else:
-        firstBand=gray
-        cutOff=0
+    firstBand=gray
+    cutOff=0
 
     # loop over the sliding window for the first band of intensities
     seeds=[]
-    lowerSeeds=[]
     windowOverlap = 0.2
-    #countLower=0
     for (x, y, window) in sliding_window(firstBand, stepSize=int(int(args["size"])*(1-windowOverlap)), windowSize=(int(args["size"]), int(args["size"])),allImage=False):
         #print("window "+str(x)+" "+str(y))
         thisWindowSeeds=[]
@@ -510,26 +488,9 @@ def main():
             for localSeed in thisWindowSeeds:seeds.append((x+localSeed[1],y+localSeed[0]))
             #print("found seeds "+str(len(seeds)))
 
-        if doLower:
-            #now loop again with lower seeds
-            lowerWindow=secondBand[y:y + int(args["size"]), x:x + int(args["size"])]
-            thisWindowLowerSeeds=[]
-            #if False:
-            if np.sum(lowerWindow>0)>minNumPointsTreeLower:
-                #print("                              going to process lower window ")
-                thisWindowLowerSeeds=processWindow(lowerWindow,args,minNumPointsTopLower,maxNumPointsTree,cutOff)
+    print("Finished with "+str(len(seeds)))
 
-            if(len(thisWindowLowerSeeds))>0:
-                for localSeed in thisWindowLowerSeeds:lowerSeeds.append((x+localSeed[1],y+localSeed[0]))
-                #print("found lower seeds "+str(len(lowerSeeds)))
-
-    #print("going to refine Lower")
-    if len(lowerSeeds)>0:refinedLower=refineLower(gray,seeds,lowerSeeds,args)
-    else: refinedLower=[]
-    print("Finished two bands with "+str(len(seeds))+" "+str(len(refinedLower)))
-
-    highSeeds=list(seeds)
-    outputImages(dem,highSeeds,refinedLower,args,cutOff)
+    outputImages(dem,seeds,args,cutOff)
 
 if __name__ == "__main__":
     main()

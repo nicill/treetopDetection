@@ -1,10 +1,7 @@
 import numpy as np
 import cv2
 import sys
-
-
 from math import sqrt
-
 
 def sliding_window(image, stepSize, windowSize, allImage=False):
     if allImage:
@@ -94,13 +91,11 @@ def storePrettyDEM(demOrig,path):
     return prettyDem
 
 
-stupidCount = 0
 
 # Given a window, eliminate possible outliers and get only the top pixels
 def binarizeWindowReturnDEM(win, lowerPerc = 20, eroKernS = 2, eroIt = 3):
 
-    #global stupidCount
-    #stupidCount+=1
+    stupidCount+=1
 
     higherPerc = 99
 
@@ -126,16 +121,12 @@ def binarizeWindowReturnDEM(win, lowerPerc = 20, eroKernS = 2, eroIt = 3):
 
     #winRet[winRet>0] = 255
 
-    #cv2.imwrite("./shit/"+str(stupidCount)+"eroded.jpg",erosion)
-
     return erosion
 
 
 # Given a window, eliminate possible outliers and get only the top pixels
-def binarizeWindow(win, lowerPerc = 20, eroKernS = 2, eroIt = 3):
+def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 2, eroIt = 3, ):
 
-    #global stupidCount
-    #stupidCount+=1
 
     higherPerc = 99
 
@@ -155,13 +146,21 @@ def binarizeWindow(win, lowerPerc = 20, eroKernS = 2, eroIt = 3):
     winRet = winRet-minWin
     winRet = winRet*(255/(maxWin-minWin))
 
-    erosionKernel=np.ones((eroKernS,eroKernS),np.uint8)
-    erosion=cv2.erode(winRet,erosionKernel,iterations = eroIt)
+    # DO NOT ERODE
+    #erosionKernel=np.ones((eroKernS,eroKernS),np.uint8)
+    #erosion=cv2.erode(winRet,erosionKernel,iterations = eroIt)
 
-    #cv2.imwrite(str(stupidCount)+"noteroded.jpg",winRet)
-    #cv2.imwrite(str(stupidCount)+"eroded.jpg",erosion)
+    # code to visualize the output of the erosion
+    if True:
+        erosion = winRet
+        sambomba1 = cv2.resize(win*(255/maxWin), (win.shape[1]*10, win.shape[0]*10), interpolation = cv2.INTER_LINEAR)
+        cv2.imwrite("./out/"+str(stupidCount)+"noteroded.jpg",sambomba1)
+        sambomba2 = cv2.resize(erosion, (erosion.shape[1]*10, erosion.shape[0]*10), interpolation = cv2.INTER_LINEAR)
+        cv2.imwrite("./out/"+str(stupidCount)+"eroded.jpg",sambomba2)
 
-    return winRet
+        stupidCount+=1
+
+    return winRet,stupidCount
 
 
 def main(argv):
