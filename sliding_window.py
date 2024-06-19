@@ -207,7 +207,7 @@ def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscal
 def processWindow(win,args,minNumPointsTree,maxNumPointsTree,isLower=-1):
     # binarize image, erode it a little, compute connected connectedComponents
     global stupidCount
-    binarized,stupidCount = binarizeWindow(win,stupidCount,lowerPerc = int(args["thpercentile"]))
+    binarized,stupidCount = binarizeWindow(win,stupidCount,lowerPerc = int(args["thpercentile"]), eroKernS = int(args["eroKernS"]), eroIt = int(args["eroIt"]))
 
     # now, for every connected component, find tops
     numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(binarized.astype("uint8"))
@@ -395,10 +395,11 @@ def main():
     ap.add_argument("-o", "--binOut", required=False, help="Path of the resulting binary image")
     ap.add_argument("-thPerc", "--thpercentile", required=True, help="The height percentile at which local windows are thresholded")
     ap.add_argument("-mpt", "--minPixTop", required=True, help="Minimum pixels per top")
-    ap.add_argument("-ref", "--refine", required=False, help="yes/no, do we refine the results by fusing nearby points?")
     ap.add_argument("-refRad", "--refineRadius", required=True, help="Radius for global refinement")
+    ap.add_argument("-ref", "--refine", required=False, help="yes/no, do we refine the results by fusing nearby points?")
     ap.add_argument("-ts", "--topStep", required=True, help="Steps when choosing tree tops")
-    ap.add_argument("-two", "--twoBands", required=False, help="Whether or not we do two bands")
+    ap.add_argument("-eS", "--eroKernS", required=False, help="Size of the erosion kernel used to take out the floor part")
+    ap.add_argument("-eIt", "--eroIt", required=False, help="Number of iterations of the erosion kernel used to take out the floor part")
     args = vars(ap.parse_args())
 
     minNumPointsTree=400
