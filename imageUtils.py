@@ -125,8 +125,7 @@ def binarizeWindowReturnDEM(win, lowerPerc = 20, eroKernS = 2, eroIt = 3):
 
 
 # Given a window, eliminate possible outliers and get only the top pixels
-def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 2, eroIt = 1, ):
-
+def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 3, eroIt = 1, ):
 
     higherPerc = 99
 
@@ -136,7 +135,7 @@ def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 2, eroIt = 1, ):
     winPerc[winPerc==0]=np.nan
     minWin = np.nanpercentile(winPerc,lowerPerc)
     maxWin = np.nanpercentile(winPerc,higherPerc)
-    #print("slidingWindow, binarizeWindow, window height "+str(minWin)+" "+str(minWin+ (maxWin-minWin)*fromRatio)+" "+str(maxWin))
+    #print("slidingWindow, binarizeWindow, window height "+str(minWin)+" "+str(maxWin))
 
     winRet[win>maxWin] = maxWin
     #winRet[win<minWin + (maxWin-minWin)*fromRatio] = 0
