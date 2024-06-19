@@ -125,7 +125,7 @@ def binarizeWindowReturnDEM(win, lowerPerc = 20, eroKernS = 2, eroIt = 3):
 
 
 # Given a window, eliminate possible outliers and get only the top pixels
-def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 3, eroIt = 1, ):
+def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 5, eroIt = 3, ):
 
     higherPerc = 99
 
