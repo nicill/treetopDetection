@@ -257,5 +257,5 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    print(labelImEval(listFromBinary(sys.argv[1]),cv2.imread(sys.argv[2],cv2.IMREAD_UNCHANGED)))
-    #main(sys.argv)
+    #print(labelImEval(listFromBinary(sys.argv[1]),cv2.imread(sys.argv[2],cv2.IMREAD_UNCHANGED)))
+    main(sys.argv)
