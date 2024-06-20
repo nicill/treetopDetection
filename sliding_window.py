@@ -10,7 +10,8 @@ import sys
 
 # for the function to turn binary files into lists of points
 import demUtils as ut
-from imageUtils import sliding_window, binarizeWindow,refineTopDict,dictToTopsList
+from imageUtils import (sliding_window, binarizeWindow,refineTopDict,
+                        dictToTopsList,eraseBorderPixels)
 
 stupidCount = 0
 
@@ -415,6 +416,12 @@ def main():
     if dem is None:
         print(str(args["dem"])+ "not found ")
         exit(0)
+
+    # The DEM has a thin layer of wrong values in the outer part
+    # filter them out
+    filterOuterPixels = True
+    if filterOuterPixels:
+        eraseBorderPixels(dem)
 
     #Filter non values and outliers
     dem[ dem<0 ] = 0 #eliminate non values

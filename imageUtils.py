@@ -13,6 +13,23 @@ def sliding_window(image, stepSize, windowSize, allImage=False):
                 # yield the current window
                 yield (x, y, image[y:y + windowSize[1], x:x + windowSize[0]])
 
+def eraseBorderPixels(dem, borderTh = 15):
+    """
+    Function that receives a dem and erases the pixels that are closer
+    than borderTh to the outside of the mask.
+    """
+    demMask = dem.copy()
+    # create binary mask for the DEM
+    demMask[ dem > 0] = 255
+
+    demMask = np.asarray(demMask, dtype='uint8')
+
+    # compute the distance transform to the nearest non-mask pixel (in pixels)
+    distMask = cv2.distanceTransform(demMask, cv2.DIST_L2, 3)
+    # now delete the pixels in the border of the Dem
+    dem[distMask<=borderTh] = 0
+    return dem
+
 
 def refineTopDict(topsDict,eps):
     """
