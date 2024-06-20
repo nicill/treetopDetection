@@ -38,7 +38,6 @@ def pureGradient(img):
 
 def refineSeedsWithMaximums(inpImage,maskImage,refineRadius=40,seeds=None):
 
-
     mask = cv2.threshold(255-maskImage, 80, 255, cv2.THRESH_BINARY)[1]
     #compute connected components
     numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(mask)
@@ -398,8 +397,8 @@ def main():
     ap.add_argument("-refRad", "--refineRadius", required=True, help="Radius for global refinement")
     ap.add_argument("-ref", "--refine", required=False, help="yes/no, do we refine the results by fusing nearby points?")
     ap.add_argument("-ts", "--topStep", required=True, help="Steps when choosing tree tops")
-    ap.add_argument("-eS", "--eroKernS", required=False, help="Size of the erosion kernel used to take out the floor part")
-    ap.add_argument("-eIt", "--eroIt", required=False, help="Number of iterations of the erosion kernel used to take out the floor part")
+    ap.add_argument("-eS", "--eroKernS", required=True, help="Size of the erosion kernel used to take out the floor part")
+    ap.add_argument("-eIt", "--eroIt", required=True, help="Number of iterations of the erosion kernel used to take out the floor part")
     args = vars(ap.parse_args())
 
     minNumPointsTree=400

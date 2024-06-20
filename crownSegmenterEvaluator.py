@@ -9,6 +9,7 @@ import cv2
 from scipy.spatial.distance import directed_hausdorff
 from sklearn.neighbors import KDTree
 import numpy as np
+from collections import defaultdict
 
 def borderPoint(image,point):
     margin=500
@@ -91,6 +92,33 @@ def listFromBinary(fileName,ROIFILE=None,deleteSmall=None):
 
         #print("list form binary outputting "+str(len(newCentroids)))
         return newCentroids
+
+def labelImEval(list1, labelIm):
+    """
+    Receives a label image with the cannopies separated by codes
+    and a list of tops
+    and returns the percentage of canopies detected, the percentage
+    of predicted points that repeat a canopy
+    the percentafe of canopies missed and
+    the percentage of predicted points out of a canopy (over total canopies)
+    """
+    def procTop(c):
+        x,y = c
+        detCpy[labelIm[int(y),int(x)]]+=1
+    detCpy = defaultdict(lambda: 0)
+    list(map(procTop,list1))
+    allLabels = np.unique(labelIm)
+    totalLabels = len(allLabels)-1
+    labelsFound = len(detCpy.keys()) - 1 if 0 in detCpy else len(detCpy.keys())
+    labelsMissed = totalLabels - labelsFound - 1
+    pointsInBackground = detCpy[0]
+    repeatedPoints = len(list1) - labelsFound - pointsInBackground
+    print("total trees "+str(totalLabels))
+    print("found "+str(labelsFound))
+    print("missed "+str(labelsMissed))
+    print("repeated "+str(repeatedPoints))
+    print("bck "+str(pointsInBackground))
+    return 100*(labelsFound/totalLabels),100*(repeatedPoints/totalLabels),100*(labelsMissed/totalLabels),100*(pointsInBackground/totalLabels)
 
 def hausdorfDistance(u,v): # computes Hausdorf distance between two lists of point
     if len(u)==0 or len(v)==0: return -1
@@ -229,4 +257,5 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    main(sys.argv)
+    print(labelImEval(listFromBinary(sys.argv[1]),cv2.imread(sys.argv[2],cv2.IMREAD_UNCHANGED)))
+    #main(sys.argv)
