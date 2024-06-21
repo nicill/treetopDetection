@@ -85,7 +85,7 @@ def refineSeedsWithMaximums(inpImage,maskImage,refineRadius=40,seeds=None):
     return coordList
 
 #lower=-1 means not lower, otherwise contains the value where to start sampling
-def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscale image of a connected component, threshold it repeatedly until you find all tree tops
+def findTops(comp,args,minPix,maxPix,verbose = False): #receive a grayscale image of a connected component, threshold it repeatedly until you find all tree tops
     #pixMinConComp=int(args["minPixTop"])
     pixMinConComp=minPix
 
@@ -104,7 +104,6 @@ def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscal
     epsilon = int(args["refineRadius"])
 
     #loop over different bands of the DEM, from top to bottom
-    #if lower!=-1:
     demIstep=float(args["topStep"])
     demIstart=np.max(comp)-demIstep
     demIend=np.min(comp[np.nonzero(comp)])
@@ -201,20 +200,20 @@ def findTops(comp,args,minPix,maxPix,lower,verbose = False): #receive a grayscal
 
     return tops
 
-
-# isLower = -1 means not lower window, otherwise it contains the value from wich to start
-# if isLower != -1 then listOfTops will contain existing tops
-def processWindow(win,args,minNumPointsTree,maxNumPointsTree,isLower=-1):
+def processWindow(win,args,minNumPointsTree,maxNumPointsTree):
     # binarize image, erode it a little, compute connected connectedComponents
     global stupidCount
     binarized,stupidCount = binarizeWindow(win,stupidCount,lowerPerc = int(args["thpercentile"]), eroKernS = int(args["eroKernS"]), eroIt = int(args["eroIt"]))
 
     # now, for every connected component, find tops
-    numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(binarized.astype("uint8"))
+    numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(binarized)
 
     seeds=[]
 
+    #cv2.imwrite("./out/"+str(stupidCount)+"ou.jpg",(255/max(np.unique(labelImage)))*labelImage)
+
     #print("processWindow:: Processing Window, found number of con comp: "+str(numLabels))
+    #print(minNumPointsTree)
 
     # find tree tops only in connected components that may contain a tree
     for l in range(1,numLabels):
@@ -222,14 +221,19 @@ def processWindow(win,args,minNumPointsTree,maxNumPointsTree,isLower=-1):
         if stats[l,cv2.CC_STAT_AREA] > minNumPointsTree:
             #print("                                  processWindow:: window of size : "+str(stats[l,cv2.CC_STAT_AREA]))
             thisComponent=win.copy()
-            thisComponent[labelImage!=l] = 0
-            thisCompTops=findTops(thisComponent,args,minNumPointsTree,maxNumPointsTree,isLower)
+            thisComponent[labelImage != l] = 0
+
+            #recomp = thisComponent.copy()
+            #recomp[thisComponent>0]=255
+            #recomp = cv2.resize(recomp, (recomp.shape[1]*10, recomp.shape[0]*10), interpolation = cv2.INTER_LINEAR)
+            #cv2.imwrite("./out/"+str(stupidCount)+"comp"+str(l)+".jpg",recomp)
+            thisCompTops=findTops(thisComponent,args,minNumPointsTree,maxNumPointsTree)
             seeds.extend(thisCompTops)
 
     # maybe refine seeds in the window, if two seed are too close, eliminate one of them (or something like that)
     return seeds
 
-def paintTopsTrimNonCanopy(dem,seeds,circleSize,cutoff):
+def paintTopsTrimNonCanopy(dem,seeds,circleSize,cutoff,eroK = 5, eroIt =1):
     numBands=10
     margin=1.5
 
@@ -489,7 +493,7 @@ def main():
         #print("window "+str(x)+" "+str(y))
         thisWindowSeeds=[]
         if np.sum(window>0)>minNumPointsTree:
-            thisWindowSeeds = processWindow(window,args,minNumPointsTop,maxNumPointsTree,-1)
+            thisWindowSeeds = processWindow(window,args,minNumPointsTop,maxNumPointsTree)
 
         if(len(thisWindowSeeds))>0:
             for localSeed in thisWindowSeeds:seeds.append((x+localSeed[1],y+localSeed[0]))

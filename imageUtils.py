@@ -156,17 +156,18 @@ def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 5, eroIt = 3 ):
 
     winRet[win>maxWin] = maxWin
     #winRet[win<minWin + (maxWin-minWin)*fromRatio] = 0
-    winRet[win<minWin] = 0
+    #winRet[win<minWin] = 0
 
     winRet = winRet-minWin
+    winRet[ winRet<0 ] = 0
     winRet = winRet*(255/(maxWin-minWin))
 
-    # DO NOT ERODE
+    # EROSION
     erosionKernel=np.ones((eroKernS,eroKernS),np.uint8)
-    erosion=cv2.erode(winRet,erosionKernel,iterations = eroIt)
+    erosion=cv2.erode(winRet.astype("uint8"),erosionKernel,iterations = eroIt)
 
     # code to visualize the output of the erosion
-    if True:
+    if False:
         #erosion = winRet
         sambomba1 = cv2.resize(win*(255/maxWin), (win.shape[1]*10, win.shape[0]*10), interpolation = cv2.INTER_LINEAR)
         cv2.imwrite("./out/"+str(stupidCount)+"noteroded.jpg",sambomba1)
@@ -174,8 +175,11 @@ def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 5, eroIt = 3 ):
         cv2.imwrite("./out/"+str(stupidCount)+"eroded.jpg",sambomba2)
 
         stupidCount+=1
-
-    return winRet,stupidCount
+    #return a binary mask of the part of the image that needs to be checked
+    ret = erosion.copy()
+    ret[erosion>0]=255
+    return erosion,stupidCount
+    #return winRet,stupidCount
 
 
 def main(argv):
