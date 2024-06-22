@@ -140,6 +140,22 @@ def binarizeWindowReturnDEM(win, lowerPerc = 20, eroKernS = 2, eroIt = 3):
 
     return erosion
 
+def resampleDemAndMask(fileDem,fileMask, factor):
+    """
+        Function to resample a tif file and a
+        accompaning mask annotation file
+    """
+    dem = cv2.imread(fileDem,cv2.IMREAD_UNCHANGED)
+    mask = cv2.imread(fileMask,0)
+    newD = cv2.resize(dem, (int(dem.shape[1]*factor), int(dem.shape[0]*factor)), interpolation = cv2.INTER_LINEAR)
+    #print(np.sum(mask>0))
+    newMask = cv2.resize(mask, (int(mask.shape[1]*factor), int(mask.shape[0]*factor)), interpolation = cv2.INTER_LINEAR)
+
+    newMask[newMask>0] = 255
+    #print(np.sum(newMask>0))
+
+    cv2.imwrite("newDem.tif",newD)
+    cv2.imwrite("newMask.png",newMask)
 
 # Given a window, eliminate possible outliers and get only the top pixels
 def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 5, eroIt = 3 ):
@@ -200,4 +216,5 @@ def main(argv):
         raise Exception("demUtils, wrong code")
 
 if __name__ == '__main__':
+    #resampleDemAndMask(sys.argv[1], sys.argv[2],0.25)
     main(sys.argv)

@@ -253,6 +253,7 @@ def paintTopsTrimNonCanopy(dem,seeds,circleSize,cutoff,eroK = 5, eroIt =1):
 
     #now build a list with the tops sorted in bands
     step=(higherTop-lowerTop)/numBands
+
     bands=[None]*numBands
     for i in range(len(bands)):bands[i]=[]
     #print("built bands"+str(bands))
@@ -260,6 +261,9 @@ def paintTopsTrimNonCanopy(dem,seeds,circleSize,cutoff,eroK = 5, eroIt =1):
     for seed in seeds:
         #print("checking top "+str(seed)+" in "+str(dem.shape))
         thisTopHeight=dem[seed[1],seed[0]]
+        #print(thisTopHeight )
+        #print(higherTop-thisTopHeight)
+        #print(step)
         position=min(int((higherTop-thisTopHeight)/step),numBands-1)
         #print("appending at "+str(position)+str(bands))
         bands[position].append((seed,thisTopHeight))
@@ -310,24 +314,25 @@ def paintTopsTrimNonCanopy(dem,seeds,circleSize,cutoff,eroK = 5, eroIt =1):
 
 def outputImages(dem,seeds,args,cutoff,index=None):
 
+    if len(seeds)<2: return 255*np.ones((dem.shape[0],dem.shape[1],1),dtype=np.uint8)
+
     #If refine, paint the high seeds first and carefully paint the others after
     if (args["refine"] is not None) and (args["refine"]=="yes") and (args["refineRadius"] is not None):
 
+        print("refining")
         maskImage=255*np.ones((dem.shape[0],dem.shape[1],1),dtype=np.uint8)
         circleSize=int(args["refineRadius"])
         #print("CIRCLESIZE "+str(circleSize))
 
-        if(len(seeds)>0):
-            #prepare for refinement, disconnect floor and lower regions
-            maskImageLow = paintTopsTrimNonCanopy(dem,seeds,circleSize,cutoff)
+        #prepare for refinement, disconnect floor and lower regions
+        maskImageLow = paintTopsTrimNonCanopy(dem,seeds,circleSize,cutoff)
 
-            #join the two masks
-            maskImage[maskImageLow==0]=0
-
-        #cv2.imwrite("REfinal.jpg",maskImage)
+        #join the two masks
+        maskImage[maskImageLow==0]=0
 
         #refine by taking only the highest point in every resulting region and eliminating small regions
         outputSeeds=refineSeedsWithMaximums(dem,maskImage,int(args["refineRadius"]),seeds)
+        seeds = outputSeeds
     else:
         print("Skipping seed refinement!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
     #print("number of refined seeds! "+str(len(outputSeeds)))
@@ -336,6 +341,7 @@ def outputImages(dem,seeds,args,cutoff,index=None):
     # paint them as circles over the DEM and the image
     #print(" Total seeds, found "+str(len(seeds)))
 
+    print("going to write the following number of seeds "+str(len(seeds)))
     circleSize=2
     maskImage=255*np.ones((dem.shape[0],dem.shape[1],1),dtype=np.uint8)
     for seed in seeds:
