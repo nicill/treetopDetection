@@ -113,11 +113,11 @@ def labelImEval(list1, labelIm):
     labelsMissed = totalLabels - labelsFound - 1
     pointsInBackground = detCpy[0]
     repeatedPoints = len(list1) - labelsFound - pointsInBackground
-    #print("total trees "+str(totalLabels))
-    #print("found "+str(labelsFound))
-    #print("missed "+str(labelsMissed))
-    #print("repeated "+str(repeatedPoints))
-    #print("bck "+str(pointsInBackground))
+    print("total trees "+str(totalLabels))
+    print("found "+str(labelsFound))
+    print("missed "+str(labelsMissed))
+    print("repeated "+str(repeatedPoints))
+    print("bck "+str(pointsInBackground))
     return 100*(labelsFound/totalLabels),100*(repeatedPoints/totalLabels),100*(labelsMissed/totalLabels),100*(pointsInBackground/totalLabels)
 
 def hausdorfDistance(u,v): # computes Hausdorf distance between two lists of point

@@ -148,11 +148,14 @@ def resampleDemAndMask(fileDem,fileMask, factor):
     dem = cv2.imread(fileDem,cv2.IMREAD_UNCHANGED)
     mask = cv2.imread(fileMask,0)
     newD = cv2.resize(dem, (int(dem.shape[1]*factor), int(dem.shape[0]*factor)), interpolation = cv2.INTER_LINEAR)
-    #print(np.sum(mask>0))
-    newMask = cv2.resize(mask, (int(mask.shape[1]*factor), int(mask.shape[0]*factor)), interpolation = cv2.INTER_LINEAR)
+    mask[mask<100]=0
+    mask[mask>0]=255
+    print(np.sum(mask==0))
+    newMask = cv2.resize(mask, (int(mask.shape[1]*factor), int(mask.shape[0]*factor)), interpolation = cv2.INTER_NEAREST)
 
-    newMask[newMask>0] = 255
-    #print(np.sum(newMask>0))
+    newMask[newMask < 100] = 0
+    newMask[newMask > 0] = 255
+    print(np.sum(newMask==0))
 
     cv2.imwrite("newDem.tif",newD)
     cv2.imwrite("newMask.png",newMask)
@@ -216,5 +219,5 @@ def main(argv):
         raise Exception("demUtils, wrong code")
 
 if __name__ == '__main__':
-    #resampleDemAndMask(sys.argv[1], sys.argv[2],0.25)
-    main(sys.argv)
+    resampleDemAndMask(sys.argv[1], sys.argv[2],0.25)
+    #main(sys.argv)

@@ -23,7 +23,6 @@ def avMinDistCloserTop(list1):
 
     return sum/len(list1)
 
-
 def countLostTops(dem, treeTops):
 
     mask = cv2.threshold(255-treeTops, 80, 255, cv2.THRESH_BINARY)[1]
@@ -86,7 +85,6 @@ def averageTopRegionSizePercentage(dem,treeTops,th):
     #threshold DEM
     dem[dem<th]=0
 
-
     mask = cv2.threshold(255-treeTops, 80, 255, cv2.THRESH_BINARY)[1]
     #compute connected components
     numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(mask)
@@ -115,8 +113,6 @@ def averageTopRegionSizePercentage(dem,treeTops,th):
             dictTopInfo[currentLabel]=(dictTopInfo[currentLabel][0]+1,dictTopInfo[currentLabel][1])
 
     return dictTopInfo
-
-
 
 def thresholdDEMStats(dem,treeTops,th):
 
@@ -163,6 +159,23 @@ def thresholdDEMBinarised(dem,th1,th2 = None):
 
 def isInLayer(center,layer):
     return layer[int(center[0]),int(center[1])]==255
+
+def labelIMResample(file):
+    """
+    resample labelImage
+    """
+    lIM = cv2.imread(file,cv2.IMREAD_UNCHANGED)
+    if lIM is None: raise Exception("shit")
+
+    lIMW = lIM.astype("uint16").copy()
+    lIMW[lIMW > 0] = 255 #make binary image
+
+    resizedW = cv2.resize(lIMW,(1491,5672),cv2.INTER_NEAREST).astype("uint8")
+    resizedLabels = cv2.resize(lIM.astype("uint16"),(1491,5672),cv2.INTER_NEAREST).astype("uint16")
+
+    # to ward of wrong values, eliminate possible border pixels
+    resizedLabels[resizedW<255]=0
+    cv2.imwrite("newLabels.tif",resizedLabels)
 
 
 def main(argv):
@@ -428,4 +441,5 @@ def main(argv):
         raise Exception("demUtils, wrong code")
 
 if __name__ == '__main__':
+    #labelIMResample(sys.argv[1])
     main(sys.argv)
