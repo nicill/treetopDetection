@@ -161,7 +161,7 @@ def resampleDemAndMask(fileDem,fileMask, factor):
     cv2.imwrite("newMask.png",newMask)
 
 # Given a window, eliminate possible outliers and get only the top pixels
-def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 5, eroIt = 3 ):
+def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 5, eroIt = 3, debugImages = "NO" ):
 
     higherPerc = 99
 
@@ -186,12 +186,12 @@ def binarizeWindow(win, stupidCount, lowerPerc = 10, eroKernS = 5, eroIt = 3 ):
     erosion=cv2.erode(winRet.astype("uint8"),erosionKernel,iterations = eroIt)
 
     # code to visualize the output of the erosion
-    if False:
+    if debugImages != "NO":
         #erosion = winRet
         sambomba1 = cv2.resize(win*(255/maxWin), (win.shape[1]*10, win.shape[0]*10), interpolation = cv2.INTER_LINEAR)
-        cv2.imwrite("./out/"+str(stupidCount)+"noteroded.jpg",sambomba1)
+        cv2.imwrite(debugImages+"/"+str(stupidCount)+"noteroded.jpg",sambomba1)
         sambomba2 = cv2.resize(erosion, (erosion.shape[1]*10, erosion.shape[0]*10), interpolation = cv2.INTER_LINEAR)
-        cv2.imwrite("./out/"+str(stupidCount)+"eroded.jpg",sambomba2)
+        cv2.imwrite(debugImages+"/"+str(stupidCount)+"eroded.jpg",sambomba2)
 
         stupidCount+=1
     #return a binary mask of the part of the image that needs to be checked

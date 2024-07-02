@@ -12,6 +12,7 @@ import sys
 import demUtils as ut
 from imageUtils import (sliding_window, binarizeWindow,refineTopDict,
                         dictToTopsList,eraseBorderPixels)
+from pathlib import Path
 
 stupidCount = 0
 
@@ -189,21 +190,23 @@ def findTops(comp,args,minPix,maxPix,verbose = False): #receive a grayscale imag
     #if  len(tops)>maxTrees or len(tops)<minTrees:
     #    print("WRONG NUMBER!!!!!!!!!!!!!! was:"+str(len(tops))+" SHOULD HAVE BEEN between "+str(minTrees)+" and "+str(maxTrees)+" Trees ")
 
-        if False:
+        if args["debugImages"] != "NO":
+            Path(args["debugImages"]).mkdir(parents=True, exist_ok=True)
+
             #show band and found tops
             # visualization purposes only
             comp2 = thisBand.copy()
             for x,y in tops:
                 cv2.circle(comp2, (y,x), 2, 155, -1)
             comp2 = cv2.resize(comp2, (comp2.shape[1]*10, comp2.shape[0]*10), interpolation = cv2.INTER_LINEAR)
-            cv2.imwrite("./out/COMPONENT"+str(stupidCount)+"IS"+str(aupo)+"comp.png",comp2)
+            cv2.imwrite(args["debugImages"]+"/COMPONENT"+str(stupidCount-1)+"IS"+str(aupo)+"comp.png",comp2)
 
     return tops
 
 def processWindow(win,args,minNumPointsTree,maxNumPointsTree):
     # binarize image, erode it a little, compute connected connectedComponents
     global stupidCount
-    binarized,stupidCount = binarizeWindow(win,stupidCount,lowerPerc = int(args["thpercentile"]), eroKernS = int(args["eroKernS"]), eroIt = int(args["eroIt"]))
+    binarized,stupidCount = binarizeWindow(win,stupidCount,lowerPerc = int(args["thpercentile"]), eroKernS = int(args["eroKernS"]), eroIt = int(args["eroIt"]), debugImages = args["debugImages"])
 
     # now, for every connected component, find tops
     numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(binarized)
@@ -410,6 +413,7 @@ def main():
     ap.add_argument("-ts", "--topStep", required=True, help="Steps when choosing tree tops")
     ap.add_argument("-eS", "--eroKernS", required=True, help="Size of the erosion kernel used to take out the floor part")
     ap.add_argument("-eIt", "--eroIt", required=True, help="Number of iterations of the erosion kernel used to take out the floor part")
+    ap.add_argument("-imDebug", "--debugImages", required=False, help="Name of the directory to store connected componen images")
     args = vars(ap.parse_args())
 
     minNumPointsTree=400
@@ -417,6 +421,8 @@ def main():
 
     minNumPointsTop=int(args["minPixTop"])
     minNumPointsTopLower=int(1.2*float(args["minPixTop"]))
+
+    if args["debugImages"] is None: args["debugImages"] = "NO"
 
     maxNumPointsTree=1950
     lowerPercent=1
@@ -441,7 +447,7 @@ def main():
     demPerc[demPerc==0] = np.nan
     minDem = np.nanpercentile(demPerc,1)
 
-    print("Minimum value for this DEM was "+str(minDem))
+    print("Minimum value for this DEM was  "+str(minDem))
 
     dem = dem - minDem
     dem[dem<0] = 0
@@ -454,40 +460,10 @@ def main():
     #cv2.imwrite("dem2.jpg",dem2)
 
     maxDem=np.max(dem)
-    print("Maximum value for this DEM was "+str(maxDem))
+    print("Maximum value for this DEM (after subtracting the minimum) was "+str(maxDem))
 
     cv2.imwrite("dem.jpg",(gray*(255/maxDem)).astype("uint8"))
 
-
-    """
-    # views of different percentile cuts of teh DEM
-    demPerc=dem.copy()
-    demPerc[demPerc==0]=np.nan
-    percList =[10,25,50,75,85,90,95,99]
-    valList = [ np.nanpercentile(demPerc,x) for x in percList]
-
-    print("DEM MAX "+str(maxDem))
-    for i in range(len(percList)): print("DEM p"+str(percList[i])+" :"+str(valList[i]))
-
-    #print(" shape of the DEM!!!!"+str(dem.shape))
-    if dem is None:raise Exception("no DEM at "+str(args["dem"]))
-    gray = dem
-    #blurred=cv2.GaussianBlur(dem,(15,15),0)
-    #blurred[dem==0]=0
-    #write full DEM
-    lastP = valList[-1]
-    realisticMax = lastP + (maxDem-lastP)*0.10
-    cv2.imwrite("dem.jpg",(gray*(255/maxDem)).astype("uint8"))
-    for i in range(len(percList)):
-        paint=gray.copy()
-        paint[paint<valList[i]]=0
-        currentRange=realisticMax-valList[i]
-        print("RANGE "+str(currentRange))
-        paint=paint-valList[i]
-        paint=paint*(255/(currentRange))
-        paint[paint>255]=255
-        cv2.imwrite("dem"+str(percList[i])+".jpg",paint.astype("uint8"))
-    """
 
     firstBand=gray
     cutOff=0
