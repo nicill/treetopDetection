@@ -2,10 +2,14 @@
 # First, a function that receives two binary masks with the treetops as small circles
 # Then transforms them into a list of points and then computes hausdorf distance between the point segmentations
 
+import os
+os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(pow(2,50))
+import cv2
+
 import sys
 from skimage import measure
 import matplotlib.pyplot as plt
-import cv2
+
 from scipy.spatial.distance import directed_hausdorff
 from sklearn.neighbors import KDTree
 import numpy as np
@@ -113,12 +117,29 @@ def labelImEval(list1, labelIm):
     labelsMissed = totalLabels - labelsFound - 1
     pointsInBackground = detCpy[0]
     repeatedPoints = len(list1) - labelsFound - pointsInBackground
-    #print("total trees "+str(totalLabels))
-    #print("found "+str(labelsFound))
-    #print("missed "+str(labelsMissed))
-    #print("repeated "+str(repeatedPoints))
-    #print("bck "+str(pointsInBackground))
+    print("total trees "+str(totalLabels))
+    print("found "+str(labelsFound))
+    print("missed "+str(labelsMissed))
+    print("repeated "+str(repeatedPoints))
+    print("bck "+str(pointsInBackground))
     return 100*(labelsFound/totalLabels),100*(repeatedPoints/totalLabels),100*(labelsMissed/totalLabels),100*(pointsInBackground/totalLabels)
+
+def maskFromPointList(file, mask,dest):
+    """
+    create a binary point image from the list of the bounding boxes
+    """
+    outIM = mask.copy()
+    outIM[mask>0] = 0 # black image with the right dimensions
+    with open(file) as f:
+        for line in f:
+            contents = line.strip().split(" ")
+            #print(contents)
+            c0 = float(contents[0]) + (float(contents[2])-float(contents[0]))/2
+            c1 = float(contents[1]) + (float(contents[3])-float(contents[1]))/2
+            cv2.circle(outIM, (int(c0),int(c1)), 5, 255, -1)
+            #print("circle "+str(c0)+" "+str(c1) )
+    cv2.imwrite(dest,255-outIM)
+
 
 def hausdorfDistance(u,v): # computes Hausdorf distance between two lists of point
     if len(u)==0 or len(v)==0: return -1
@@ -257,5 +278,6 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    #print(labelImEval(listFromBinary(sys.argv[1]),cv2.imread(sys.argv[2],cv2.IMREAD_UNCHANGED)))
-    main(sys.argv)
+    #maskFromPointList(sys.argv[1],cv2.imread(sys.argv[2],0),sys.argv[3])
+    print(labelImEval(listFromBinary(sys.argv[1]),cv2.imread(sys.argv[2],cv2.IMREAD_UNCHANGED)))
+    #main(sys.argv)

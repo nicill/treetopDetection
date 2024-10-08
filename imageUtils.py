@@ -1,7 +1,11 @@
-import numpy as np
+import os
+os.environ["OPENCV_IO_MAX_IMAGE_PIXELS"] = str(pow(2,50))
 import cv2
+
+import numpy as np
 import sys
 from math import sqrt
+from scipy import ndimage
 
 def sliding_window(image, stepSize, windowSize, allImage=False):
     if allImage:
@@ -12,6 +16,23 @@ def sliding_window(image, stepSize, windowSize, allImage=False):
             for x in range(0, image.shape[1], stepSize):
                 # yield the current window
                 yield (x, y, image[y:y + windowSize[1], x:x + windowSize[0]])
+
+def fillHolesBinary(im):
+    """
+    Receive a binary image with rings and
+    turn it into a binary annotation image
+    """
+    # The function expects white information
+    # over black background, change
+    im = 255 - im
+    # This function is for binary values, change 255 for 1
+    im[im > 0] = 1
+    # call function
+    out = ndimage.binary_fill_holes(im).astype(int)
+    #change back to 255
+    out[out==1] = 255
+    # change back to white over black
+    return 255 - out
 
 def eraseBorderPixels(dem, borderTh = 15):
     """
@@ -219,5 +240,6 @@ def main(argv):
         raise Exception("demUtils, wrong code")
 
 if __name__ == '__main__':
-    resampleDemAndMask(sys.argv[1], sys.argv[2],0.25)
-    #main(sys.argv)
+    #resampleDemAndMask(sys.argv[1], sys.argv[2],0.25)
+    #cv2.imwrite("filledYOLO.png",fillHolesBinary(cv2.imread(sys.argv[1],0)))
+    main(sys.argv)
