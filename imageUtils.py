@@ -17,6 +17,39 @@ def sliding_window(image, stepSize, windowSize, allImage=False):
                 # yield the current window
                 yield (x, y, image[y:y + windowSize[1], x:x + windowSize[0]])
 
+def resampleMaskAndBoxes(maskFile, boxesFile, shp, outMask, outBoxes):
+    """
+        Receives a mask, a bounding boxes file
+        and a new shape
+        Reshapes the image and rewrites the boxes coordinates
+        into two ouput files
+    """
+    # Resize points image
+    maskBefore = cv2.imread(maskFile,0)
+    shpBefore = maskBefore.shape
+    factorx = shpBefore[0]/shp[1]
+    factory = shpBefore[1]/shp[0]
+
+    outIm = cv2.resize(maskBefore, shp, interpolation = cv2.INTER_LINEAR)
+    # make a black mask, we will get the points from the boxes
+    outIm[outIm !=0 ] = 0
+
+    with open(boxesFile,"r") as f:
+        with open(outBoxes,"w") as f2:
+            for l in f:
+                x1,y1,x2,y2 = l.strip().split(" ")
+                nx1,ny1,nx2,ny2 = float(x1)/factorx,float(y1)/factory,float(x2)/factorx,float(y2)/factory
+
+                f2.write(str(nx1)+" "+str(ny1)+" "+str(nx2)+" "+str(ny2)+os.linesep)
+                cy = int(ny1+(ny2-ny1)/2)
+                cx = int((nx1+(nx2-nx1)/2))
+                #print(str(cx)+" "+str(cy))
+                cv2.circle(outIm, ( cx,cy ), 5, 255, -1)
+
+
+    cv2.imwrite(outMask,255-outIm)
+
+
 def fillHolesBinary(im):
     """
     Receive a binary image with rings and
@@ -242,4 +275,5 @@ def main(argv):
 if __name__ == '__main__':
     #resampleDemAndMask(sys.argv[1], sys.argv[2],0.25)
     #cv2.imwrite("filledYOLO.png",fillHolesBinary(cv2.imread(sys.argv[1],0)))
-    main(sys.argv)
+    resampleMaskAndBoxes(sys.argv[1], sys.argv[2], (int(sys.argv[3]),int(sys.argv[4])), sys.argv[5], sys.argv[6])
+    #main(sys.argv)

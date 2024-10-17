@@ -86,16 +86,11 @@ def refineSeedsWithMaximums(inpImage,maskImage,refineRadius=40,seeds=None):
     return coordList
 
 #lower=-1 means not lower, otherwise contains the value where to start sampling
-def findTops(comp,args,minPix,maxPix,verbose = False): #receive a grayscale image of a connected component, threshold it repeatedly until you find all tree tops
+def findTops(comp,args,minPix,verbose = False): #receive a grayscale image of a connected component, threshold it repeatedly until you find all tree tops
     #pixMinConComp=int(args["minPixTop"])
     pixMinConComp=minPix
 
     nonBlack=np.sum(comp!=0)
-    minTrees=nonBlack/maxPix
-    maxTrees=nonBlack/minPix
-
-    #print("MAX "+str(maxTrees))
-    #print("MIN "+str(minTrees))
 
     #print("gradpixperc "+str(gradientPixelPerc))
     if verbose: print("This image should contains between "+str(minTrees)+" and "+str(maxTrees)+" Trees ")
@@ -230,7 +225,7 @@ def processWindow(win,args,minNumPointsTree,maxNumPointsTree):
             #recomp[thisComponent>0]=255
             #recomp = cv2.resize(recomp, (recomp.shape[1]*10, recomp.shape[0]*10), interpolation = cv2.INTER_LINEAR)
             #cv2.imwrite("./out/"+str(stupidCount)+"comp"+str(l)+".jpg",recomp)
-            thisCompTops=findTops(thisComponent,args,minNumPointsTree,maxNumPointsTree)
+            thisCompTops=findTops(thisComponent,args,minNumPointsTree)
             seeds.extend(thisCompTops)
 
     # maybe refine seeds in the window, if two seed are too close, eliminate one of them (or something like that)
@@ -315,7 +310,7 @@ def paintTopsTrimNonCanopy(dem,seeds,circleSize,cutoff,eroK = 5, eroIt =1):
     #cv2.imwrite("PartialFinal.jpg",255-erosion)
     return maskImage
 
-def outputImages(dem,seeds,args,cutoff,index=None):
+def outputImages(dem,seeds,args,cutoff=0,index=None):
 
     if len(seeds)<2: return 255*np.ones((dem.shape[0],dem.shape[1],1),dtype=np.uint8)
 
