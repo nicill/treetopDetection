@@ -7,6 +7,23 @@ import sys
 from math import sqrt
 from scipy import ndimage
 
+def maskOutWrongParts(demName,maskName,outName):
+    """
+        Receives a dem and a mask showing the parts
+        of the dem that contain incorrect information
+        Put to zero all the pixels in the DEM that are
+        white in the mask
+    """
+    dem = cv2.imread(demName,cv2.IMREAD_UNCHANGED)
+    mask = cv2.imread(maskName,cv2.IMREAD_UNCHANGED)
+
+    # resample if necessary
+    if dem.shape != mask.shape:
+        mask = cv2.resize(mask, (dem.shape[1],dem.shape[0]), interpolation = cv2.INTER_LINEAR)
+
+    dem[mask>0] = 0
+    cv2.imwrite(outName,dem)
+
 def sliding_window(image, stepSize, windowSize, allImage=False):
     if allImage:
         yield(0,0,image[:,:])
@@ -67,19 +84,24 @@ def fillHolesBinary(im):
     # change back to white over black
     return 255 - out
 
-def eraseBorderPixels(dem, borderTh = 15):
+def eraseBorderPixels(dem, borderTh = 5):
     """
     Function that receives a dem and erases the pixels that are closer
     than borderTh to the outside of the mask.
     """
     demMask = dem.copy()
     # create binary mask for the DEM
+    #demMask[ dem == 0] = 0
+    demMask[ dem < 0] = 0
     demMask[ dem > 0] = 255
 
     demMask = np.asarray(demMask, dtype='uint8')
 
+    #cv2.imwrite("mask.jpg",demMask)
+
     # compute the distance transform to the nearest non-mask pixel (in pixels)
     distMask = cv2.distanceTransform(demMask, cv2.DIST_L2, 3)
+    #cv2.imwrite("dist.jpg",distMask)
     # now delete the pixels in the border of the Dem
     dem[distMask<=borderTh] = 0
     return dem
@@ -273,7 +295,12 @@ def main(argv):
         raise Exception("demUtils, wrong code")
 
 if __name__ == '__main__':
+    #example of execution for resampling
+    #python imageUtils.py ./combination/Dec24/Binary_Mask_epochs_100_IoU_0.1_confid_0.1.png ./combination/Dec24/Cordinates_epochs_100_IoU_0.1_confid_0.1.txt 1152 4384 ./combination/MaskDec24.png ./combination/boxesDec24.txt
+
     #resampleDemAndMask(sys.argv[1], sys.argv[2],0.25)
     #cv2.imwrite("filledYOLO.png",fillHolesBinary(cv2.imread(sys.argv[1],0)))
-    resampleMaskAndBoxes(sys.argv[1], sys.argv[2], (int(sys.argv[3]),int(sys.argv[4])), sys.argv[5], sys.argv[6])
+    #resampleMaskAndBoxes(sys.argv[1], sys.argv[2], (int(sys.argv[3]),int(sys.argv[4])), sys.argv[5], sys.argv[6])
+    maskOutWrongParts(sys.argv[1], sys.argv[2], sys.argv[3])
+
     #main(sys.argv)
