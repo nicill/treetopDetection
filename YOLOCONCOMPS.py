@@ -94,9 +94,9 @@ def processWindowComp(win,args, boxLocal,sillyC):
     #print("component averages/min max, perc, points "+str(avMax)+"  "+str(minTH)+"  "+str(avP)+" "+str(minP)+" "+str(centers))
 
     argsLocal = args.copy()
-    argsLocal["topStep"] = max((avMax-minTOPS)/steps,0.05)
-    argsLocal["refineRadius"] = max(int(minP/75),5)
-    argsLocal["minPixTop"] = min(minP/15,30)
+    argsLocal["topStep"] = max((avMax-minTOPS)/steps,0.25)
+    argsLocal["refineRadius"] = max(int(minP/100),7)
+    argsLocal["minPixTop"] = min(minP/10,30)
 
     #argsLocal["topStep"] = 0.05
     #argsLocal["refineRadius"] = 5
@@ -245,7 +245,7 @@ def main():
 
     # The DEM has a thin layer of wrong values in the outer part
     # filter them out
-    filterOuterPixels = True
+    filterOuterPixels = False
     if filterOuterPixels:
         eraseBorderPixels(dem,border)
 

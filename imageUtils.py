@@ -300,7 +300,7 @@ if __name__ == '__main__':
 
     #resampleDemAndMask(sys.argv[1], sys.argv[2],0.25)
     #cv2.imwrite("filledYOLO.png",fillHolesBinary(cv2.imread(sys.argv[1],0)))
-    #resampleMaskAndBoxes(sys.argv[1], sys.argv[2], (int(sys.argv[3]),int(sys.argv[4])), sys.argv[5], sys.argv[6])
-    maskOutWrongParts(sys.argv[1], sys.argv[2], sys.argv[3])
+    resampleMaskAndBoxes(sys.argv[1], sys.argv[2], (int(sys.argv[3]),int(sys.argv[4])), sys.argv[5], sys.argv[6])
+    #maskOutWrongParts(sys.argv[1], sys.argv[2], sys.argv[3])
 
     #main(sys.argv)
