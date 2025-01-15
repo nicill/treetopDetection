@@ -41,6 +41,10 @@ def boxStats(im, box, percFilter, sillyC,otherC):
     # gather box coordinates
     x1,y1,x2,y2 = [float(a) for a in box]
 
+    # box center
+    cx = int((x1 + x2)/2)
+    cy = int((y1+ y2)/2)
+
     wMax = np.max(im)
 
     # now filter out values outside the box
@@ -63,9 +67,12 @@ def boxStats(im, box, percFilter, sillyC,otherC):
     #aux[aux<boxPerc] = 0
     topPoints = np.sum(aux>0)
 
-    (minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(aux)
+    #(minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(aux)
+    #return boxMax,boxPerc,topPoints,(maxLoc[1],maxLoc[0])
 
-    return boxMax,boxPerc,topPoints,(maxLoc[1],maxLoc[0])
+    # returning centers of the bounding box and not maximums
+    # This is done because trying to return the maximum was quite a lot worse
+    return boxMax,boxPerc,topPoints,(cy,cx)
 
 def processWindowComp(win,args, boxLocal,sillyC):
 
@@ -120,8 +127,8 @@ def processWindowComp(win,args, boxLocal,sillyC):
     stupidCount = 0
     binarized,stupidCount = binarizeWindow(win,stupidCount,lowerPerc = int(argsLocal["thpercentile"]), eroKernS = int(argsLocal["eroKernS"]), eroIt = int(args["eroIt"]), debugImages = argsLocal["debugImages"])
     #win2[binarized == 0] = 0
-    cv2.imwrite("./debug/compBoxes"+str(sillyC)+"BEFORE.png",win*(255/wMax))
-    cv2.imwrite("./debug/compBoxes"+str(sillyC)+".png",win2*(255/wMax))
+    #cv2.imwrite("./debug/compBoxes"+str(sillyC)+"BEFORE.png",win*(255/wMax))
+    #cv2.imwrite("./debug/compBoxes"+str(sillyC)+".png",win2*(255/wMax))
 
     #binarized = np.zeros((win2.shape[0],win2.shape[1]),np.uint8)
     #binarized[win2>0] = 255 # here we could be using binarize window from imageutils
@@ -129,9 +136,10 @@ def processWindowComp(win,args, boxLocal,sillyC):
     # now, for every connected component, find tops
     numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(binarized)
 
+    # here we start with the YOLO Seeds
     seeds = centers
-
     print("processWindow:: Processing Window, found number of con comp: "+str(numLabels))
+    print(" number of seeds at this moment "+str(len(seeds)))
 
     # find tree tops only in connected components that may contain a tree
     for l in range(1,numLabels):
@@ -172,6 +180,7 @@ def outputYC(dem,seeds,args,cutoff=0,index=None):
             # also create binary result image
             cv2.circle(maskImage, seed, circleSize, 0, -1)
         cv2.imwrite(out_binary, maskImage)
+        print("not refining, exitting")
         return
 
     if len(seeds)<2: return 255*np.ones((dem.shape[0],dem.shape[1],1),dtype=np.uint8)
