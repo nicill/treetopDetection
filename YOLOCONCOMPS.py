@@ -8,9 +8,11 @@ import math
 import os
 import sys
 
-from imageUtils import sliding_window, binarizeWindow
+from imageUtils import sliding_window, binarizeWindow, refineTopDict,dictToTopsList
 
-from sliding_window import eraseBorderPixels,findTops,paintTopsTrimNonCanopy,refineSeedsWithMaximums
+from sliding_window import eraseBorderPixels,paintTopsTrimNonCanopy,refineSeedsWithMaximums
+import demUtils as ut
+from collections import defaultdict
 
 def boxesInWindow(x,y,s,boxList):
     """
@@ -64,7 +66,7 @@ def boxStats(im, box, percFilter, sillyC,otherC):
     boxPerc = np.nanpercentile(aux2,percFilter)
 
     # count points
-    #aux[aux<boxPerc] = 0
+    aux[aux<boxPerc] = 0
     topPoints = np.sum(aux>0)
 
     #(minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(aux)
@@ -74,11 +76,118 @@ def boxStats(im, box, percFilter, sillyC,otherC):
     # This is done because trying to return the maximum was quite a lot worse
     return boxMax,boxPerc,topPoints,(cy,cx)
 
+def findTopsYCC(comp,args,minPix,verbose = False): #receive a grayscale image of a connected component, threshold it repeatedly until you find all tree tops
+    pixMinConComp=minPix
+
+    nonBlack=np.sum(comp!=0)
+
+    # retieve epsilon
+    epsilon = int(args["refineRadius"])
+
+    #loop over different bands of the DEM, from top to bottom
+    demIstep=float(args["topStep"])
+    demIstart=np.max(comp)-demIstep
+    demIend=np.min(comp[np.nonzero(comp)])
+    demLength=demIstart-demIend
+    demNumSteps=demLength/demIstep
+
+    maxIt=int(1*demNumSteps)
+
+    numIterations=1
+    finished=False
+
+    tops=[]
+    aupo=0
+    while demIstart+demIstep>demIend:
+        # First get the upper band of the DEM
+        aupo+=1
+        if verbose: print("::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::findtops between "+str(demIstart)+" and "+str(demIstart+demIstep*numIterations))
+        thisBand=ut.thresholdDEMBinarised(comp,demIstart)
+
+        # compute connected components here
+        numLabels, labelImage,stats, centroids = cv2.connectedComponentsWithStats(thisBand)
+        #print("this band has this many connected components "+str(numLabels))
+
+        # for every existing top, make a note of its label in this class in a dictionary
+        labelDict=defaultdict(lambda:[])
+        for top in tops:
+            labelDict[labelImage[top[0],top[1]]].append( (comp[top[0],top[1]],top)  )
+        if verbose: print("Label dictionary "+str(labelDict))
+
+        # for each component already in the dict,
+        # add the top point forcefully if necessary
+#        for label,tupList in labelDict.items():
+            # also update the maximum if necessary,
+            # and if this happens this is bad
+ #           listOfHeights = [x for x,y in tupList]
+
+ #           auxWin=comp.copy()
+ #           auxWin[labelImage!=label]=0
+
+ #           (minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(auxWin)
+
+ #           if maxVal>max(listOfHeights): labelDict[label].append( (comp[top[0],top[1]],top))
+
+
+        # Now call function to clean up inside connected components, keep higher within those at distance 2 epsilon
+        labelDict = refineTopDict(labelDict,epsilon)
+        if verbose: print("Label dictionary after refinement "+str(labelDict))
+
+        tops = dictToTopsList(labelDict)
+
+
+        # traverse all current labels (but the background), the highest point of ALL get added as candidate tree tops
+        candidateTops=[]
+        for l in range(1,numLabels):
+            currentCount=np.count_nonzero(labelImage==l)
+            if currentCount>pixMinConComp and not l in labelDict:
+                # find the highest point in this connected component
+                #auxWin = comp.copy()
+                #auxWin[labelImage != l ] = 0
+
+                #(minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(auxWin)
+                #candidateTops.append((int(maxLoc[1]),int(maxLoc[0])))
+                #if verbose: print("^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^appending top with altitude "+str(maxVal))
+                
+                #add instead the center of the connected component.
+                candidateTops.append((int(centroids[l][1]),int(centroids[l][0])))
+            elif verbose :
+                if l in labelDict : print("existing label "+str(l))
+                else: print("small top "+str(currentCount))
+
+        tops.extend(candidateTops)
+
+        #print("now have "+str(len(tops))+" treeTops ")
+        demIstart-=demIstep
+        numIterations+=1
+        #numberTopsFoundList.append(len(tops))
+
+        if numIterations>=maxIt :
+            #print("Ofinished tops in "+str(numIterations)+", finding "+str(len(tops))+" "+str(numberTopsFoundList)+"\n\n\n")
+            return tops
+
+
+    #if  len(tops)>maxTrees or len(tops)<minTrees:
+    #    print("WRONG NUMBER!!!!!!!!!!!!!! was:"+str(len(tops))+" SHOULD HAVE BEEN between "+str(minTrees)+" and "+str(maxTrees)+" Trees ")
+
+        if args["debugImages"] != "NO":
+            Path(args["debugImages"]).mkdir(parents=True, exist_ok=True)
+
+            #show band and found tops
+            # visualization purposes only
+            comp2 = thisBand.copy()
+            for x,y in tops:
+                cv2.circle(comp2, (y,x), 2, 155, -1)
+            comp2 = cv2.resize(comp2, (comp2.shape[1]*10, comp2.shape[0]*10), interpolation = cv2.INTER_LINEAR)
+            cv2.imwrite(args["debugImages"]+"/COMPONENT"+str(stupidCount-1)+"IS"+str(aupo)+"comp.png",comp2)
+
+    return tops
+
 def processWindowComp(win,args, boxLocal,sillyC):
 
     # Setup window parameters
     steps = 150
-    cutPerc = 1
+    cutPerc = 75
 
     wMax = np.max(win)
     win2 = win.copy()
@@ -101,16 +210,16 @@ def processWindowComp(win,args, boxLocal,sillyC):
     #print("component averages/min max, perc, points "+str(avMax)+"  "+str(minTH)+"  "+str(avP)+" "+str(minP)+" "+str(centers))
 
     argsLocal = args.copy()
-    argsLocal["topStep"] = max((avMax-minTOPS)/steps,0.25)
-    argsLocal["refineRadius"] = max(int(minP/100),7)
-    argsLocal["minPixTop"] = min(minP/10,30)
+    argsLocal["topStep"] = max((avMax-minTOPS)/steps,0.05)
+    argsLocal["refineRadius"] = max(int(minP/10),5)
+    argsLocal["minPixTop"] = max(minP,30)
 
     #argsLocal["topStep"] = 0.05
     #argsLocal["refineRadius"] = 5
     #argsLocal["minPixTop"] = 30
-    argsLocal["thpercentile"] = 15
+    argsLocal["thpercentile"] = 25
     argsLocal["eroKernS"] = 5
-    args["eroIt"] = 3
+    args["eroIt"] = 1
 
     print(argsLocal)
 
@@ -139,7 +248,6 @@ def processWindowComp(win,args, boxLocal,sillyC):
     # here we start with the YOLO Seeds
     seeds = centers
     print("processWindow:: Processing Window, found number of con comp: "+str(numLabels))
-    print(" number of seeds at this moment "+str(len(seeds)))
 
     # find tree tops only in connected components that may contain a tree
     for l in range(1,numLabels):
@@ -152,7 +260,7 @@ def processWindowComp(win,args, boxLocal,sillyC):
             #recomp = thisComponent.copy()
             #recomp[thisComponent>0]=255
 
-            thisCompTops=findTops(thisComponent,argsLocal,argsLocal["minPixTop"])
+            thisCompTops=findTopsYCC(thisComponent,argsLocal,argsLocal["minPixTop"])
             #print("found "+str(len(thisCompTops)))
             seeds.extend(thisCompTops)
 
@@ -265,7 +373,7 @@ def main():
     demPerc=dem.copy()
     demPerc[demPerc==0] = np.nan
     minDem = np.nanpercentile(demPerc,1)
-
+    
     print("Minimum value for this DEM was  "+str(minDem))
 
     dem = dem - minDem
@@ -274,6 +382,13 @@ def main():
 
     maxDem=np.max(dem)
     print("Maximum value for this DEM (after subtracting the minimum) was "+str(maxDem))
+    
+    # maximum outlier removal (does not seem to help)
+    #almostMaxDem = np.nanpercentile(dem,99)
+    #print("dem 99 perc "+str(almostMaxDem))
+    #dem[dem>almostMaxDem] = 0
+    #maxDem=np.max(dem)
+    #print("Maximum value for this DEM (after max outlier removal) was "+str(maxDem))
 
     cv2.imwrite("demOU.jpg",(gray*(255/maxDem)).astype("uint8"))
 
