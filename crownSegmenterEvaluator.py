@@ -97,7 +97,7 @@ def listFromBinary(fileName,ROIFILE=None,deleteSmall=None):
         #print("list form binary outputting "+str(len(newCentroids)))
         return newCentroids
 
-def labelImEval(list1, labelIm):
+def labelImEval(list1, labelIm,var_dict = None):
     """
     Receives a label image with the cannopies separated by codes
     and a list of tops
@@ -117,11 +117,21 @@ def labelImEval(list1, labelIm):
     labelsMissed = totalLabels - labelsFound - 1
     pointsInBackground = detCpy[0]
     repeatedPoints = len(list1) - labelsFound - pointsInBackground
+    allDetections = len(list1)
     print("total trees "+str(totalLabels))
     print("found "+str(labelsFound))
     print("missed "+str(labelsMissed))
     print("repeated "+str(repeatedPoints))
     print("bck "+str(pointsInBackground))
+    vars = {
+        'labelsFound': labelsFound,
+        'repeatedPoints': repeatedPoints,
+        'labelsMissed': labelsMissed,
+        'pointsInBackground': pointsInBackground,
+        'totalLabels': totalLabels,
+        'allDetections': allDetections
+    }
+    var_dict.update(vars) if var_dict is not None else None
     return 100*(labelsFound/totalLabels),100*(repeatedPoints/totalLabels),100*(labelsMissed/totalLabels),100*(pointsInBackground/totalLabels)
 
 def maskFromPointList(file, mask,dest):

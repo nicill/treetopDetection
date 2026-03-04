@@ -14,6 +14,11 @@ from imageUtils import (sliding_window, binarizeWindow,refineTopDict,
                         dictToTopsList,eraseBorderPixels)
 from pathlib import Path
 
+import rasterio
+import fiona
+from rasterio.transform import xy
+
+
 stupidCount = 0
 
 
@@ -310,6 +315,64 @@ def paintTopsTrimNonCanopy(dem,seeds,circleSize,cutoff,eroK = 5, eroIt =1):
     #cv2.imwrite("PartialFinal.jpg",255-erosion)
     return maskImage
 
+
+def pixels_to_shapefile(dem_path,pixel_points,out_shp,properties=None):
+    """
+    Write pixel coordinates as a georeferenced point shapefile.
+
+    Parameters
+    ----------
+    dem_path : str
+        Path to the reference DEM (GeoTIFF).
+    pixel_points : list of (col, row)
+        Pixel coordinates in DEM space.
+    out_shp : str
+        Output shapefile path.
+    properties : dict or None
+        Optional attribute values per feature.
+        Example: {"id": [0,1,2], "score": [0.8, 0.6, 0.9]}
+    """
+
+    # Read georeferencing from DEM
+    with rasterio.open(dem_path) as src:
+        transform = src.transform
+        crs = src.crs
+
+    # Convert pixel → map coordinates
+    map_points = [xy(transform, row, col, offset="center")for col, row in pixel_points]
+    # Build Fiona schema
+    schema = {
+        "geometry": "Point",
+        "properties": {}
+    }
+
+    # Optional attributes
+    if properties:
+        for key, values in properties.items():
+            if isinstance(values[0], int):
+                schema["properties"][key] = "int"
+            elif isinstance(values[0], float):
+                schema["properties"][key] = "float"
+            else:
+                schema["properties"][key] = "str"
+
+    # Write shapefile
+    with fiona.open(out_shp,mode="w",driver="ESRI Shapefile",schema=schema,crs_wkt=crs.to_wkt()) as shp:
+        for i, (x, y) in enumerate(map_points):
+            props = {}
+            if properties:
+                for key in properties:
+                    props[key] = properties[key][i]
+
+            shp.write({
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": (x, y)
+                },
+                "properties": props
+            })
+
+
 def outputImages(dem,seeds,args,cutoff=0,index=None):
 
     if len(seeds)<2: return 255*np.ones((dem.shape[0],dem.shape[1],1),dtype=np.uint8)
@@ -356,7 +419,8 @@ def outputImages(dem,seeds,args,cutoff=0,index=None):
 
     if index is not None: out_binary=out_binary[:-4] +str(index)+ out_binary[-4:]
     #print("out binary will be "+out_binary)
-
+    if args["binshpOut"] is not None:
+        pixels_to_shapefile(args["dem"],seeds,args["binshpOut"])
     #cv2.imwrite(out_dem, dem)
     cv2.imwrite(out_binary, maskImage)
 
