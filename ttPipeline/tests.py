@@ -1,0 +1,560 @@
+#!/usr/bin/env python
+"""
+Tests for tt.
+
+    python tests.py                 the synthetic tests, no data needed
+    TT_CHM=chm.tif TT_CROWNS=crowns.shp TT_BOUNDARY=area.shp python tests.py
+
+Most of this builds its own two-tree world in a temporary directory, so the
+behaviour being checked is behaviour with a known right answer rather than
+whatever the real data happens to produce. The last test is different: it
+re-runs the published operating point on the real scene and checks the numbers
+still come out, which is what actually catches a refactor having changed
+something subtle.
+"""
+
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+
+import numpy as np
+
+# Run from anywhere: the package sits next to this file, and requiring an
+# editable install just to run the tests is friction with no upside.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+# ---------------------------------------------------------------------- #
+# a synthetic world with known answers
+# ---------------------------------------------------------------------- #
+
+def buildFixture(directory, trees, resolution=0.25, size=240):
+    """
+    Write a CHM and crown shapefile for `trees`, each (columnPx, rowPx,
+    radiusM, heightM). Cones on a flat floor: crisp apexes at known pixels.
+    """
+    import geopandas as gpd
+    import rasterio
+    from affine import Affine
+    from shapely.geometry import Point, box
+
+    originX, originY = 500000.0, 5000000.0
+    rows, columns = np.mgrid[0:size, 0:size]
+    chm = np.zeros((size, size), np.float32)
+    records = []
+
+    for columnPx, rowPx, radiusM, heightM in trees:
+        radiusPx = radiusM / resolution
+        distance = np.hypot(rows - rowPx, columns - columnPx)
+        chm = np.maximum(chm, heightM * np.clip(1 - distance / radiusPx, 0, 1))
+        east = originX + (columnPx + 0.5) * resolution
+        north = originY - (rowPx + 0.5) * resolution
+        records.append({"geometry": Point(east, north).buffer(radiusM * 0.95),
+                        "tree_class": 1})
+
+    # -3.4028235e+38 is a rounded-up float64 literal that sits just below
+    # float32's minimum, and newer rasterio rejects it. A plain sentinel avoids
+    # the whole question.
+    nodata = -9999.0
+    stored = chm.copy()
+    stored[stored < 2.0] = nodata
+    transform = Affine(resolution, 0.0, originX, 0.0, -resolution, originY)
+
+    chmPath = os.path.join(directory, "chm.tif")
+    with rasterio.open(chmPath, "w", driver="GTiff", height=size, width=size,
+                       count=1, dtype="float32", crs="EPSG:32648",
+                       transform=transform, nodata=nodata) as destination:
+        destination.write(stored, 1)
+
+    crownsPath = os.path.join(directory, "crowns.shp")
+    gpd.GeoDataFrame(records, crs="EPSG:32648").to_file(crownsPath)
+
+    boundaryPath = os.path.join(directory, "area.shp")
+    gpd.GeoDataFrame(
+        [{"geometry": box(originX, originY - size * resolution,
+                          originX + size * resolution, originY)}],
+        crs="EPSG:32648").to_file(boundaryPath)
+
+    return chmPath, crownsPath, boundaryPath
+
+
+class Fixture(unittest.TestCase):
+    """Nine well-separated trees on a 60 x 60 m patch."""
+
+    trees = [(40 + 70 * (i % 3), 40 + 70 * (i // 3), 2.0 + 0.2 * i,
+              10.0 + 1.5 * i) for i in range(9)]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.directory = tempfile.mkdtemp(prefix="ttTest")
+        cls.chmPath, cls.crownsPath, cls.boundaryPath = buildFixture(
+            cls.directory, cls.trees)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.directory, ignore_errors=True)
+
+    def scene(self, **keywords):
+        from tt import Scene
+        return Scene(self.chmPath, crownsPath=self.crownsPath,
+                     boundaryPath=self.boundaryPath, verbose=False, **keywords)
+
+
+# ---------------------------------------------------------------------- #
+
+class TestScene(Fixture):
+
+    def testLoadsOnOneGrid(self):
+        scene = self.scene()
+        self.assertEqual(scene.chm.shape, (240, 240))
+        self.assertAlmostEqual(scene.pixelSize, 0.25, places=6)
+        self.assertEqual(len(scene), 9)
+        self.assertEqual(str(scene.crs), "EPSG:32648")
+
+    def testBelowMinHeightIsZeroed(self):
+        scene = self.scene(minHeight=8.0)
+        canopy = scene.chm[scene.chm > 0]
+        self.assertTrue((canopy >= 8.0).all(),
+                        "heights below minHeight must not survive loading")
+
+    def testRoundTripThroughWorldCoordinates(self):
+        scene = self.scene()
+        east, north = scene.toWorld(100, 50)
+        column, row = scene.toPixel(east, north)
+        self.assertAlmostEqual(column, 100.5, places=3)
+        self.assertAlmostEqual(row, 50.5, places=3)
+
+    def testCrownPeaksSitOnTheApexes(self):
+        """Each crown's peak must be the height the tree was built with."""
+        scene = self.scene()
+        points, heights = scene.crownPeaks()
+        self.assertEqual(len(points), 9)
+        built = sorted(height for _, _, _, height in self.trees)
+        for expected, found in zip(built, sorted(heights)):
+            self.assertAlmostEqual(expected, found, delta=0.15)
+
+    def testCrownShiftMovesThePolygons(self):
+        plain = self.scene()
+        shifted = self.scene(crownShiftEast=2.0, crownShiftSouth=0.0)
+        before = plain.crowns.geometry.iloc[0].centroid.x
+        after = shifted.crowns.geometry.iloc[0].centroid.x
+        self.assertAlmostEqual(after - before, -2.0, places=3,
+                               msg="a crown reported 2 m east of the CHM must "
+                                   "move 2 m west to correct it")
+
+
+class TestTops(Fixture):
+
+    def testWriteAndReadAreInverse(self):
+        from tt import Tops
+        original = Tops([(10, 20, 15.5), (30, 40, 12.25)])
+        path = os.path.join(self.directory, "tops.txt")
+        original.writeList(path)
+        recovered = Tops.read(path)
+        self.assertEqual(len(recovered), 2)
+        for first, second in zip(original.points, recovered.points):
+            self.assertEqual(first[0], second[0])
+            self.assertEqual(first[1], second[1])
+            self.assertAlmostEqual(first[2], second[2], places=3)
+
+    def testMaskHasOneBlackDiscPerTop(self):
+        import cv2
+        from tt import Tops
+        path = os.path.join(self.directory, "mask.png")
+        Tops([(20, 20, 10.0), (60, 60, 12.0)]).writeMask(path, (100, 100),
+                                                         radius=3)
+        mask = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+        count, _ = cv2.connectedComponents((mask == 0).astype(np.uint8))
+        self.assertEqual(count - 1, 2)
+
+
+class TestMerger(unittest.TestCase):
+
+    def testMetricsOrderAsExpected(self):
+        from tt import TopMerger
+        flat = TopMerger("2d", epsM=1.0)
+        self.assertAlmostEqual(flat.distance(0.7, 3.0), 0.7)
+
+        cube = TopMerger("3d", epsM=1.0)
+        self.assertAlmostEqual(cube.distance(0.7, 3.0), np.hypot(0.7, 3.0))
+
+        mixed = TopMerger("composite", epsM=1.0, heightWeight=0.7)
+        self.assertAlmostEqual(mixed.distance(0.7, 3.0), 0.7 * 3.0 + 0.3 * 0.7)
+
+    def testCompositeReachIsWiderThanEpsilon(self):
+        """The trap: a weighted sum lets tops merge far beyond eps."""
+        from tt import TopMerger
+        merger = TopMerger("composite", epsM=1.0, heightWeight=0.7)
+        self.assertAlmostEqual(merger.horizontalReachM, 1.0 / 0.3, places=6)
+        self.assertTrue(merger.areSame(3.0, 0.0),
+                        "equal-height tops 3 m apart merge at eps 1 m")
+
+    def testHeightSeparatesWhatDistanceWouldMerge(self):
+        from tt import TopMerger
+        merger = TopMerger("composite", epsM=1.0, heightWeight=0.7)
+        self.assertTrue(merger.areSame(0.7, 0.0))
+        self.assertFalse(merger.areSame(0.7, 3.0))
+
+    def testSaddleDropFindsTheValley(self):
+        from tt.merging import saddleDrop
+        surface = np.zeros((10, 40), np.float32)
+        surface[5, :] = 20.0
+        surface[5, 18:22] = 14.0          # a 6 m notch between two peaks
+        self.assertAlmostEqual(saddleDrop(surface, 5, 5, 5, 35), 6.0, places=3)
+        self.assertAlmostEqual(saddleDrop(surface, 5, 5, 5, 10), 0.0, places=3)
+
+    def testSaddleRefusesAcrossAValley(self):
+        from tt import TopMerger
+        surface = np.zeros((10, 40), np.float32)
+        surface[5, :] = 20.0
+        surface[5, 18:22] = 14.0
+        merger = TopMerger("saddle", epsM=100.0, saddleDropM=1.0)
+        self.assertFalse(merger.areSame(7.5, 0.0, surface=surface,
+                                        a=(5, 5), b=(5, 35)))
+        self.assertTrue(merger.areSame(1.25, 0.0, surface=surface,
+                                       a=(5, 5), b=(5, 10)))
+
+
+class TestDetector(Fixture):
+
+    def testFindsEveryTreeOnACleanScene(self):
+        from tt import ConCompDetector, CrownEvaluator, TopMerger
+        scene = self.scene()
+        detector = ConCompDetector(
+            lowerPercentile=10, minTopAreaM2=0.12, topStepM=0.12,
+            erosionIterations=1, minTreeAreaM2=0.5, windowSizeM=30.0,
+            merger=TopMerger("saddle", epsM=8.0, saddleDropM=0.5),
+            verbose=False)
+        result = CrownEvaluator(scene).score(detector.detect(scene))
+        self.assertEqual(result["recall"], 1.0,
+                         "nine separated trees should all be found")
+        self.assertGreaterEqual(result["precision"], 0.5)
+
+    def testMergingNeverAddsDetections(self):
+        from tt import ConCompDetector, TopMerger
+        scene = self.scene()
+        settings = dict(lowerPercentile=10, minTopAreaM2=0.12, topStepM=0.12,
+                        erosionIterations=1, minTreeAreaM2=0.5,
+                        windowSizeM=30.0, verbose=False)
+        raw = ConCompDetector(refine=False, **settings).detect(scene)
+        merged = ConCompDetector(
+            merger=TopMerger("saddle", epsM=8.0, saddleDropM=0.5),
+            **settings).detect(scene)
+        self.assertLessEqual(len(merged), len(raw))
+
+    def testDetectionsCarryTheirHeight(self):
+        from tt import ConCompDetector
+        scene = self.scene()
+        tops = ConCompDetector(windowSizeM=30.0, verbose=False).detect(scene)
+        for x, y, height in tops.points:
+            self.assertAlmostEqual(height, float(scene.chm[y, x]), places=5)
+
+
+class TestEvaluator(Fixture):
+
+    def testHitRepeatAndBackgroundAreDistinguished(self):
+        from tt import CrownEvaluator, Tops
+        scene = self.scene()
+        evaluator = CrownEvaluator(scene)
+
+        points, _ = scene.crownPeaks()
+        first = points[0]
+        # one on a crown apex, one beside it in the same crown, one far away
+        beside = (first[0] + 2, first[1] + 2)
+        empty = (5, 5)
+        tops = Tops([(first[0], first[1], 20.0),
+                     (beside[0], beside[1], 10.0),
+                     (empty[0], empty[1], 3.0)])
+
+        classification = evaluator.classify(tops)
+        self.assertEqual(classification.kinds[0], "hit")
+        self.assertEqual(classification.kinds[1], "repeat")
+        self.assertEqual(classification.kinds[2], "background")
+
+    def testPerfectDetectionScoresOne(self):
+        from tt import CrownEvaluator, Tops
+        scene = self.scene()
+        points, heights = scene.crownPeaks()
+        tops = Tops([(p[0], p[1], h) for p, h in zip(points, heights)])
+        result = CrownEvaluator(scene).score(tops)
+        self.assertAlmostEqual(result["recall"], 1.0)
+        self.assertAlmostEqual(result["precision"], 1.0)
+        self.assertAlmostEqual(result["f1"], 1.0)
+
+    def testBackgroundSplitsByLocalCanopyHeight(self):
+        from tt import CrownEvaluator, Tops
+        scene = self.scene()
+        evaluator = CrownEvaluator(scene)
+        points, heights = scene.crownPeaks()
+
+        entries = [(p[0], p[1], h) for p, h in zip(points, heights)]
+        entries.append((points[0][0] + 24, points[0][1], 14.0))  # tall, no crown
+        entries.append((points[0][0] + 28, points[0][1], 2.5))   # low, no crown
+        tops = Tops(entries)
+
+        classification = evaluator.classify(tops)
+        split = evaluator.splitBackground(tops, classification)
+        self.assertIn(len(entries) - 2, split["canopy"])
+        self.assertIn(len(entries) - 1, split["low"])
+
+
+class TestInvariants(Fixture):
+    """
+    Properties found broken during the refactor, pinned so they stay fixed.
+    """
+
+    def testSaddleDropIsTranslationInvariant(self):
+        """np.rint rounds half to even, so rounding absolute coordinates made
+        the verdict depend on where a window started."""
+        from tt.merging import saddleDrop
+        rng = np.random.default_rng(3)
+        surface = rng.random((200, 200)).astype(np.float32)
+        for _ in range(2000):
+            a, b = rng.integers(40, 160, 2), rng.integers(40, 160, 2)
+            dy, dx = rng.integers(0, 40, 2)
+            self.assertEqual(
+                saddleDrop(surface, a[0], a[1], b[0], b[1]),
+                saddleDrop(surface[dy:, dx:], a[0] - dy, a[1] - dx,
+                           b[0] - dy, b[1] - dx))
+
+    def testCroppedDescentMatchesFullWindow(self):
+        """The detector crops each blob to its box before descending; that
+        must change nothing."""
+        import cv2
+        from tt import ConCompDetector, TopMerger
+        scene = self.scene()
+        detector = ConCompDetector(windowSizeM=30.0, verbose=False,
+                                   merger=TopMerger("saddle", epsM=8.0,
+                                                    saddleDropM=0.5))
+        geometry = detector._pixelParameters(scene)
+        for column, row, window in detector._windows(scene, geometry):
+            result = detector._stretch(window)
+            if result is None:
+                continue
+            stretched, perLevel = result
+            count, labels, stats, _ = cv2.connectedComponentsWithStats(
+                stretched, connectivity=8)
+            for label in range(1, count):
+                if stats[label, 4] <= geometry["minPixTree"]:
+                    continue
+                x0, y0, w, h = stats[label, :4]
+                full = stretched.copy()
+                full[labels != label] = 0
+                whole = sorted(detector._descend(scene, full, window,
+                                                 perLevel, geometry))
+                cropped = sorted(
+                    (r + y0, c + x0) for r, c in detector._descend(
+                        scene, full[y0:y0 + h, x0:x0 + w],
+                        window[y0:y0 + h, x0:x0 + w], perLevel, geometry))
+                self.assertEqual(whole, cropped)
+
+    def testThresholdCurveMatchesRescoring(self):
+        """One spatial join answers every threshold; it must agree with
+        re-scoring at each one."""
+        from tt.dl import dlCommon as dc
+        from shapely.geometry import box as shapelyBox
+        scene = self.scene()
+        rng = np.random.default_rng(5)
+        points, _ = scene.crownPeaks()
+        predictions = []
+        for column, row in points:
+            for _ in range(3):
+                east, north = scene.toWorld(column + rng.integers(-6, 7),
+                                            row + rng.integers(-6, 7))
+                predictions.append({"centreX": east, "centreY": north,
+                                    "score": float(rng.random()),
+                                    "box": [east, north, east, north]})
+        region = shapelyBox(*scene.boundary.bounds)
+        curve = dict(dc.thresholdCurve(predictions, scene.crowns,
+                                       dc.THRESHOLD_CANDIDATES))
+        for threshold, f1 in curve.items():
+            kept = [p for p in predictions if p["score"] >= threshold]
+            self.assertAlmostEqual(
+                f1, dc.evaluateDetections(kept, scene.crowns, region)["f1"],
+                places=12)
+
+    def testOneScorerEverywhere(self):
+        """CrownEvaluator and the benchmark scorer must agree exactly."""
+        from shapely.geometry import box as shapelyBox
+        from tt import ConCompDetector, CrownEvaluator
+        from tt.dl import dlCommon as dc
+        scene = self.scene()
+        tops = ConCompDetector(windowSizeM=30.0, verbose=False).detect(scene)
+        local = CrownEvaluator(scene).score(tops)
+        world = tops.world(scene)
+        benchmark = dc.evaluateDetections(
+            [{"centreX": x, "centreY": y, "score": h}
+             for (x, y), h in zip(world, tops.heights)],
+            scene.crowns, shapelyBox(*scene.boundary.bounds))
+        self.assertAlmostEqual(local["recall"], benchmark["recall"])
+        self.assertAlmostEqual(local["precision"], benchmark["precision"])
+
+    def testStitchingKeepsOutlines(self):
+        from affine import Affine
+        from tt.dl import dlCommon as dc
+        transform = Affine(0.1, 0, 500000, 0, -0.1, 5000000)
+        world = dc.tileToWorld([{"box": [10, 20, 30, 40], "score": 0.9,
+                                 "polygon": [[10, 20], [30, 20], [30, 40]]}],
+                               transform, 100, 200)[0]
+        self.assertAlmostEqual(world["polygon"][0][0], world["box"][0])
+        self.assertAlmostEqual(world["polygon"][0][1], world["box"][3])
+
+
+class TestFusion(unittest.TestCase):
+    """The combination strategies, on hand-built boxes and points."""
+
+    @staticmethod
+    def box(x0, y0, x1, y1, score):
+        return {"box": [x0, y0, x1, y1], "score": score,
+                "centreX": (x0 + x1) / 2.0, "centreY": (y0 + y1) / 2.0}
+
+    @staticmethod
+    def point(x, y, score=10.0):
+        return {"centreX": x, "centreY": y, "score": score,
+                "box": [x, y, x, y]}
+
+    def setUp(self):
+        self.boxes = [self.box(0, 0, 4, 4, 0.9),     # holds two points
+                      self.box(10, 0, 14, 4, 0.6),   # holds none
+                      self.box(20, 0, 24, 4, 0.3)]   # holds one, low score
+        self.points = [self.point(1, 1, 12.0), self.point(3, 3, 15.0),
+                       self.point(21, 1), self.point(40, 40)]
+
+    def testContainment(self):
+        from tt.fusion import containment
+        inside = containment(self.points, self.boxes)
+        self.assertEqual(inside.tolist(),
+                         [[True, False, False], [True, False, False],
+                          [False, False, True], [False, False, False]])
+
+    def testAgreementKeepsOnlyConfirmedBoxes(self):
+        from tt.fusion import agreement
+        kept = agreement(self.boxes, self.points, threshold=0.2)
+        self.assertEqual([b["score"] for b in kept], [0.9, 0.3])
+
+    def testConfirmedUsesTwoThresholds(self):
+        from tt.fusion import confirmed
+        kept = confirmed(self.boxes, self.points, confirmedAt=0.2,
+                         unconfirmedAt=0.5)
+        self.assertEqual([b["score"] for b in kept], [0.9, 0.6, 0.3])
+        kept = confirmed(self.boxes, self.points, confirmedAt=0.5,
+                         unconfirmedAt=0.7)
+        self.assertEqual([b["score"] for b in kept], [0.9])
+
+    def testUnionAddsOnlyUncoveredPoints(self):
+        from tt.fusion import union
+        result = union(self.boxes, self.points, threshold=0.5)
+        # boxes 0.9 and 0.6 kept; the points in box 0.9 are covered
+        self.assertEqual(len(result), 2 + 2)
+        self.assertEqual(sorted(p["centreX"] for p in result[2:]), [21, 40])
+
+    def testBoxMergesPointsItHolds(self):
+        from tt.fusion import boxMergedPoints
+        result = boxMergedPoints(self.boxes, self.points, threshold=0.2)
+        xs = sorted(p["centreX"] for p in result)
+        # the two points in the first box collapse to the higher (x=3)
+        self.assertEqual(xs, [3, 21, 40])
+
+
+class TestCommandLine(Fixture):
+    """
+    Every subcommand, end to end, on the synthetic scene.
+
+    These exist because `tt align` shipped with two undefined names in it and
+    nothing noticed: no test ran it. A NameError anywhere in a subcommand's
+    path now fails here instead of in front of someone's data.
+    """
+
+    def invoke(self, *arguments):
+        # not "run": that name belongs to unittest.TestCase and shadowing it
+        # hands the test runner's result object to argparse
+        from tt.cli import main
+        scene = ["--chm", self.chmPath, "--crowns", self.crownsPath,
+                 "--boundary", self.boundaryPath]
+        return main(list(arguments[:1]) + scene + list(arguments[1:]))
+
+    def output(self, name):
+        return os.path.join(self.directory, name)
+
+    def testDetect(self):
+        self.assertEqual(self.invoke("detect", "--windowSize", "30",
+                                  "--output", self.output("detect")), 0)
+        self.assertTrue(os.path.exists(self.output("detect/tops.txt")))
+
+    def testAnalyse(self):
+        self.assertEqual(self.invoke("analyse", "--windowSize", "30", "--noImages",
+                                  "--output", self.output("analyse")), 0)
+        self.assertTrue(os.path.exists(self.output("analyse/analysis.json")))
+
+    def testSweep(self):
+        self.assertEqual(self.invoke("sweep", "--windowSize", "30",
+                                  "--percentiles", "20", "--minTopAreas", "0.12",
+                                  "--topSteps", "0.25", "--erosions", "1",
+                                  "--saddleDrops", "0.3",
+                                  "--output", self.output("sweep.json")), 0)
+
+    def testMerge(self):
+        self.assertEqual(self.invoke("merge", "--windowSize", "30",
+                                  "--saddleDrops", "0.3", "--epsilons", "8",
+                                  "--output", self.output("merge.json")), 0)
+
+    def testCrowns(self):
+        self.assertEqual(self.invoke("crowns", "--windowSize", "30",
+                                  "--output", self.output("crowns")), 0)
+        self.assertTrue(os.path.exists(self.output("crowns/pseudoBoxes.shp")))
+
+    def testAlign(self):
+        from tt.cli import main
+        self.assertEqual(main(["align", "--chm", self.chmPath,
+                               "--layer", "crowns=" + self.crownsPath,
+                               "--boundary", self.boundaryPath,
+                               "--resolution", "0.25", "--tile", "20"]), 0)
+
+
+class TestRealScene(unittest.TestCase):
+    """
+    The regression test. Skipped unless the real data is pointed at, because it
+    is the only check that the refactor did not quietly change a number.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.chm = os.environ.get("TT_CHM")
+        cls.crowns = os.environ.get("TT_CROWNS")
+        cls.boundary = os.environ.get("TT_BOUNDARY")
+        if not (cls.chm and cls.crowns and cls.boundary):
+            raise unittest.SkipTest("set TT_CHM, TT_CROWNS and TT_BOUNDARY "
+                                    "to run the regression test")
+
+    def testPublishedOperatingPoint(self):
+        from tt import Scene, ConCompDetector, CrownEvaluator, TopMerger
+        scene = Scene(self.chm, crownsPath=self.crowns,
+                      boundaryPath=self.boundary, resolution=0.25,
+                      verbose=False)
+        detector = ConCompDetector(
+            lowerPercentile=10, minTopAreaM2=0.12, topStepM=0.12,
+            erosionIterations=1, minTreeAreaM2=0.5, windowSizeM=40.0,
+            merger=TopMerger("saddle", epsM=8.0, saddleDropM=0.5),
+            verbose=False)
+        result = CrownEvaluator(scene).score(detector.detect(scene))
+        print("\n    real scene: R %.3f  P %.3f  F1 %.3f  (%d detections)"
+              % (result["recall"], result["precision"], result["f1"],
+                 result["detections"]))
+        self.assertAlmostEqual(result["recall"], 0.933, delta=0.01)
+        self.assertAlmostEqual(result["precision"], 0.810, delta=0.01)
+        self.assertAlmostEqual(result["f1"], 0.867, delta=0.01)
+
+
+if __name__ == "__main__":
+    try:
+        import tt  # noqa: F401
+    except ImportError:
+        print("Cannot import 'tt'. This file expects the package directory "
+              "beside it:\n"
+              "    %s/\n        tests.py\n        tt/\n            "
+              "__init__.py, scene.py, ..."
+              % os.path.dirname(os.path.abspath(__file__)))
+        sys.exit(1)
+    unittest.main(verbosity=2)

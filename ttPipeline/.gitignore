@@ -1,0 +1,11 @@
+# outputs the pipeline writes when run from this directory
+ds/
+runs/
+report/
+logs/
+Data/
+*.pt
+*.npy
+predictions_*.json
+sweep*.json
+!results/sweep*.json

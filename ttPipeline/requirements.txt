@@ -1,0 +1,13 @@
+numpy
+scipy
+opencv-python
+matplotlib
+rasterio
+geopandas
+shapely
+scikit-learn
+
+# tt/dl only
+torch
+torchvision
+ultralytics

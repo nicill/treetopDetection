@@ -53,3 +53,14 @@ The code also produces several "criterion" files according to the definitions fo
 1) "percent", percentage of real points that are matched (distance < than the each of the epsilon values defined in line 25 for each dem)
 
 2) pointDiff, percentual difference between the number of predicted and existing points. +7 means that there are 7% more real points than predicted, 0% means that the number of predicted and real points is exactly the same. -15% means that there are 15% more predicted points than real points.
+
+## ttPipeline
+
+`ttPipeline/` holds a self-contained package, `tt`, for treetop detection on
+canopy height models: the connected-component detector with the saddle merge,
+crown-level evaluation, parameter sweeps, pseudo-crowns, a Mask R-CNN / YOLO
+benchmark under spatial leave-one-block-out cross-validation, combinations of
+the two, and an ODT results report. It does not import anything from the
+scripts in this directory. See `ttPipeline/README.md`; results for the
+Ulaanbaatar site are in `ttPipeline/results/`.
+
