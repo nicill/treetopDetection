@@ -28,8 +28,8 @@ from .dl import dlPrepare as dp
 from .fusion import FusionCrossValidation, SaddleSurface
 from .odt import OdtDocument
 from .pseudoCrowns import PseudoCrowns
-from .reportText import (HEIGHT_METHODS, HEIGHT_SOURCE, RGB_BOXES, SADDLE_DROP,
-                         SECTIONS, label)
+from .reportText import (HEIGHT_METHODS, HEIGHT_SOURCE, RGB_BOX_METHODS,
+                         SADDLE_DROP, SECTIONS, label)
 from .scene import Scene
 from .tops import Tops
 
@@ -80,17 +80,27 @@ class Evidence(object):
 
     def _fusion(self):
         """
-        The RGB Mask R-CNN with each detector on a height model that has
-        predictions: connected components or Mask R-CNN, on the LiDAR or on
-        the P1 CHM. The saddle strategies run on that same height model.
+        Each mosaic detector with each height detector that has predictions,
+        on the LiDAR or on the P1 CHM. Each combination's held-out output is
+        saved beside the report, in the layout the runs use, so it can be
+        rendered and compared like any run.
         """
-        if RGB_BOXES not in self.runs:
-            return {}
-        return {(RGB_BOXES, height): FusionCrossValidation(
-                    self.scene.crowns, self.blocks, self.runs[RGB_BOXES],
-                    self.runs[height], surface=self.surfaceFor(height),
-                    verbose=False).run()
-                for height in HEIGHT_METHODS if height in self.runs}
+        results = {}
+        for box in RGB_BOX_METHODS:
+            for height in HEIGHT_METHODS:
+                if box in self.runs and height in self.runs:
+                    results[(box, height)] = self._fusePair(box, height)
+        return results
+
+    def _fusePair(self, box, height):
+        validation = FusionCrossValidation(
+            self.scene.crowns, self.blocks, self.runs[box], self.runs[height],
+            surface=self.surfaceFor(height), verbose=False)
+        summary = validation.run()
+        saveFusedOutputs(os.path.join(self.args.output, "fused",
+                                      "%s_%s" % (box, height)),
+                         validation.outputs)
+        return summary
 
     def surfaceFor(self, height):
         source = HEIGHT_SOURCE[height]
@@ -178,6 +188,16 @@ class ResultsReport(object):
         for section in SECTIONS:
             section(self)
         return self.doc.save(os.path.join(self.outputDir, "report.odt"))
+
+
+def saveFusedOutputs(directory, outputs):
+    """One folder per strategy, one predictions_<block>.json per fold."""
+    for strategy, perBlock in outputs.items():
+        folder = os.path.join(directory, strategy)
+        os.makedirs(folder, exist_ok=True)
+        for block, predictions in perBlock.items():
+            dc.saveJson({"block": block, "predictions": predictions},
+                        os.path.join(folder, "predictions_%s.json" % block))
 
 
 def parseArguments(argv=None):

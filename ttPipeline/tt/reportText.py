@@ -19,12 +19,19 @@ LABELS = {
     "mrcnnP1": ("Mask R-CNN, P1 CHM", "MRCNN P1"),
     "mrcnnRgb": ("Mask R-CNN, RGB mosaic", "MRCNN RGB"),
     "mrcnnRgbLidar": ("Mask R-CNN, RGB + LiDAR", "MRCNN RGB+LiDAR"),
+    "yoloLidar": ("YOLO, LiDAR CHM", "YOLO LiDAR"),
+    "yoloP1": ("YOLO, P1 CHM", "YOLO P1"),
+    "yoloRgb": ("YOLO, RGB mosaic", "YOLO RGB"),
+    "fasterrcnnRgb": ("Faster R-CNN, RGB mosaic", "FRCNN RGB"),
+    "retinanetRgb": ("RetinaNet, RGB mosaic", "RetinaNet RGB"),
+    "fcosRgb": ("FCOS, RGB mosaic", "FCOS RGB"),
     "ccLidarOld": ("Connected components, LiDAR, earlier protocol",
                    "CC LiDAR (old)"),
     "ccP1Old": ("Connected components, P1, earlier protocol", "CC P1 (old)"),
 }
 CURRENT = ("ccLidar", "ccP1", "mrcnnLidar", "mrcnnP1", "mrcnnRgb",
-           "mrcnnRgbLidar")
+           "mrcnnRgbLidar", "yoloLidar", "yoloP1", "yoloRgb", "fasterrcnnRgb",
+           "retinanetRgb", "fcosRgb")
 
 
 def label(name, short=False):
@@ -32,11 +39,13 @@ def label(name, short=False):
 
 
 # The RGB mosaic is always available; the camera flies whether or not the LiDAR
-# does. Every combination pairs its Mask R-CNN with one detector working on a
-# height model: the LiDAR CHM when there is LiDAR, the P1 CHM when there is not.
-RGB_BOXES = "mrcnnRgb"
-HEIGHT_SOURCE = {"ccLidar": "lidar", "mrcnnLidar": "lidar",
-                 "ccP1": "p1", "mrcnnP1": "p1"}
+# does. Every combination pairs a detector on the mosaic with one detector
+# working on a height model: the LiDAR CHM when there is LiDAR, the P1 CHM when
+# there is not.
+RGB_BOX_METHODS = ("mrcnnRgb", "yoloRgb", "fasterrcnnRgb", "retinanetRgb",
+                   "fcosRgb")
+HEIGHT_SOURCE = {"ccLidar": "lidar", "mrcnnLidar": "lidar", "yoloLidar": "lidar",
+                 "ccP1": "p1", "mrcnnP1": "p1", "yoloP1": "p1"}
 HEIGHT_METHODS = tuple(HEIGHT_SOURCE)
 # The saddle strategies' dip, per height model: the value connected components'
 # own cross-validation chose most often there (0.3 m in 5 of 8 LiDAR folds,
@@ -51,9 +60,9 @@ def isPointMethod(name):
 
 
 def combinable(first, second):
-    """True when one is the RGB model and the other works on a height model."""
+    """True when one works on the mosaic and the other on a height model."""
     pair = {first, second}
-    return RGB_BOXES in pair and bool(pair & set(HEIGHT_SOURCE))
+    return bool(pair & set(RGB_BOX_METHODS)) and bool(pair & set(HEIGHT_SOURCE))
 
 
 def fmt(value, digits=3):
@@ -86,15 +95,14 @@ def summary(r):
                      if topRecall - row["recall"] < 0.0005]
     r.doc.heading("Summary")
     r.doc.paragraph(
-        "Four detectors were compared under the same leave-one-block-out "
-        "cross-validation on %d annotated crowns: the connected-component "
-        "treetop detector on the LiDAR and on the photogrammetric (P1) canopy "
-        "height model, and Mask R-CNN on the LiDAR CHM and on the RGB mosaic. "
+        "%d detectors were compared under the same leave-one-block-out "
+        "cross-validation on %d annotated crowns: %s. "
         "The best F1 was %s, for %s; the highest recall was %s, for %s. The "
         "whole field spans %s F1 points, while a single method's F1 varies "
         "by %s from one block to the next."
-        % (len(r.e.scene.crowns), fmt(best["f1"]), best["label"],
-           pct(topRecall), " and ".join(recallLeaders),
+        % (len(rows), len(r.e.scene.crowns),
+           ", ".join(row["label"] for row in rows), fmt(best["f1"]),
+           best["label"], pct(topRecall), " and ".join(recallLeaders),
            fmt(100 * (rows[0]["f1"] - rows[-1]["f1"]), 1),
            "%.2f-%.2f" % (min(x["std"] for x in rows),
                           max(x["std"] for x in rows))))
@@ -605,11 +613,11 @@ def combinations(r):
     r.doc.heading("Combining the methods")
     r.doc.paragraph(
         "The RGB mosaic is always available, since the camera flies whether or "
-        "not the LiDAR does, so every combination pairs the RGB Mask R-CNN with "
-        "one detector working on a height model: the LiDAR CHM when there is "
-        "LiDAR, the P1 CHM when there is not. That detector is either "
-        "connected components, whose tops are points, or a Mask R-CNN on the "
-        "CHM, whose boxes enter through their centres.")
+        "not the LiDAR does, so every combination pairs a detector on the "
+        "mosaic with one detector working on a height model: the LiDAR CHM "
+        "when there is LiDAR, the P1 CHM when there is not. The height "
+        "detector is connected components, whose tops are points, or a "
+        "learned model on the CHM, whose boxes enter through their centres.")
     r.doc.paragraph(
         "Three strategies were fixed before any results existed. **Confirmed** "
         "keeps an RGB box at one score threshold if a height-model detection "
@@ -639,7 +647,7 @@ def combinations(r):
         "per fold on the validation block and applied unchanged to the test "
         "block.")
     if not r.e.fusion:
-        pending(r, "the combinations with the RGB Mask R-CNN")
+        pending(r, "the combinations with a detector on the mosaic")
         return
     for source, title in SCENARIOS:
         pairs = [(box, height) for box, height in r.e.fusion
@@ -650,11 +658,33 @@ def combinations(r):
             continue
         for box, height in pairs:
             fusionBlock(r, box, height, r.e.fusion[(box, height)])
-    missing = [m for m in HEIGHT_METHODS if m not in r.e.runs]
-    if missing:
-        r.doc.paragraph("Not run: %s, which would complete the table."
-                        % ", ".join("RGB Mask R-CNN with " + label(m, True)
-                                    for m in missing))
+    fusionOverview(r)
+
+
+def fusionOverview(r):
+    """Every pair's best strategy against the better of its two parts."""
+    rows = []
+    for (box, height), table in sorted(r.e.fusion.items()):
+        alone = max(table["boxes"]["pooled"]["f1"],
+                    table["points"]["pooled"]["f1"])
+        name, entry = max(((n, e) for n, e in table.items()
+                           if n not in ("boxes", "points")),
+                          key=lambda item: item[1]["pooled"]["f1"])
+        pooled = entry["pooled"]
+        rows.append([label(box, True), label(height, True), name,
+                     pct(pooled["recall"]), pct(pooled["precision"]),
+                     fmt(pooled["f1"]), "%+.3f" % (pooled["f1"] - alone)])
+    r.doc.heading("All pairs at a glance", 2)
+    r.doc.paragraph(
+        "For each pair, the strategy with the highest pooled F1 and its margin "
+        "over the better of the two detectors alone. Picking the best of "
+        "several strategies after the fact flatters it, so a small positive "
+        "margin here is not evidence of a gain; the per-strategy tables above "
+        "give the paired tests.")
+    r.doc.table(["mosaic", "height", "best strategy", "recall", "precision",
+                 "F1", "vs better alone"], rows,
+                caption="Best combination per pair.",
+                widthsCm=[2.4, 2.4, 3.4, 1.7, 1.9, 1.4, 2.4])
 
 
 def fusionBlock(r, first, second, summaryTable):

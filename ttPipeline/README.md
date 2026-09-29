@@ -43,6 +43,27 @@ print(CrownEvaluator(scene).score(tops))
 | `cli.py` | the subcommands |
 | `dl/` | the YOLO / Mask R-CNN benchmark, moved but not yet rewritten |
 
+## Overnight run
+
+`overnightMongolia.sh` trains YOLO, Faster R-CNN, RetinaNet and FCOS on the
+mosaic and YOLO on both CHMs, reusing the runs already in `runs/`; after every
+stage it writes the report and an image of every held-out block of every
+result. Everything goes to one dated folder under the lab's `ongoingExps`;
+`STATUS.txt` there says what finished and with what score.
+
+```bash
+./overnightMongolia.sh              # about 4-5 hours on an RTX 4090
+DRYRUN=1 ./overnightMongolia.sh     # everything but the training, to check
+```
+
+It also runs two things on the Sergi site: connected components at settings
+fixed on Mongolia against Sergi's own tuning (`python -m tt.transfer`), and
+Mask R-CNN on the Sergi height model, under `sergi/` in the same folder.
+
+Block images alone: `python -m tt.blockImages --help`. Colour code: green hit,
+orange repeat, blue outside every crown at canopy height, red outside and
+low, yellow outline for a missed crown.
+
 ## Code quality pass
 
 Measured before changing anything. Excluding a one-off import cost, the

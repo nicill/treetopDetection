@@ -41,9 +41,9 @@ validation predictions (runs made by this version of the code do).
 
 import itertools
 
+from affine import Affine
 import numpy as np
 from rasterio.features import geometry_mask
-from rasterio.windows import Window, transform as windowTransform
 from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
 
@@ -132,8 +132,7 @@ class SaddleSurface(object):
         return r0 + int(row), c0 + int(column)
 
     def _windowTransform(self, r0, c0, shape):
-        return windowTransform(Window(c0, r0, shape[1], shape[0]),
-                               self.transform)
+        return self.transform @ Affine.translation(c0, r0)
 
     def sameTree(self, a, b):
         """Within the radius, and no dip deeper than dropM between them."""
@@ -394,28 +393,44 @@ class FusionCrossValidation(object):
         return best, bestF1
 
     def runFold(self, block):
+        """Every strategy on one fold: its score, setting and output."""
         inputs = self._foldInputs(block)
         boxes, points = inputs["test"]
         results = {}
         for name in self.strategies:
             setting, validationF1 = self.tune(name, inputs)
-            result = self._score(self.apply(name, boxes, points, setting),
-                                 block)
+            output = self.apply(name, boxes, points, setting)
+            result = self._score(output, block)
             result.update(block=block, setting=setting,
-                          validationF1=validationF1)
+                          validationF1=validationF1,
+                          output=[slim(p) for p in output])
             results[name] = result
         return results
 
     def run(self):
+        """
+        Scores per strategy, and each strategy's held-out output per block in
+        self.outputs, kept apart so the summary stays small.
+        """
         perStrategy = {name: [] for name in self.strategies}
+        self.outputs = {name: {} for name in self.strategies}
         for block in sorted(self.blocks):
             for name, result in self.runFold(block).items():
+                # "output", not "predictions": the score already uses that
+                # key for the count of detections
+                self.outputs[name][block] = result.pop("output")
                 perStrategy[name].append(result)
         summary = {name: {"folds": folds, "pooled": dc.averageFolds(folds)}
                    for name, folds in perStrategy.items()}
         if self.verbose:
             printSummary(summary)
         return summary
+
+
+def slim(prediction):
+    """What a saved output needs: where, how sure, and its box."""
+    return {"centreX": prediction["centreX"], "centreY": prediction["centreY"],
+            "score": prediction["score"], "box": prediction["box"]}
 
 
 def printSummary(summary, baseline="boxes"):

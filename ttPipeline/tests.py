@@ -644,6 +644,83 @@ class TestCalibration(Fixture):
         self.assertIn("proposed", calibrated.log)
 
 
+class TestBlockImages(Fixture):
+    """Fates in the images must be the scorer's own classification."""
+
+    def renderer(self):
+        from shapely.geometry import box as shapelyBox
+        from tt.blockImages import BlockRenderer
+        scene = self.scene()
+        return scene, BlockRenderer(scene, [("all", shapelyBox(
+            *scene.boundary.bounds))], minSidePx=200)
+
+    def detections(self, scene):
+        points, _ = scene.crownPeaks()
+        out = []
+        for column, row in points:
+            east, north = scene.toWorld(column, row)
+            out.append({"centreX": east, "centreY": north, "score": 10.0,
+                        "box": [east, north, east, north]})
+        return out
+
+    def testFatesMatchTheScene(self):
+        scene, renderer = self.renderer()
+        predictions = self.detections(scene)
+        extra = dict(predictions[0], centreX=predictions[0]["centreX"] + 0.3,
+                     score=9.0)
+        fates, missed, crowns = renderer.classify(
+            predictions[1:] + [extra], "all")
+        self.assertEqual(crowns, 9)
+        self.assertEqual(fates.count("hit"), 9)
+        self.assertEqual(missed, [])
+        fates, missed, _ = renderer.classify(predictions[1:], "all")
+        self.assertEqual(len(missed), 1)
+
+    def testImageIsWritten(self):
+        import tempfile
+        scene, renderer = self.renderer()
+        path = os.path.join(tempfile.mkdtemp(), "sub", "all.jpg")
+        renderer.render(self.detections(scene), "all", "test", path)
+        self.assertGreater(os.path.getsize(path), 1000)
+
+
+class TestFusionOutputs(unittest.TestCase):
+    """Each strategy's output is kept apart from its score."""
+
+    def testOutputDoesNotReplaceTheDetectionCount(self):
+        from tt.fusion import slim
+        full = {"centreX": 1.0, "centreY": 2.0, "score": 0.5,
+                "box": [0, 0, 2, 4], "polygon": [[0, 0]], "apex": (1, 1)}
+        self.assertEqual(sorted(slim(full)), ["box", "centreX", "centreY",
+                                              "score"])
+
+
+class TestTransfer(unittest.TestCase):
+    """The modal setting and the paired comparison, on hand-built folds."""
+
+    def testModalSettingIsTheMostChosen(self):
+        import json
+        import tempfile
+        from tt.transfer import modalSetting
+        a = {"lowerPercentile": 20, "minTopAreaM2": 0.12, "topStepM": 0.12,
+             "erosionIterations": 2, "saddleDropM": 0.3}
+        b = dict(a, saddleDropM=0.5)
+        path = os.path.join(tempfile.mkdtemp(), "results.json")
+        with open(path, "w") as handle:
+            json.dump({"folds": [{"settings": a}, {"settings": b},
+                                 {"settings": a}]}, handle)
+        setting, count, total = modalSetting(path)
+        self.assertEqual((setting, count, total), (a, 2, 3))
+
+    def testPairedMatchesBlocksByName(self):
+        from tt.transfer import paired
+        tuned = [{"block": "b0", "f1": 0.8}, {"block": "b1", "f1": 0.7}]
+        fixed = [{"block": "b1", "f1": 0.6}, {"block": "b0", "f1": 0.9}]
+        result = paired(tuned, fixed)
+        self.assertAlmostEqual(result["tunedMinusFixed"], 0.0)
+        self.assertEqual(result["tunedBetter"], 1)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
@@ -743,4 +820,7 @@ if __name__ == "__main__":
               "__init__.py, scene.py, ..."
               % os.path.dirname(os.path.abspath(__file__)))
         sys.exit(1)
-    unittest.main(verbosity=2)
+    # warnings=False: unittest would otherwise reset the warning filters to
+    # "default" for the run, overriding tt's filter for rasterio's own
+    # deprecation warnings and filling the output with them
+    unittest.main(verbosity=2, warnings=False)
