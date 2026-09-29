@@ -21,6 +21,12 @@ DEVICE=0
 
 mkdir -p logs runs
 
+# Everything, step headers included, also goes to one timestamped file; the
+# per-step logs below are kept as well, since they are easier to read singly.
+RUNLOG="logs/completeReport_$(date +%Y%m%d_%H%M%S).log"
+exec > >(tee -a "$RUNLOG") 2>&1
+echo "logging to $RUNLOG"
+
 step() { printf '\n=== %s  (%s) ===\n' "$1" "$(date +%H:%M:%S)"; }
 
 for pair in "lidar:chm:$LIDAR" "p1:chm:$P1" "rgb:rgb:$ORTHO"; do
@@ -65,3 +71,4 @@ python -m tt.report --lidarChm "$LIDAR" --p1Chm "$P1" --crowns "$CROWNS" \
     --output report 2>&1 | tee logs/report.log
 
 echo; echo "done: report/report.odt, figures in report/figures/"
+echo "full log: $RUNLOG"

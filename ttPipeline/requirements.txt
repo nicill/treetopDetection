@@ -6,6 +6,7 @@ rasterio
 geopandas
 shapely
 scikit-learn
+odfpy          # the ODT report
 
 # tt/dl only
 torch

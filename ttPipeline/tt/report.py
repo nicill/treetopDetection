@@ -78,6 +78,12 @@ class Evidence(object):
         return runs
 
     def _fusion(self):
+        """
+        Every combination the saved predictions allow: each box run with
+        each point run, and the two best-recall point runs with each other.
+        The point pair runs whether or not boxes exist, so the two-CHM
+        result stays in the report once the learned models are added.
+        """
         boxes = [n for n in self.runs if not isPointMethod(n)]
         points = [n for n in self.runs if isPointMethod(n)]
         results = {}
@@ -85,7 +91,7 @@ class Evidence(object):
             results[(box, point)] = FusionCrossValidation(
                 self.scene.crowns, self.blocks, self.runs[box],
                 self.runs[point], verbose=False).run()
-        if not boxes and len(points) >= 2:
+        if len(points) >= 2:
             first, second = sorted(points, key=lambda n: -self.cv.get(
                 n, {"pooled": {"recall": 0}})["pooled"]["recall"])[:2]
             results[(first, second)] = FusionCrossValidation(

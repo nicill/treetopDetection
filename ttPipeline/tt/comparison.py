@@ -75,7 +75,10 @@ class MethodRun(object):
         """
         record = self.record(block)
         if "validationPredictions" in record:
-            return record["validationBlock"], record["validationPredictions"]
+            # the run names blocks after its own dataset (rgb_b01); translate
+            # to the names the caller's blocks use (lidar_b01)
+            return (matchBlock(record["validationBlock"], self.blocks),
+                    record["validationPredictions"])
         return nextBlock(block, self.blocks), record["predictions"]
 
     def record(self, block):

@@ -4,9 +4,12 @@ writes what its evidence supports; a section whose evidence is missing says
 which run would supply it rather than being left out silently.
 """
 
+import os
+
 import numpy as np
 
 from . import reportFigures as figures
+from .dl import dlCommon as dc
 
 LABELS = {
     "ccLidar": ("Connected components, LiDAR CHM", "CC LiDAR"),
@@ -589,6 +592,7 @@ def combinations(r):
 
 
 def fusionBlock(r, first, second, summaryTable):
+    saveFusion(r, first, second, summaryTable)
     both = isPointMethod(first) and isPointMethod(second)
     title = ("%s tops as the box role, %s tops as points"
              if both else "%s boxes with %s tops") % (label(first, True),
@@ -635,6 +639,14 @@ def fusionBlock(r, first, second, summaryTable):
             "combination changes reliably is where on the recall/precision "
             "trade-off it sits, not how far from the curve."
             % (pct(union["recall"]), pct(union["precision"])))
+
+
+def saveFusion(r, first, second, summaryTable):
+    """The combination results as data, beside the report."""
+    dc.saveJson({"boxRun": first, "pointRun": second,
+                 "strategies": summaryTable},
+                os.path.join(r.outputDir, "fusion_%s_%s.json"
+                             % (first, second)))
 
 
 def caveats(r):
