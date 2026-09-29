@@ -7,8 +7,8 @@
 #
 # ds/lidar, ds/p1 and ds/rgb are the datasets your earlier run built; they are
 # rebuilt only if missing. The sweeps are re-run only if sweepLidar.json /
-# sweepP1.json are missing. Expect about 2.5 hours on an RTX 3090, nearly all of
-# it the two Mask R-CNN runs.
+# sweepP1.json are missing. On an RTX 4090 the three Mask R-CNN runs take about
+# 20 minutes each; everything else is minutes.
 
 set -euo pipefail
 
@@ -58,6 +58,10 @@ step "Mask R-CNN, LiDAR CHM (about an hour)"
 python -m tt.dl maskrcnn --dataset ds/lidar --output runs/mrcnnLidar \
     --epochs 40 --batchSize 4 --device $DEVICE 2>&1 | tee logs/mrcnnLidar.log
 
+step "Mask R-CNN, P1 CHM"
+python -m tt.dl maskrcnn --dataset ds/p1 --output runs/mrcnnP1 \
+    --epochs 40 --batchSize 4 --device $DEVICE 2>&1 | tee logs/mrcnnP1.log
+
 step "Mask R-CNN, RGB mosaic (about an hour)"
 python -m tt.dl maskrcnn --dataset ds/rgb --output runs/mrcnnRgb \
     --epochs 40 --batchSize 4 --device $DEVICE 2>&1 | tee logs/mrcnnRgb.log
@@ -66,7 +70,8 @@ step "report"
 python -m tt.report --lidarChm "$LIDAR" --p1Chm "$P1" --crowns "$CROWNS" \
     --boundary "$AREA" --dataset ds/lidar \
     --cv ccLidar=runs/ccLidar --cv ccP1=runs/ccP1 \
-    --cv mrcnnLidar=runs/mrcnnLidar --cv mrcnnRgb=runs/mrcnnRgb \
+    --cv mrcnnLidar=runs/mrcnnLidar --cv mrcnnP1=runs/mrcnnP1 \
+    --cv mrcnnRgb=runs/mrcnnRgb \
     --sweep ccLidar=sweepLidar.json --sweep ccP1=sweepP1.json \
     --output report 2>&1 | tee logs/report.log
 

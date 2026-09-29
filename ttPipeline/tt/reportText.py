@@ -7,6 +7,7 @@ which run would supply it rather than being left out silently.
 import os
 
 import numpy as np
+from scipy.stats import wilcoxon
 
 from . import reportFigures as figures
 from .dl import dlCommon as dc
@@ -30,8 +31,29 @@ def label(name, short=False):
     return LABELS.get(name, (name, name))[1 if short else 0]
 
 
+# The RGB mosaic is always available; the camera flies whether or not the LiDAR
+# does. Every combination pairs its Mask R-CNN with one detector working on a
+# height model: the LiDAR CHM when there is LiDAR, the P1 CHM when there is not.
+RGB_BOXES = "mrcnnRgb"
+HEIGHT_SOURCE = {"ccLidar": "lidar", "mrcnnLidar": "lidar",
+                 "ccP1": "p1", "mrcnnP1": "p1"}
+HEIGHT_METHODS = tuple(HEIGHT_SOURCE)
+# The saddle strategies' dip, per height model: the value connected components'
+# own cross-validation chose most often there (0.3 m in 5 of 8 LiDAR folds,
+# 0.5 m in 6 of 8 P1 folds). Fixed, not tuned for the combinations.
+SADDLE_DROP = {"lidar": 0.3, "p1": 0.5}
+SCENARIOS = (("lidar", "With LiDAR: the LiDAR CHM"),
+             ("p1", "Without LiDAR: the P1 CHM"))
+
+
 def isPointMethod(name):
     return name.startswith("cc")
+
+
+def combinable(first, second):
+    """True when one is the RGB model and the other works on a height model."""
+    pair = {first, second}
+    return RGB_BOXES in pair and bool(pair & set(HEIGHT_SOURCE))
 
 
 def fmt(value, digits=3):
@@ -474,9 +496,11 @@ def sources(r):
         pending(r, "the comparison of which trees each source finds")
         return
     pairs = [(a, b) for a, b in [("ccLidar", "ccP1"),
+                                 ("mrcnnLidar", "mrcnnP1"),
+                                 ("ccLidar", "mrcnnRgb"),
                                  ("mrcnnLidar", "mrcnnRgb"),
-                                 ("ccLidar", "mrcnnLidar"),
-                                 ("ccP1", "mrcnnRgb")]
+                                 ("ccP1", "mrcnnRgb"),
+                                 ("mrcnnP1", "mrcnnRgb")]
              if a in c.results and b in c.results]
     for first, second in pairs:
         agreementBlock(r, c, first, second)
@@ -500,16 +524,24 @@ def agreementBlock(r, c, first, second):
                  "median height m", "nearest crown m"], rows,
                 caption="Which crowns each found.",
                 widthsCm=[4.4, 1.8, 3.0, 3.2, 3.2])
-    r.doc.paragraph(
-        "The two agree on %d crowns. Together they find %d of %d (%s), so "
-        "combining them can recover at most %s of recall over the better one "
-        "alone. The crowns only one of them finds are small, and the ones "
-        "neither finds are smaller still."
-        % (both, union, len(r.e.scene.crowns),
-           pct(union / float(len(r.e.scene.crowns))),
-           pct((union - max(len(c.results[first]["found"]),
-                            len(c.results[second]["found"])))
-               / float(len(r.e.scene.crowns)))))
+    total = float(len(r.e.scene.crowns))
+    if combinable(first, second):
+        gain = union - max(len(c.results[first]["found"]),
+                           len(c.results[second]["found"]))
+        r.doc.paragraph(
+            "The two agree on %d crowns. They are a pair that would be "
+            "combined in practice; together they find %d of %d (%s), which "
+            "caps what a combination can add at %s of recall over the better "
+            "one alone. The crowns only one of them finds are small, and the "
+            "ones neither finds are smaller still."
+            % (both, union, len(r.e.scene.crowns), pct(union / total),
+               pct(gain / total)))
+    else:
+        r.doc.paragraph(
+            "The two agree on %d crowns. They are alternatives rather than "
+            "parts of a combination, so the crowns only one of them finds "
+            "show what choosing that one gains or loses."
+            % both)
     r.doc.figure(figures.agreementBars(groups, label(first, True),
                                        label(second, True),
                                        r.figurePath("agreement_%s_%s"
@@ -572,73 +604,101 @@ def shapes(r):
 def combinations(r):
     r.doc.heading("Combining the methods")
     r.doc.paragraph(
-        "Four combinations were implemented, each with every parameter, the "
-        "thresholds included, tuned per fold on that fold's validation block "
-        "and applied unchanged to its test block. **Confirmed** keeps a box "
-        "at one score threshold if a connected-component top lies inside it "
-        "and at another if none does, which is the general form of giving "
-        "boxes with a top extra score. **Agreement** keeps only confirmed "
-        "boxes, the precision extreme. **Box-merged points** fuses the tops "
-        "that fall inside the same box into the highest of them, so the box "
-        "does the merging the saddle rule approximates. **Union** keeps every "
-        "box and every top no box covers, the recall extreme.")
+        "The RGB mosaic is always available, since the camera flies whether or "
+        "not the LiDAR does, so every combination pairs the RGB Mask R-CNN with "
+        "one detector working on a height model: the LiDAR CHM when there is "
+        "LiDAR, the P1 CHM when there is not. That detector is either "
+        "connected components, whose tops are points, or a Mask R-CNN on the "
+        "CHM, whose boxes enter through their centres.")
+    r.doc.paragraph(
+        "Three strategies were fixed before any results existed. **Confirmed** "
+        "keeps an RGB box at one score threshold if a height-model detection "
+        "lies inside it and at another if none does, the general form of "
+        "giving confirmed boxes extra score; keeping only confirmed boxes is "
+        "one of its settings. **Box-merged points** fuses the height-model "
+        "detections inside the same RGB box into the best of them, so the box "
+        "does the merging. **Union** keeps every RGB box and every "
+        "height-model detection no box covers, the recall extreme. A fourth, "
+        "**weak-box merged points**, is exploratory: it was designed after the "
+        "others' results had been seen, so its figures cannot be compared with "
+        "theirs on equal terms. It is box-merged points with weaker RGB boxes "
+        "also used for merging, taken strongest first, each accepted only if it "
+        "overlaps every box accepted before it by at most 25% of the smaller "
+        "box's area; the 25% was fixed in advance, not tuned. Two more are "
+        "exploratory for the same reason, and replace union's duplicate test "
+        "by the saddle rule on the height model, placing each detection at its "
+        "highest point inside its mask: **union, saddle between sources** "
+        "drops a height detection when no dip deeper than the set depth "
+        "separates it from a kept RGB detection, and **union, saddle across "
+        "the pool** merges every pair so connected, which also merges the RGB "
+        "model's split crowns. Both use an 8 m radius and the dip connected "
+        "components chose most often on that height model, 0.3 m on LiDAR and "
+        "0.5 m on P1. Each "
+        "height-model detector enters at the operating point its own "
+        "cross-validation chose; every threshold of the combination is tuned "
+        "per fold on the validation block and applied unchanged to the test "
+        "block.")
     if not r.e.fusion:
-        pending(r, "the combinations of Mask R-CNN and connected components")
+        pending(r, "the combinations with the RGB Mask R-CNN")
         return
-    for (first, second), summaryTable in r.e.fusion.items():
-        fusionBlock(r, first, second, summaryTable)
-    if not any(not isPointMethod(a) for a, _ in r.e.fusion):
-        pending(r, "the combinations with Mask R-CNN boxes")
+    for source, title in SCENARIOS:
+        pairs = [(box, height) for box, height in r.e.fusion
+                 if HEIGHT_SOURCE.get(height) == source]
+        r.doc.heading(title, 2)
+        if not pairs:
+            pending(r, "the combinations on this height model")
+            continue
+        for box, height in pairs:
+            fusionBlock(r, box, height, r.e.fusion[(box, height)])
+    missing = [m for m in HEIGHT_METHODS if m not in r.e.runs]
+    if missing:
+        r.doc.paragraph("Not run: %s, which would complete the table."
+                        % ", ".join("RGB Mask R-CNN with " + label(m, True)
+                                    for m in missing))
 
 
 def fusionBlock(r, first, second, summaryTable):
     saveFusion(r, first, second, summaryTable)
-    both = isPointMethod(first) and isPointMethod(second)
-    title = ("%s tops as the box role, %s tops as points"
-             if both else "%s boxes with %s tops") % (label(first, True),
-                                                     label(second, True))
-    r.doc.heading(title, 2)
-    if both:
-        r.doc.paragraph(
-            "With no boxes available yet, the same code was run on the two "
-            "CHMs: %s's tops were given square boxes, their size tuned per "
-            "fold with the rest, and combined with %s's tops. Scores here are "
-            "heights, not confidences, so no thresholds were applied."
-            % (label(first, True), label(second, True)))
-    baseline = summaryTable.get("boxes", {}).get("folds")
-    rows = []
+    r.doc.paragraph("**%s with %s.**" % (label(first), label(second)))
     display = {"boxes": label(first, True) + " alone",
                "points": label(second, True) + " alone"}
+    baselines = {key: np.array([f["f1"] for f in summaryTable[key]["folds"]])
+                 for key in ("boxes", "points") if key in summaryTable}
+    rows = []
     for name, entry in sorted(summaryTable.items(),
                               key=lambda item: -item[1]["pooled"]["f1"]):
         pooled = entry["pooled"]
-        row = [display.get(name, name), pct(pooled["recall"]), pct(pooled["precision"]),
-               fmt(pooled["f1"])]
-        if baseline and name != "boxes":
-            difference = np.array([f["f1"] for f in entry["folds"]]) - \
-                np.array([f["f1"] for f in baseline])
-            row.append("%+.3f, %d/%d" % (difference.mean(),
-                                         int((difference > 0).sum()),
-                                         len(difference)))
-        else:
-            row.append("-")
+        f1 = np.array([f["f1"] for f in entry["folds"]])
+        row = [display.get(name, name), pct(pooled["recall"]),
+               pct(pooled["precision"]), fmt(pooled["f1"])]
+        for key in ("boxes", "points"):
+            if name in display or key not in baselines:
+                row.append("-")
+            else:
+                row.append(pairedCell(f1 - baselines[key]))
         rows.append(row)
     r.doc.table(["strategy", "recall", "precision", "F1",
-                 "vs %s alone (mean, wins)" % label(first, True)], rows,
-                caption="Cross-validated combinations.",
-                widthsCm=[3.6, 2.2, 2.4, 1.8, 5.8])
-    r.doc.figure(figures.fusionBars(summaryTable, title,
-                                    r.figurePath("fusion_%s_%s"
-                                                 % (first, second))),
-                 "Combinations, cross-validated.")
-    union = summaryTable.get("union", {}).get("pooled")
-    if union:
-        r.doc.paragraph(
-            "Union reaches recall %s at precision %s. The F1 differences "
-            "between strategies are within the block-to-block noise; what a "
-            "combination changes reliably is where on the recall/precision "
-            "trade-off it sits, not how far from the curve."
-            % (pct(union["recall"]), pct(union["precision"])))
+                 "vs %s" % display["boxes"], "vs %s" % display["points"]],
+                rows, caption="%s with %s, cross-validated. The last two "
+                "columns give the mean F1 difference across blocks, how many "
+                "blocks the combination won, and the Wilcoxon signed-rank "
+                "p-value of the per-block differences; with eight blocks the "
+                "smallest attainable p is 0.008." % (label(first, True),
+                                                     label(second, True)),
+                widthsCm=[3.0, 1.7, 1.9, 1.4, 4.0, 4.0])
+    r.doc.figure(figures.fusionBars(summaryTable, "%s + %s" % (
+        label(first, True), label(second, True)),
+        r.figurePath("fusion_%s_%s" % (first, second))),
+        "Combinations of %s and %s." % (label(first, True),
+                                        label(second, True)))
+
+
+def pairedCell(difference):
+    """Mean difference, blocks won, and the Wilcoxon p of per-block F1."""
+    p = wilcoxon(difference).pvalue if np.any(difference) else 1.0
+    return "%+.3f, %d/%d, p=%.2f" % (difference.mean(),
+                                     int((difference > 0).sum()),
+                                     len(difference), p)
 
 
 def saveFusion(r, first, second, summaryTable):
@@ -681,9 +741,10 @@ def reproduce(r):
     r.doc.paragraph(
         "The package is tt. Every run needs repeating once with the current "
         "code, which saves the predictions the tree-level sections and the "
-        "combinations are built from: the two connected-component runs take "
-        "minutes, the two Mask R-CNN runs about an hour each. The last "
-        "command then writes this report with every section complete.")
+        "combinations are built from: the connected-component runs take "
+        "minutes, each Mask R-CNN run about twenty minutes on an RTX 4090. "
+        "The last command then writes this report with every section "
+        "complete.")
     r.doc.code('''
 LIDAR=Data/chm_lidar_l2_2025_clipped_modified_last.tif
 P1=Data/CHM_P1_2026_clipped_last.tif
@@ -697,12 +758,15 @@ python -m tt.dl concomp --dataset ds/p1 --output runs/ccP1 \\
     --erosions 1,2 --saddleDrops 0.2,0.3,0.5
 python -m tt.dl maskrcnn --dataset ds/lidar --output runs/mrcnnLidar \\
     --epochs 40 --batchSize 4 --device 0
+python -m tt.dl maskrcnn --dataset ds/p1 --output runs/mrcnnP1 \\
+    --epochs 40 --batchSize 4 --device 0
 python -m tt.dl maskrcnn --dataset ds/rgb --output runs/mrcnnRgb \\
     --epochs 40 --batchSize 4 --device 0
 python -m tt.report --lidarChm $LIDAR --p1Chm $P1 --crowns $CROWNS \\
     --boundary $AREA --dataset ds/lidar \\
     --cv ccLidar=runs/ccLidar --cv ccP1=runs/ccP1 \\
-    --cv mrcnnLidar=runs/mrcnnLidar --cv mrcnnRgb=runs/mrcnnRgb \\
+    --cv mrcnnLidar=runs/mrcnnLidar --cv mrcnnP1=runs/mrcnnP1 \\
+    --cv mrcnnRgb=runs/mrcnnRgb \\
     --sweep ccLidar=sweepLidar.json --sweep ccP1=sweepP1.json \\
     --output report''')
 

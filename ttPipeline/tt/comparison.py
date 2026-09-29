@@ -81,6 +81,10 @@ class MethodRun(object):
                     record["validationPredictions"])
         return nextBlock(block, self.blocks), record["predictions"]
 
+    def threshold(self, block):
+        """The operating point this run chose for the fold, if it chose one."""
+        return self.record(block).get("threshold", -np.inf)
+
     def record(self, block):
         """
         One fold's saved predictions. Datasets prefix their blocks with their

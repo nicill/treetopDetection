@@ -25,10 +25,11 @@ from . import reportFigures as figures
 from .comparison import MethodRun, TreeComparison, matchBlock
 from .dl import dlCommon as dc
 from .dl import dlPrepare as dp
-from .fusion import FusionCrossValidation
+from .fusion import FusionCrossValidation, SaddleSurface
 from .odt import OdtDocument
 from .pseudoCrowns import PseudoCrowns
-from .reportText import SECTIONS, isPointMethod, label
+from .reportText import (HEIGHT_METHODS, HEIGHT_SOURCE, RGB_BOXES, SADDLE_DROP,
+                         SECTIONS, label)
 from .scene import Scene
 from .tops import Tops
 
@@ -79,28 +80,24 @@ class Evidence(object):
 
     def _fusion(self):
         """
-        Every combination the saved predictions allow: each box run with
-        each point run, and the two best-recall point runs with each other.
-        The point pair runs whether or not boxes exist, so the two-CHM
-        result stays in the report once the learned models are added.
+        The RGB Mask R-CNN with each detector on a height model that has
+        predictions: connected components or Mask R-CNN, on the LiDAR or on
+        the P1 CHM. The saddle strategies run on that same height model.
         """
-        boxes = [n for n in self.runs if not isPointMethod(n)]
-        points = [n for n in self.runs if isPointMethod(n)]
-        results = {}
-        for box, point in itertools.product(boxes, points):
-            results[(box, point)] = FusionCrossValidation(
-                self.scene.crowns, self.blocks, self.runs[box],
-                self.runs[point], verbose=False).run()
-        if len(points) >= 2:
-            first, second = sorted(points, key=lambda n: -self.cv.get(
-                n, {"pooled": {"recall": 0}})["pooled"]["recall"])[:2]
-            results[(first, second)] = FusionCrossValidation(
-                self.scene.crowns, self.blocks, self.runs[first],
-                self.runs[second], inflateM=[0.75, 1.0, 1.5, 2.0],
-                strategies=["boxes", "points", "agreement",
-                            "boxMergedPoints", "union"],
-                verbose=False).run()
-        return results
+        if RGB_BOXES not in self.runs:
+            return {}
+        return {(RGB_BOXES, height): FusionCrossValidation(
+                    self.scene.crowns, self.blocks, self.runs[RGB_BOXES],
+                    self.runs[height], surface=self.surfaceFor(height),
+                    verbose=False).run()
+                for height in HEIGHT_METHODS if height in self.runs}
+
+    def surfaceFor(self, height):
+        source = HEIGHT_SOURCE[height]
+        scene = self.p1Scene if source == "p1" else self.scene
+        if scene is None:
+            return None
+        return SaddleSurface.fromScene(scene, SADDLE_DROP[source])
 
     # ------------------------------------------------------------------ #
 

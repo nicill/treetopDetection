@@ -429,10 +429,41 @@ class TestFusion(unittest.TestCase):
                          [[True, False, False], [True, False, False],
                           [False, False, True], [False, False, False]])
 
-    def testAgreementKeepsOnlyConfirmedBoxes(self):
-        from tt.fusion import agreement
-        kept = agreement(self.boxes, self.points, threshold=0.2)
-        self.assertEqual([b["score"] for b in kept], [0.9, 0.3])
+    def testWeakBoxClearOfStrongOnesMerges(self):
+        """A weak box overlapping no stronger box merges the points in it."""
+        from tt.fusion import weakBoxMergedPoints
+        boxes = [self.box(0, 0, 4, 4, 0.9), self.box(30, 0, 34, 4, 0.1)]
+        points = [self.point(1, 1, 12.0), self.point(31, 1, 9.0),
+                  self.point(33, 3, 11.0)]
+        result = weakBoxMergedPoints(boxes, points, threshold=0.5)
+        self.assertEqual(sorted(p["centreX"] for p in result), [1, 33])
+
+    def testWeakBoxOverlappingTooMuchIsIgnored(self):
+        """Half of the weak box lies in a strong one: more than 25%."""
+        from tt.fusion import weakBoxMergedPoints
+        boxes = [self.box(0, 0, 4, 4, 0.9), self.box(2, 0, 6, 4, 0.1)]
+        points = [self.point(5, 1, 9.0), self.point(5.5, 3, 11.0)]
+        result = weakBoxMergedPoints(boxes, points, threshold=0.5)
+        self.assertEqual(len(result), 2)
+
+    def testOverlapIsMeasuredAgainstTheSmallerBox(self):
+        """A small box inside a big one overlaps fully, whatever the IoU."""
+        from tt.fusion import overlapOverSmaller
+        share = overlapOverSmaller([1, 1, 2, 2], np.array([[0, 0, 10, 10]]))
+        self.assertAlmostEqual(float(share[0]), 1.0)
+        share = overlapOverSmaller([0, 0, 4, 4], np.array([[3, 0, 7, 4]]))
+        self.assertAlmostEqual(float(share[0]), 0.25)
+
+    def testWeakBoxesBlockEachOther(self):
+        """Taken strongest first, an accepted weak box blocks a weaker one."""
+        from tt.fusion import weakBoxMergedPoints
+        boxes = [self.box(0, 0, 4, 4, 0.3), self.box(2, 0, 6, 4, 0.2)]
+        points = [self.point(1, 1, 9.0), self.point(3, 3, 11.0),
+                  self.point(5, 1, 8.0), self.point(5.5, 3, 7.0)]
+        result = weakBoxMergedPoints(boxes, points, threshold=0.5)
+        # the 0.3 box is accepted and merges its two points to x=3; the 0.2
+        # box overlaps it by half and is refused, so its points both survive
+        self.assertEqual(sorted(p["centreX"] for p in result), [3, 5, 5.5])
 
     def testConfirmedUsesTwoThresholds(self):
         from tt.fusion import confirmed
@@ -456,6 +487,77 @@ class TestFusion(unittest.TestCase):
         xs = sorted(p["centreX"] for p in result)
         # the two points in the first box collapse to the higher (x=3)
         self.assertEqual(xs, [3, 21, 40])
+
+
+class TestSaddleUnion(unittest.TestCase):
+    """
+    Two cones on a 40 m grid, A (16 m) and B (14 m), with bare ground between.
+    A's box is drawn wide enough that its corner covers B's top — the case box
+    containment gets wrong.
+    """
+
+    def setUp(self):
+        from affine import Affine
+        from tt.fusion import SaddleSurface
+        rows, columns = np.mgrid[0:40, 0:40]
+        chm = np.zeros((40, 40), np.float32)
+        for row, column, height in ((20, 10, 16.0), (20, 25, 14.0)):
+            distance = np.hypot(rows - row, columns - column)
+            chm = np.maximum(chm, height * np.clip(1 - distance / 7.0, 0, 1))
+        self.surface = SaddleSurface(chm, Affine(1, 0, 0, 0, -1, 40), 1.0,
+                                     dropM=0.5)
+
+    @staticmethod
+    def at(row, column, score=10.0):
+        x, y = column + 0.5, 40 - row - 0.5
+        return {"centreX": x, "centreY": y, "score": score,
+                "box": [x, y, x, y]}
+
+    @staticmethod
+    def box(c0, c1, r0, r1, score):
+        return {"box": [c0, 40 - r1, c1, 40 - r0], "score": score,
+                "centreX": (c0 + c1) / 2.0, "centreY": 40 - (r0 + r1) / 2.0}
+
+    def testBoxContainmentLosesTheNeighbour(self):
+        from tt.fusion import union
+        wide = self.box(3, 27, 13, 27, 0.9)
+        self.assertEqual(len(union([wide], [self.at(20, 25)], 0.5)), 1)
+
+    def testSaddleKeepsTheNeighbour(self):
+        from tt.fusion import unionSaddleCross
+        wide = self.box(3, 27, 13, 27, 0.9)
+        result = unionSaddleCross([wide], [self.at(20, 25)], 0.5,
+                                  self.surface)
+        self.assertEqual(len(result), 2)
+
+    def testSaddleDropsTheTopOfTheBoxesOwnTree(self):
+        from tt.fusion import unionSaddleCross
+        wide = self.box(3, 27, 13, 27, 0.9)
+        result = unionSaddleCross([wide], [self.at(20, 10)], 0.5,
+                                  self.surface)
+        self.assertEqual(len(result), 1)
+
+    def testPoolMergesASplitCrownButCrossDoesNot(self):
+        from tt.fusion import unionSaddleCross, unionSaddlePool
+        halves = [self.box(3, 11, 13, 27, 0.9), self.box(11, 17, 13, 27, 0.6)]
+        self.assertEqual(len(unionSaddlePool(halves, [], 0.5,
+                                             self.surface)), 1)
+        self.assertEqual(len(unionSaddleCross(halves, [], 0.5,
+                                              self.surface)), 2)
+
+    def testApexFollowsTheMaskOutline(self):
+        """Box over both cones; the outline around B puts the apex on B."""
+        wide = self.box(3, 32, 13, 27, 0.9)
+        self.assertEqual(self.surface.apex(dict(wide)), (20, 10))
+        ring = [[19, 40 - 16], [31, 40 - 16], [31, 40 - 24], [19, 40 - 24]]
+        self.assertEqual(self.surface.apex(dict(wide, polygon=ring)),
+                         (20, 25))
+
+    def testPoolKeepsTwoTreesApart(self):
+        from tt.fusion import unionSaddlePool
+        boxes = [self.box(3, 17, 13, 27, 0.9), self.box(18, 32, 13, 27, 0.8)]
+        self.assertEqual(len(unionSaddlePool(boxes, [], 0.5,
+                                             self.surface)), 2)
 
 
 class TestCommandLine(Fixture):
