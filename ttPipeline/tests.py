@@ -560,6 +560,90 @@ class TestSaddleUnion(unittest.TestCase):
                                              self.surface)), 2)
 
 
+class TestCalibration(Fixture):
+    """
+    The calibration's parts on the nine-tree scene, with zones drawn around
+    the known crowns so every expected answer is known.
+    """
+
+    def zones(self, extra=()):
+        from tt.calibration import ConfidentZones
+        scene = self.scene()
+        predictions = [{"box": list(g.bounds), "score": 0.95,
+                        "centreX": g.centroid.x, "centreY": g.centroid.y}
+                       for g in scene.crowns.geometry] + list(extra)
+        region = scene.boundary
+        return scene, ConfidentZones(predictions, scene, 0.9, region)
+
+    def testZonesSitOnTheApexes(self):
+        scene, zones = self.zones()
+        _, heights = scene.crownPeaks()
+        self.assertEqual(len(zones), 9)
+        self.assertEqual(sorted(round(h, 3) for _, _, h in zones.apexes),
+                         sorted(round(float(h), 3) for h in heights))
+
+    def testLowConfidenceBoxesAreNotZones(self):
+        scene, zones = self.zones(extra=[{"box": [0, 0, 1, 1], "score": 0.5,
+                                          "centreX": 0.5, "centreY": 0.5}])
+        self.assertEqual(len(zones), 9)
+
+    def testProposalIsWithinItsBounds(self):
+        from tt.calibration import ParameterProposal, EROSION_MAX
+        _, zones = self.zones()
+        settings = ParameterProposal(zones).settings()
+        self.assertTrue(1 <= settings["lowerPercentile"] <= 50)
+        self.assertTrue(0 <= settings["erosionIterations"] <= EROSION_MAX)
+        self.assertGreater(settings["minTopAreaM2"], 0)
+        self.assertAlmostEqual(settings["topStepM"],
+                               min(0.5, max(0.05,
+                                            settings["saddleDropM"] / 2)))
+
+    def testCheckCountsCoverageAndMultiplicity(self):
+        from tt.calibration import ZoneCheck
+        scene, zones = self.zones()
+        points, _ = scene.crownPeaks()
+        tops = []
+        for column, row in points:
+            east, north = scene.toWorld(column, row)
+            tops.append({"centreX": east, "centreY": north, "score": 10.0})
+        check = ZoneCheck(tops[1:], zones)     # tree 0 has no top
+        self.assertAlmostEqual(check.coverage, 8 / 9.0)
+        self.assertAlmostEqual(check.multiplicity, 0.0)
+        first = tops[0]
+        tops.append(dict(first, centreX=first["centreX"] + 0.3, score=9.0))
+        check = ZoneCheck(tops, zones)         # tree 0 has two
+        self.assertAlmostEqual(check.coverage, 1.0)
+        self.assertAlmostEqual(check.multiplicity, 1 / 9.0)
+
+    def testFinalMergeLeavesOneTopPerZone(self):
+        from tt.calibration import ZoneCheck, finalMerge
+        scene, zones = self.zones()
+        points, _ = scene.crownPeaks()
+        tops = []
+        for column, row in points:
+            east, north = scene.toWorld(column, row)
+            tops.append({"centreX": east, "centreY": north, "score": 10.0})
+            tops.append({"centreX": east + 0.3, "centreY": north,
+                         "score": 9.0})
+        tops.append({"centreX": 1.0, "centreY": 1.0, "score": 3.0})
+        merged = finalMerge(tops, zones)
+        self.assertEqual(len(merged), 9 + 1)
+        self.assertAlmostEqual(ZoneCheck(merged, zones).multiplicity, 0.0)
+
+    def testCalibratedRunFindsEveryTree(self):
+        from tt import CrownEvaluator
+        from tt.calibration import CalibratedDetector
+        from shapely.geometry import box as shapelyBox
+        from tt.dl import dlCommon as dc
+        scene, zones = self.zones()
+        calibrated = CalibratedDetector(scene, zones)
+        predictions = calibrated.run()
+        result = dc.evaluateDetections(predictions, scene.crowns,
+                                       shapelyBox(*scene.boundary.bounds))
+        self.assertEqual(result["recall"], 1.0)
+        self.assertIn("proposed", calibrated.log)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
