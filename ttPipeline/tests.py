@@ -959,6 +959,7 @@ class TestNeonChm(unittest.TestCase):
         self.assertAlmostEqual(float(chm.max()), 8.0, delta=0.6)
         self.assertLess(float(chm[0, 0]), 0.2)
         self.assertLess(float(chm[-1, -1]), 0.2)
+        self.assertFalse(rows[0]["sparse"])
 
 
 class TestCommandLine(Fixture):

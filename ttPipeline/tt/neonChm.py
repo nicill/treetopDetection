@@ -18,9 +18,11 @@ Point cloud: <root>/LiDAR/<tile>.laz or .las, beside <root>/RGB/<tile>.tif.
 Output: <root>/<folder>/<tile>_CHM.tif, folder "CHM050" for 0.5 m by default,
 so tt.neonRun --chmFolder CHM050 scores it.
 
-Check: each built CHM is averaged back to 1 m and compared with NEON's CHM of
-the same tile; the mean absolute difference is printed per tile and written to
-<root>/<folder>/check.csv. A large one means the build went wrong somewhere.
+Check: each built CHM is warped onto NEON's 1 m grid of the same tile, taking
+the maximum per cell as NEON's CHM does, and the mean absolute and signed
+differences are printed per tile and written to <root>/<folder>/check.csv.
+Tiles where over 5% of the cells had no point are marked sparse: the cloud has
+gaps there and the filled cells come out too low.
 """
 
 import argparse
@@ -32,6 +34,7 @@ import laspy
 import numpy as np
 import rasterio
 from rasterio.enums import Resampling
+from rasterio.warp import reproject
 from scipy.interpolate import LinearNDInterpolator, NearestNDInterpolator
 from scipy.ndimage import distance_transform_edt
 
@@ -40,6 +43,7 @@ from .neonRun import readManifest
 GROUND = 2
 NOISE = (7, 18)
 MAX_HEIGHT_M = 100.0
+SPARSE_EMPTY_SHARE = 0.05   # more cells without a point: the cloud has gaps
 
 
 def cloudFor(rgbPath, tile):
@@ -105,15 +109,23 @@ def writeChm(path, chm, bounds, resolution, crs):
 
 
 def differenceFromNeon(builtPath, neonPath):
-    """Mean |built - NEON| at NEON's 1 m grid, where NEON has canopy."""
+    """
+    Mean |built - NEON| and mean built - NEON on NEON's own 1 m grid, where
+    NEON has canopy. The built CHM is warped onto that grid taking the maximum
+    per cell, as NEON's CHM keeps the highest return; an average would lower
+    every peak and bias the comparison.
+    """
     with rasterio.open(neonPath) as neon, rasterio.open(builtPath) as built:
         reference = neon.read(1, masked=True).filled(0.0)
-        averaged = built.read(1, out_shape=(neon.height, neon.width),
-                              resampling=Resampling.average)
+        onNeon = np.zeros(reference.shape, dtype=np.float32)
+        reproject(built.read(1), onNeon, src_transform=built.transform,
+                  src_crs=built.crs, dst_transform=neon.transform,
+                  dst_crs=neon.crs, resampling=Resampling.max)
     canopy = reference > 0
     if not canopy.any():
-        return float("nan")
-    return float(np.abs(averaged[canopy] - reference[canopy]).mean())
+        return float("nan"), float("nan")
+    difference = onNeon[canopy] - reference[canopy]
+    return float(np.abs(difference).mean()), float(difference.mean())
 
 
 def buildTile(row, resolution, folder):
@@ -129,10 +141,11 @@ def buildTile(row, resolution, folder):
     path = os.path.join(root, folder, row["tile"] + "_CHM.tif")
     writeChm(path, chm, bounds, resolution, crs)
     neonPath = os.path.join(root, "CHM", row["tile"] + "_CHM.tif")
-    difference = differenceFromNeon(path, neonPath) \
-        if os.path.exists(neonPath) else float("nan")
+    absolute, signed = differenceFromNeon(path, neonPath) \
+        if os.path.exists(neonPath) else (float("nan"), float("nan"))
     return {"tile": row["tile"], "chm": path, "emptyCells": emptyShare,
-            "meanAbsDiffM": difference}
+            "sparse": emptyShare > SPARSE_EMPTY_SHARE,
+            "meanAbsDiffM": absolute, "meanDiffM": signed}
 
 
 def build(manifestPath, resolution, folder):
@@ -143,9 +156,11 @@ def build(manifestPath, resolution, folder):
             missing.append(entry["tile"])
             continue
         rows.append(result)
-        print("[chm] %-45s empty %4.1f%%  |built-NEON| %.2f m"
+        print("[chm] %-45s empty %4.1f%%  |built-NEON| %.2f m  "
+              "built-NEON %+.2f m%s"
               % (result["tile"], 100 * result["emptyCells"],
-                 result["meanAbsDiffM"]))
+                 result["meanAbsDiffM"], result["meanDiffM"],
+                 "  SPARSE" if result["sparse"] else ""))
     if missing:
         print("[chm] %d tile(s) without a point cloud: %s"
               % (len(missing), ", ".join(missing)))
@@ -160,9 +175,16 @@ def writeCheck(rows, directory):
         writer = csv.DictWriter(h, fieldnames=list(rows[0]))
         writer.writeheader()
         writer.writerows(rows)
-    differences = np.array([r["meanAbsDiffM"] for r in rows])
-    print("[chm] %d CHMs; |built-NEON| median %.2f m, worst %.2f m"
-          % (len(rows), np.nanmedian(differences), np.nanmax(differences)))
+    for label, subset in (("all", rows),
+                          ("not sparse", [r for r in rows if not r["sparse"]])):
+        if not subset:
+            continue
+        absolute = np.array([r["meanAbsDiffM"] for r in subset])
+        signed = np.array([r["meanDiffM"] for r in subset])
+        print("[chm] %-10s %3d CHMs; |built-NEON| median %.2f m, worst %.2f m;"
+              " built-NEON median %+.2f m"
+              % (label, len(subset), np.nanmedian(absolute),
+                 np.nanmax(absolute), np.nanmedian(signed)))
 
 
 def main(argv=None):
