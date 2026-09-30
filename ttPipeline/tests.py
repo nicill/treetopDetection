@@ -782,6 +782,64 @@ class TestNeonImport(unittest.TestCase):
         self.assertEqual(rows[0]["crowns"], 2)
 
 
+class TestNeonPrune(unittest.TestCase):
+    """Only files of annotated tiles survive, and nothing without --delete."""
+
+    files = ["evaluation/RGB/PLOT_001_2019.tif",
+             "evaluation/CHM/PLOT_001_2019_CHM.tif",
+             "evaluation/LiDAR/PLOT_001_2019.laz",
+             "evaluation/Hyperspectral/PLOT_001_2019_hyperspectral.tif",
+             "evaluation/RGB/PLOT_099_2019.tif",
+             "training/RGB/2018_NIWO_2_450000_4426000_image_crop.tif",
+             "training/CHM/2018_NIWO_2_450000_4426000_CHM.tif"]
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp(prefix="ttPrune")
+        annotations = os.path.join(self.directory, "annotations")
+        os.makedirs(annotations)
+        for tile in ("PLOT_001_2019", "2018_NIWO_2_450000_4426000_image_crop"):
+            with open(os.path.join(annotations, tile + ".xml"), "w") as h:
+                h.write("<annotation><filename>%s.tif</filename>"
+                        "</annotation>" % tile)
+        for name in self.files:
+            path = os.path.join(self.directory, name)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").close()
+
+    def tearDown(self):
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def prune(self, *extra):
+        from tt.neonPrune import main
+        return main(["--annotations", os.path.join(self.directory,
+                                                   "annotations"),
+                     "--roots", os.path.join(self.directory, "evaluation"),
+                     os.path.join(self.directory, "training")] + list(extra))
+
+    def remaining(self):
+        return sorted(os.path.relpath(os.path.join(f, n), self.directory)
+                      for f, _, ns in os.walk(self.directory) for n in ns
+                      if not n.endswith(".xml"))
+
+    def testDryRunRemovesNothing(self):
+        self.prune()
+        self.assertEqual(len(self.remaining()), len(self.files))
+
+    def testDeleteKeepsOnlyAnnotatedTiles(self):
+        self.prune("--delete")
+        self.assertEqual(self.remaining(), sorted(
+            ["evaluation/RGB/PLOT_001_2019.tif",
+             "evaluation/CHM/PLOT_001_2019_CHM.tif",
+             "evaluation/LiDAR/PLOT_001_2019.laz",
+             "training/RGB/2018_NIWO_2_450000_4426000_image_crop.tif",
+             "training/CHM/2018_NIWO_2_450000_4426000_CHM.tif"]))
+
+    def testDropLidar(self):
+        self.prune("--delete", "--dropLidar")
+        self.assertNotIn("evaluation/LiDAR/PLOT_001_2019.laz",
+                         self.remaining())
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
