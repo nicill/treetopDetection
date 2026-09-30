@@ -1024,6 +1024,7 @@ class TestQpPrepare(unittest.TestCase):
     site = "20990101_testsite"
     trees = ((10.0, 10.0, 3.0), (27.0, 12.0, 4.0), (60.0, 30.0, 2.5))
     unannotated = ((12.5, 10.0, 3.0),)   # in the cloud, in no crown
+    hidden = ((45.0, 12.0, 0.6),)        # a crown whose top is below 1 m
 
     def setUp(self):
         try:
@@ -1038,9 +1039,12 @@ class TestQpPrepare(unittest.TestCase):
         self.west, self.south = 300000.0, 5000000.0
         centres = [Point(self.west + x, self.south + y) for x, y, _ in self.trees]
         thicket = Point(self.west + 40, self.south + 30).buffer(1.5)
-        crowns = gpd.GeoDataFrame({"class_code": ["PIGL"] * 3 + ["other"]},
-                                  geometry=[c.buffer(1.0) for c in centres]
-                                  + [thicket], crs="EPSG:32619")
+        low = [Point(self.west + x, self.south + y).buffer(1.0)
+               for x, y, _ in self.hidden]
+        crowns = gpd.GeoDataFrame(
+            {"class_code": ["PIGL"] * 3 + ["other"] + ["PIGL"] * len(low)},
+            geometry=[c.buffer(1.0) for c in centres] + [thicket] + low,
+            crs="EPSG:32619")
         points = gpd.GeoDataFrame(
             {"class_code": ["PIGL"] * 3,
              "total_height1_cm": [str(int(h * 100)) for *_, h in self.trees],
@@ -1069,7 +1073,7 @@ class TestQpPrepare(unittest.TestCase):
         x = self.west + rng.uniform(0, 80, 200000)
         y = self.south + rng.uniform(0, 80, 200000)
         z = np.full(x.shape, 100.0)
-        for tx, ty, h in self.trees + self.unannotated:
+        for tx, ty, h in self.trees + self.unannotated + self.hidden:
             d = np.hypot(x - self.west - tx, y - self.south - ty)
             z = np.maximum(z, 100.0 + h * np.clip(1 - d / 1.5, 0, None))
         header = laspy.LasHeader(point_format=3, version="1.2")
@@ -1105,6 +1109,8 @@ class TestQpPrepare(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(out, name)), name)
         self.assertEqual(check["crowns"], 3)
         self.assertEqual(check["dontCareCrowns"], 1)
+        self.assertEqual(check["invisibleCrowns"], 1)
+        self.assertEqual(check["annotatedCrowns"], 5)
         self.assertEqual(check["measured"], {"2023-07-29": 2, "2023-10-11": 1})
         self.assertEqual(sorted(check["heightsByDay"]), ["2023-07-29",
                                                         "2023-10-11"])
@@ -1122,12 +1128,14 @@ class TestQpPrepare(unittest.TestCase):
         scored = gpd.read_file(os.path.join(out, "scoredArea.shp")).geometry[0]
         whole = gpd.read_file(os.path.join(out, "area.shp")).geometry[0]
         thicket = Point(self.west + 40, self.south + 30)
-        for place in (loose, thicket):
+        hidden = Point(self.west + 45, self.south + 12)
+        for place in (loose, thicket, hidden):
             self.assertTrue(whole.contains(place))
             self.assertFalse(scored.contains(place))
         self.assertEqual(len(gpd.read_file(os.path.join(out, "crowns.shp"))), 3)
         ignored = gpd.read_file(os.path.join(out, "ignored.shp"))
-        self.assertEqual(sorted(ignored["reason"]), ["other", "uncovered"])
+        self.assertEqual(sorted(ignored["reason"]),
+                         ["invisible", "other", "uncovered"])
         heights = check["heights"]
         self.assertEqual(heights["trees"], 3)
         self.assertLess(abs(heights["medianChmMinusFieldM"]), 0.5)

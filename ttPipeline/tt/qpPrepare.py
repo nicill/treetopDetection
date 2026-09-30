@@ -19,9 +19,13 @@ the FRDR server for the annotated area only. Per site, in <output>/<site>/:
                Cells without a point take their nearest filled cell; the
                share is chmCellsFilled in check.json.
   rgb.tif      the orthomosaic over the area at --rgbResolution
-  crowns.shp   the hand-made crown polygons to score: all but 'other'
+  crowns.shp   the hand-made crown polygons to score: all but 'other' and
+               the invisible ones
   ignored.shp  don't-care areas: 'other' crowns (thickets drawn as one
-               polygon) and uncovered canopy (below); reason says which
+               polygon), invisible crowns (CHM top below --visibleM: trees
+               no taller than the herb layer, counted in check.json and
+               reported separately) and uncovered canopy (below); reason
+               says which
   scoredArea.shp  area.shp minus ignored.shp: the boundary to score in
   trees.shp    the field-measured trees; fieldHm is the highest of the three
                total heights, noShootHm the same without this year's shoot
@@ -35,7 +39,7 @@ the FRDR server for the annotated area only. Per site, in <output>/<site>/:
   check.json   CHM against field heights, the uncovered share of the area's
                canopy, and the product sizes
   quicklook.png  scored crowns (yellow), area (red), uncovered canopy (cyan)
-               and 'other' crowns (magenta) over the RGB
+               'other' crowns (magenta) and invisible crowns (orange)
 
 --recheck redoes the checks for sites already prepared, from their saved
 chm.tif and rgb.tif, without reading anything from the server.
@@ -63,7 +67,7 @@ import rasterio
 from rasterio.enums import Resampling
 from rasterio.features import geometry_mask, shapes
 from rasterio.merge import merge
-from rasterio.windows import from_bounds
+from rasterio.windows import Window, from_bounds
 from scipy.ndimage import distance_transform_edt, label
 from shapely.geometry import Polygon, box, shape
 
@@ -436,24 +440,52 @@ def uncoveredCanopy(chmPath, crowns, area, args):
     return summary, frame
 
 
-def scoredRegion(crowns, area, uncovered):
+def crownTops(chmPath, crowns):
+    """Highest CHM cell inside each crown (0 when it holds no cell)."""
+    with rasterio.open(chmPath) as src:
+        chm, transform = src.read(1), src.transform
+    tops = []
+    for polygon in crowns.geometry:
+        window = from_bounds(*polygon.bounds, transform).round_offsets() \
+            .round_lengths()
+        row0, col0 = max(int(window.row_off), 0), max(int(window.col_off), 0)
+        rows = slice(row0, max(int(window.row_off + window.height) + 1, row0))
+        cols = slice(col0, max(int(window.col_off + window.width) + 1, col0))
+        patch = chm[rows, cols]
+        if patch.size == 0:
+            tops.append(0.0)
+            continue
+        inside = ~geometry_mask([polygon], patch.shape, rasterio.windows
+                                .transform(Window(col0, row0, patch.shape[1],
+                                                  patch.shape[0]), transform))
+        tops.append(float(patch[inside].max()) if inside.any() else 0.0)
+    return np.array(tops)
+
+
+def scoredRegion(crowns, area, uncovered, tops, visibleM):
     """
-    Crowns to score and the area to score them in: 'other' thickets and
-    uncovered canopy are don't-care, cut out of the area, so a detection
-    there counts neither as a hit nor as a false positive.
+    Crowns to score and the area to score them in. Don't-care, cut out of
+    the area so a detection there counts neither as a hit nor as a false
+    positive: 'other' thickets, uncovered canopy, and invisible crowns,
+    whose highest CHM cell is below visibleM (trees no taller than the herb
+    layer the LiDAR takes for ground). visibleM is fixed for every setting
+    tried, so the set of scored trees never moves with the tuning.
     """
-    dontCare = isDontCare(crowns)
+    other = isDontCare(crowns).values
+    invisible = ~other & (tops < visibleM)
+    parts = (("other", crowns.geometry[other]),
+             ("invisible", crowns.geometry[invisible]),
+             ("uncovered", uncovered.geometry))
     ignored = gpd.GeoDataFrame(
-        {"reason": ["other"] * int(dontCare.sum()) + ["uncovered"] *
-         len(uncovered)},
-        geometry=list(crowns.geometry[dontCare]) + list(uncovered.geometry),
-        crs=crowns.crs)
+        {"reason": [r for r, g in parts for _ in range(len(g))]},
+        geometry=[p for _, g in parts for p in g], crs=crowns.crs)
     shape = area.geometry.iloc[0]
     if len(ignored):
         shape = shape.difference(ignored.geometry.union_all())
     region = gpd.GeoDataFrame({"name": ["scored"]}, geometry=[shape],
                               crs=crowns.crs)
-    return crowns[~dontCare], ignored, region
+    counts = {"other": int(other.sum()), "invisible": int(invisible.sum())}
+    return crowns[~other & ~invisible], ignored, region, counts
 
 
 def quicklook(rgbPath, crowns, area, ignored, outputPath, maxPixels=2000):
@@ -468,7 +500,8 @@ def quicklook(rgbPath, crowns, area, ignored, outputPath, maxPixels=2000):
     axis.imshow(np.moveaxis(image, 0, -1), extent=extent)
     crowns.boundary.plot(ax=axis, color="yellow", linewidth=0.4)
     area.boundary.plot(ax=axis, color="red", linewidth=1.0)
-    for reason, colour in (("uncovered", "cyan"), ("other", "magenta")):
+    for reason, colour in (("uncovered", "cyan"), ("other", "magenta"),
+                           ("invisible", "orange")):
         part = ignored[ignored["reason"] == reason]
         if len(part):
             part.boundary.plot(ax=axis, color=colour, linewidth=0.6)
@@ -535,14 +568,19 @@ def finishSite(site, outDir, crowns, trees, area, chmPath, rgbPath, filled,
                args):
     table = treeTable(trees, chmPath)
     coverage, uncovered = uncoveredCanopy(chmPath, crowns, area, args)
-    scored, ignored, region = scoredRegion(crowns, area, uncovered)
+    tops = crownTops(chmPath, crowns)
+    scored, ignored, region, counts = scoredRegion(crowns, area, uncovered,
+                                                   tops, args.visibleM)
     writeLayers(outDir, {"trees": table, "uncovered": uncovered,
                          "crowns": scored[["class_code", "geometry"]],
                          "ignored": ignored, "scoredArea": region})
     quicklook(rgbPath, scored, area, ignored,
               os.path.join(outDir, "quicklook.png"))
     check = {"site": site, "crowns": int(len(scored)),
-             "dontCareCrowns": int(len(crowns) - len(scored)),
+             "annotatedCrowns": int(len(crowns)),
+             "dontCareCrowns": counts["other"],
+             "invisibleCrowns": counts["invisible"],
+             "visibleM": args.visibleM,
              "areaM2": float(area.area.iloc[0]),
              "scoredAreaM2": float(region.area.iloc[0]),
              "medianCrownM2": float(scored.area.median()),
@@ -561,11 +599,14 @@ def finishSite(site, outDir, crowns, trees, area, chmPath, rgbPath, filled,
 
 def reportSite(check):
     site, c = check["site"], check["coverage"]
-    print("[qp] %s: %d crowns scored, %d 'other' don't-care; scored area "
-          "%.0f of %.0f m2; CHM cells filled %.1f%%"
-          % (site, check["crowns"], check["dontCareCrowns"],
-             check["scoredAreaM2"], check["areaM2"],
-             100 * check["chmCellsFilled"]), flush=True)
+    print("[qp] %s: %d of %d crowns scored; don't-care: %d 'other', %d "
+          "invisible (CHM top < %.1f m, %.1f%%); scored area %.0f of %.0f m2; "
+          "CHM cells filled %.1f%%"
+          % (site, check["crowns"], check["annotatedCrowns"],
+             check["dontCareCrowns"], check["invisibleCrowns"],
+             check["visibleM"], 100.0 * check["invisibleCrowns"] /
+             max(check["annotatedCrowns"], 1), check["scoredAreaM2"],
+             check["areaM2"], 100 * check["chmCellsFilled"]), flush=True)
     print("[qp] %s: uncovered canopy (>= %.1f m) %.1f%% at the edge, %.1f%% "
           "inside (%d interior patches)"
           % (site, c["canopyM"], 100 * c["edgeShare"],
@@ -614,6 +655,10 @@ def parseArguments(argv=None):
                         help="Where the temporary PDAL tiles go (default: the "
                              "system's temporary folder, so an --output in "
                              "Dropbox syncs only finished products)")
+    parser.add_argument("--visibleM", type=float, default=1.0,
+                        help="Crowns whose CHM top is below this are "
+                             "invisible: reported, not scored. Keep it fixed "
+                             "across every setting tried")
     parser.add_argument("--recheck", action="store_true",
                         help="Redo the checks of prepared sites only")
     args = parser.parse_args(argv)
