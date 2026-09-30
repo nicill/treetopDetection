@@ -9,3 +9,4 @@ Data/
 predictions_*.json
 sweep*.json
 !results/sweep*.json
+*.egg-info/
