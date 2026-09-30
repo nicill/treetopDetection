@@ -22,8 +22,16 @@ the FRDR server for the annotated area only. Per site, in <output>/<site>/:
   crowns.shp   the hand-made crown polygons
   trees.shp    the field-measured trees; fieldHm is the highest of the three
                total heights, chmHm the CHM's highest cell within 0.3 m
-  check.json   CHM against field heights, and the product sizes
-  quicklook.png  crowns over the RGB, to judge annotation coverage by eye
+  uncovered.shp  canopy (CHM >= --canopyM) in the area that no crown covers,
+               as patches of at least --minPatchM2: unannotated trees, or
+               tall shrubs and herbs. Measured only; nothing is masked.
+  check.json   CHM against field heights, the uncovered share of the area's
+               canopy, and the product sizes
+  quicklook.png  crowns (yellow), area (red) and uncovered canopy (cyan) over
+               the RGB, to judge annotation coverage by eye
+
+--recheck redoes the checks for sites already prepared, from their saved
+chm.tif and rgb.tif, without reading anything from the server.
 
 PDAL runs as a program (--pdal) so it can live in its own environment.
 """
@@ -41,11 +49,11 @@ import numpy as np
 import pandas as pd
 import rasterio
 from rasterio.enums import Resampling
-from rasterio.features import geometry_mask
+from rasterio.features import geometry_mask, shapes
 from rasterio.merge import merge
 from rasterio.windows import from_bounds
-from scipy.ndimage import distance_transform_edt
-from shapely.geometry import Polygon, box
+from scipy.ndimage import distance_transform_edt, label
+from shapely.geometry import Polygon, box, shape
 
 try:                                    # geopandas' newer backend
     from pyogrio import list_layers as _listLayers
@@ -282,7 +290,36 @@ def heightCheck(trees):
                                              both["chmHm"])[0, 1])}
 
 
-def quicklook(rgbPath, crowns, area, outputPath, maxPixels=2000):
+def uncoveredCanopy(chmPath, crowns, area, args):
+    """
+    Canopy in the area outside every crown (grown by --crownMarginM), as
+    patches of at least --minPatchM2. Returns (summary, patch polygons).
+    """
+    with rasterio.open(chmPath) as src:
+        chm, transform, cell = src.read(1), src.transform, src.res[0] ** 2
+    inArea = ~geometry_mask(area.geometry, chm.shape, transform)
+    grown = crowns.geometry.buffer(args.crownMarginM)
+    inCrowns = ~geometry_mask(grown, chm.shape, transform)
+    canopy = (chm >= args.canopyM) & inArea
+    labels, count = label(canopy & ~inCrowns, structure=np.ones((3, 3)))
+    sizes = np.bincount(labels.ravel(), minlength=count + 1) * cell
+    keep = np.flatnonzero(sizes >= args.minPatchM2)
+    keep = keep[keep > 0]
+    patches = np.isin(labels, keep)
+    polygons = [shape(g) for g, v in shapes(labels.astype(np.int32),
+                                            mask=patches, transform=transform)]
+    frame = gpd.GeoDataFrame({"areaM2": [p.area for p in polygons]},
+                             geometry=polygons, crs=crowns.crs)
+    canopyM2 = float(canopy.sum() * cell)
+    summary = {"canopyM": args.canopyM, "canopyM2": canopyM2,
+               "uncoveredM2": float(patches.sum() * cell),
+               "uncoveredShare": float(patches.sum() * cell) / max(canopyM2,
+                                                                   1e-9),
+               "patches": int(len(keep))}
+    return summary, frame
+
+
+def quicklook(rgbPath, crowns, area, uncovered, outputPath, maxPixels=2000):
     with rasterio.open(rgbPath) as src:
         scale = max(src.width, src.height) / float(maxPixels)
         shape = (3, int(src.height / max(scale, 1)),
@@ -294,6 +331,8 @@ def quicklook(rgbPath, crowns, area, outputPath, maxPixels=2000):
     axis.imshow(np.moveaxis(image, 0, -1), extent=extent)
     crowns.boundary.plot(ax=axis, color="yellow", linewidth=0.4)
     area.boundary.plot(ax=axis, color="red", linewidth=1.0)
+    if len(uncovered):
+        uncovered.boundary.plot(ax=axis, color="cyan", linewidth=0.6)
     axis.set_axis_off()
     figure.savefig(outputPath, dpi=150, bbox_inches="tight")
     plt.close(figure)
@@ -314,19 +353,46 @@ def prepareSite(site, args):
         filled = buildChm(args.lidarSource(site), area, args, tileDir, chmPath)
     readRgb(args.rgbSource(site), area, args.rgbResolution, rgbPath)
     return finishSite(site, outDir, crowns, trees, area, chmPath, rgbPath,
-                      filled)
+                      filled, args)
 
 
-def finishSite(site, outDir, crowns, trees, area, chmPath, rgbPath, filled):
+def removeShapefile(path):
+    """A shapefile and its side files, if present (a recheck may find none)."""
+    stem = os.path.splitext(path)[0]
+    for extension in (".shp", ".shx", ".dbf", ".prj", ".cpg"):
+        if os.path.exists(stem + extension):
+            os.remove(stem + extension)
+
+
+def recheckSite(site, args):
+    """The checks again, from a prepared site's saved products."""
+    outDir = os.path.join(args.output, site)
+    crowns, trees = readLayers(os.path.join(args.vectors, site + "_p1.gpkg"))
+    area = gpd.read_file(os.path.join(outDir, "area.shp"))
+    with open(os.path.join(outDir, "check.json")) as handle:
+        filled = json.load(handle).get("chmCellsFilled", float("nan"))
+    return finishSite(site, outDir, crowns, trees, area,
+                      os.path.join(outDir, "chm.tif"),
+                      os.path.join(outDir, "rgb.tif"), filled, args)
+
+
+def finishSite(site, outDir, crowns, trees, area, chmPath, rgbPath, filled,
+               args):
     trees = trees[["class_code", "geometry"]].assign(
         fieldHm=fieldHeight(trees).values)
     trees["chmHm"] = chmAtTrees(chmPath, trees)
     trees.to_file(os.path.join(outDir, "trees.shp"))
-    quicklook(rgbPath, crowns, area, os.path.join(outDir, "quicklook.png"))
+    coverage, uncovered = uncoveredCanopy(chmPath, crowns, area, args)
+    removeShapefile(os.path.join(outDir, "uncovered.shp"))
+    if len(uncovered):
+        uncovered.to_file(os.path.join(outDir, "uncovered.shp"))
+    quicklook(rgbPath, crowns, area, uncovered,
+              os.path.join(outDir, "quicklook.png"))
     check = {"site": site, "crowns": int(len(crowns)),
              "areaM2": float(area.area.iloc[0]),
              "medianCrownM2": float(crowns.area.median()),
              "chmCellsFilled": filled,
+             "coverage": coverage,
              "heights": heightCheck(trees),
              "sizesMB": {n: os.path.getsize(os.path.join(outDir, n)) / 1e6
                          for n in ("chm.tif", "rgb.tif")}}
@@ -339,6 +405,10 @@ def finishSite(site, outDir, crowns, trees, area, chmPath, rgbPath, filled):
              h.get("meanAbsDiffM", np.nan), h.get("correlation", np.nan),
              h["trees"], check["sizesMB"]["chm.tif"],
              check["sizesMB"]["rgb.tif"]), flush=True)
+    print("[qp] %s: %.1f%% of the area's canopy (>= %.1f m) outside every "
+          "crown, in %d patches" % (site, 100 * coverage["uncoveredShare"],
+                                    coverage["canopyM"], coverage["patches"]),
+          flush=True)
     return check
 
 
@@ -356,6 +426,14 @@ def parseArguments(argv=None):
     parser.add_argument("--areaBufferM", type=float, default=2.0)
     parser.add_argument("--tileM", type=float, default=50.0)
     parser.add_argument("--marginM", type=float, default=5.0)
+    parser.add_argument("--canopyM", type=float, default=1.5,
+                        help="Canopy height for the coverage check")
+    parser.add_argument("--crownMarginM", type=float, default=0.2,
+                        help="Crowns grown by this before the check")
+    parser.add_argument("--minPatchM2", type=float, default=0.5,
+                        help="Smallest uncovered patch counted")
+    parser.add_argument("--recheck", action="store_true",
+                        help="Redo the checks of prepared sites only")
     args = parser.parse_args(argv)
     args.lidarSource, args.rgbSource = lidarUrl, rgbUrl
     return args
@@ -365,7 +443,13 @@ def main(argv=None):
     args = parseArguments(argv)
     sites = args.sites or sitesIn(args.vectors)
     for site in sites:
-        if os.path.exists(os.path.join(args.output, site, "check.json")):
+        prepared = os.path.exists(os.path.join(args.output, site,
+                                               "check.json"))
+        if args.recheck:
+            if prepared:
+                recheckSite(site, args)
+            continue
+        if prepared:
             print("[qp] %s: already prepared, skipped" % site)
             continue
         prepareSite(site, args)

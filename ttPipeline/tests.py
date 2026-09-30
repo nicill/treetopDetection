@@ -1023,6 +1023,7 @@ class TestQpPrepare(unittest.TestCase):
 
     site = "20990101_testsite"
     trees = ((10.0, 10.0, 3.0), (27.0, 12.0, 4.0), (60.0, 30.0, 2.5))
+    unannotated = ((12.5, 10.0, 3.0),)   # in the cloud, in no crown
 
     def setUp(self):
         try:
@@ -1064,7 +1065,7 @@ class TestQpPrepare(unittest.TestCase):
         x = self.west + rng.uniform(0, 80, 200000)
         y = self.south + rng.uniform(0, 80, 200000)
         z = np.full(x.shape, 100.0)
-        for tx, ty, h in self.trees:
+        for tx, ty, h in self.trees + self.unannotated:
             d = np.hypot(x - self.west - tx, y - self.south - ty)
             z = np.maximum(z, 100.0 + h * np.clip(1 - d / 1.5, 0, None))
         header = laspy.LasHeader(point_format=3, version="1.2")
@@ -1090,14 +1091,21 @@ class TestQpPrepare(unittest.TestCase):
     def testSiteProducts(self):
         import geopandas as gpd
         import rasterio
+        from shapely.geometry import Point
         from tt.qpPrepare import prepareSite
         check = prepareSite(self.site, self.arguments())
         out = os.path.join(self.directory, "out", self.site)
         for name in ("area.shp", "chm.tif", "rgb.tif", "crowns.shp",
-                     "trees.shp", "check.json", "quicklook.png"):
+                     "trees.shp", "check.json", "quicklook.png",
+                     "uncovered.shp"):
             self.assertTrue(os.path.exists(os.path.join(out, name)), name)
         self.assertEqual(check["crowns"], 3)
         self.assertGreater(check["chmCellsFilled"], 0.3)   # sparse on purpose
+        coverage = check["coverage"]
+        self.assertEqual(coverage["patches"], 1)          # the unannotated tree
+        uncovered = gpd.read_file(os.path.join(out, "uncovered.shp"))
+        self.assertTrue(uncovered.geometry.iloc[0].intersects(
+            Point(self.west + 12.5, self.south + 10.0).buffer(0.5)))
         heights = check["heights"]
         self.assertEqual(heights["trees"], 3)
         self.assertLess(abs(heights["medianChmMinusFieldM"]), 0.5)
@@ -1116,6 +1124,22 @@ class TestQpPrepare(unittest.TestCase):
             # tiles start at 7 m and are 20 m wide: tree 2 sits on the seam
             row, column = chm.index(self.west + 27.0, self.south + 12.0)
             self.assertGreater(data[row, column], 3.0)
+
+    def testRecheckRedoesTheChecksOnly(self):
+        import json
+        from tt.qpPrepare import main, prepareSite
+        args = self.arguments()
+        prepareSite(self.site, args)
+        chm = os.path.join(self.directory, "out", self.site, "chm.tif")
+        before = os.path.getmtime(chm)
+        argv = ["--vectors", self.vectors, "--pdal", "/nonexistent",
+                "--output", os.path.join(self.directory, "out"), "--recheck",
+                "--canopyM", "2.0"]
+        self.assertEqual(main(argv), 0)
+        self.assertEqual(os.path.getmtime(chm), before)
+        with open(os.path.join(self.directory, "out", self.site,
+                               "check.json")) as handle:
+            self.assertEqual(json.load(handle)["coverage"]["canopyM"], 2.0)
 
     def testWholeCellOffsetIsOnTheLattice(self):
         from tt.qpPrepare import latticeOffset
