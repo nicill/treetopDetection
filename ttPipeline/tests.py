@@ -1018,6 +1018,114 @@ class TestNeonCv(Fixture):
         self.assertEqual([f["f1"] for f in default], [0.5] * 4)
 
 
+class TestQpPrepare(unittest.TestCase):
+    """Quebec Plantations prep on a synthetic site, with a stand-in PDAL."""
+
+    site = "20990101_testsite"
+    trees = ((10.0, 10.0, 3.0), (20.0, 12.0, 4.0), (60.0, 30.0, 2.5))
+
+    def setUp(self):
+        try:
+            import laspy
+        except ImportError:
+            self.skipTest("laspy not installed")
+        import geopandas as gpd
+        import rasterio
+        from affine import Affine
+        from shapely.geometry import Point
+        self.directory = tempfile.mkdtemp(prefix="ttQp")
+        self.west, self.south = 300000.0, 5000000.0
+        centres = [Point(self.west + x, self.south + y) for x, y, _ in self.trees]
+        crowns = gpd.GeoDataFrame({"class_code": ["PIGL"] * 3},
+                                  geometry=[c.buffer(1.0) for c in centres],
+                                  crs="EPSG:32619")
+        points = gpd.GeoDataFrame(
+            {"class_code": ["PIGL"] * 3,
+             "total_height1_cm": [str(int(h * 100)) for *_, h in self.trees],
+             "total_height2_cm": ["NA", str(int(self.trees[1][2] * 90)), "NA"]},
+            geometry=centres, crs="EPSG:32619")
+        vectors = os.path.join(self.directory, "vectors")
+        os.makedirs(vectors)
+        gpkg = os.path.join(vectors, self.site + "_p1.gpkg")
+        crowns.to_file(gpkg, layer=self.site + "_labels_poly")
+        points.to_file(gpkg, layer=self.site + "_labels_pts")
+        self.lidar = os.path.join(self.directory, "cloud.las")
+        self.writeCloud(laspy)
+        self.rgb = os.path.join(self.directory, "rgb.tif")
+        with rasterio.open(self.rgb, "w", driver="GTiff", height=800,
+                           width=800, count=4, dtype="uint8", crs="EPSG:32619",
+                           transform=Affine(0.1, 0, self.west, 0, -0.1,
+                                            self.south + 80)) as d:
+            d.write(np.full((4, 800, 800), 120, np.uint8))
+        self.vectors = vectors
+
+    def writeCloud(self, laspy):
+        rng = np.random.default_rng(1)
+        x = self.west + rng.uniform(0, 80, 200000)
+        y = self.south + rng.uniform(0, 80, 200000)
+        z = np.full(x.shape, 100.0)
+        for tx, ty, h in self.trees:
+            d = np.hypot(x - self.west - tx, y - self.south - ty)
+            z = np.maximum(z, 100.0 + h * np.clip(1 - d, 0, None))
+        header = laspy.LasHeader(point_format=3, version="1.2")
+        header.scales, header.offsets = [0.001] * 3, [self.west, self.south, 0]
+        cloud = laspy.LasData(header)
+        cloud.x, cloud.y, cloud.z = x, y, z
+        cloud.write(self.lidar)
+
+    def tearDown(self):
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def arguments(self):
+        from tt.qpPrepare import parseArguments
+        fake = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "tests_support", "fakePdal.py")
+        args = parseArguments(["--vectors", self.vectors, "--pdal", fake,
+                               "--output", os.path.join(self.directory, "out"),
+                               "--chmResolution", "0.1", "--tileM", "20"])
+        args.lidarSource = lambda site: self.lidar
+        args.rgbSource = lambda site: self.rgb
+        return args
+
+    def testSiteProducts(self):
+        import geopandas as gpd
+        import rasterio
+        from tt.qpPrepare import prepareSite
+        check = prepareSite(self.site, self.arguments())
+        out = os.path.join(self.directory, "out", self.site)
+        for name in ("area.shp", "chm.tif", "rgb.tif", "crowns.shp",
+                     "trees.shp", "check.json", "quicklook.png"):
+            self.assertTrue(os.path.exists(os.path.join(out, name)), name)
+        self.assertEqual(check["crowns"], 3)
+        heights = check["heights"]
+        self.assertEqual(heights["trees"], 3)
+        self.assertLess(abs(heights["medianChmMinusFieldM"]), 0.5)
+        trees = gpd.read_file(os.path.join(out, "trees.shp"))
+        self.assertAlmostEqual(trees["fieldHm"].iloc[1], 4.0)
+        with rasterio.open(os.path.join(out, "chm.tif")) as chm, \
+                rasterio.open(os.path.join(out, "rgb.tif")) as rgb:
+            self.assertEqual(rgb.count, 3)
+            self.assertAlmostEqual(rgb.res[0], 0.02)
+            data = chm.read(1)
+            self.assertAlmostEqual(chm.res[0], 0.1)
+            self.assertGreater(data.max(), 3.4)   # 4 m apex, sampled
+            # ground between the trees but outside every buffered crown
+            row, column = chm.index(self.west + 40, self.south + 20)
+            self.assertEqual(data[row, column], 0.0)
+
+    def testAreaFillsHolesAndMergesNeighbours(self):
+        import geopandas as gpd
+        from shapely.geometry import Point
+        from tt.qpPrepare import annotatedArea
+        ring = [Point(np.cos(a) * 5, np.sin(a) * 5).buffer(1.2)
+                for a in np.linspace(0, 2 * np.pi, 16, endpoint=False)]
+        area = annotatedArea(gpd.GeoDataFrame(geometry=ring,
+                                              crs="EPSG:32619"), 1.0)
+        shape = area.geometry.iloc[0]
+        self.assertEqual(shape.geom_type, "Polygon")
+        self.assertTrue(shape.contains(Point(0, 0)))
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
