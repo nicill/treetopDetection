@@ -10,3 +10,10 @@ predictions_*.json
 sweep*.json
 !results/sweep*.json
 *.egg-info/
+neonCC*/
+neonCv*/
+neonDense_*/
+neonAnalysis/
+bamSample/
+bamforests*.txt
+neonLong.sh
