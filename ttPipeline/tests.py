@@ -721,6 +721,67 @@ class TestTransfer(unittest.TestCase):
         self.assertEqual(result["tunedBetter"], 1)
 
 
+class TestNeonImport(unittest.TestCase):
+    """NEON pixel boxes land on the right ground, one folder per tile."""
+
+    xml = ("<annotation><filename>PLOT_001_2019.tif</filename>"
+           "<object><name>Tree</name><bndbox><xmin>10</xmin><ymin>20</ymin>"
+           "<xmax>30</xmax><ymax>60</ymax></bndbox></object>"
+           "<object><name>Tree</name><bndbox><xmin>0</xmin><ymin>0</ymin>"
+           "<xmax>400</xmax><ymax>400</ymax></bndbox></object>"
+           "</annotation>")
+
+    def setUp(self):
+        import rasterio
+        from affine import Affine
+        self.directory = tempfile.mkdtemp(prefix="ttNeon")
+        for sub in ("annotations", "RGB"):
+            os.makedirs(os.path.join(self.directory, sub))
+        with open(os.path.join(self.directory, "annotations",
+                               "PLOT_001_2019.xml"), "w") as handle:
+            handle.write(self.xml)
+        with open(os.path.join(self.directory, "annotations",
+                               "ORPHAN.xml"), "w") as handle:
+            handle.write(self.xml.replace("PLOT_001_2019", "MISSING"))
+        transform = Affine(0.1, 0.0, 500000.0, 0.0, -0.1, 4000040.0)
+        with rasterio.open(os.path.join(self.directory, "RGB",
+                                        "PLOT_001_2019.tif"), "w",
+                           driver="GTiff", height=400, width=400, count=3,
+                           dtype="uint8", crs="EPSG:32618",
+                           transform=transform) as destination:
+            destination.write(np.zeros((3, 400, 400), dtype=np.uint8))
+
+    def tearDown(self):
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def convert(self):
+        from tt.neonImport import convert
+        return convert(os.path.join(self.directory, "annotations"),
+                       os.path.join(self.directory, "RGB"),
+                       os.path.join(self.directory, "out"))
+
+    def testBoxLandsOnItsGround(self):
+        import geopandas as gpd
+        rows = self.convert()
+        crowns = gpd.read_file(rows[0]["crownPath"])
+        np.testing.assert_allclose(crowns.geometry.iloc[0].bounds,
+                                   (500001.0, 4000034.0, 500003.0, 4000038.0))
+        self.assertAlmostEqual(crowns["area"].iloc[0], 8.0)
+
+    def testBoundaryIsTheTileFootprint(self):
+        import geopandas as gpd
+        rows = self.convert()
+        boundary = gpd.read_file(rows[0]["boundaryPath"])
+        np.testing.assert_allclose(boundary.geometry.iloc[0].bounds,
+                                   (500000.0, 4000000.0, 500040.0, 4000040.0))
+        self.assertEqual(str(boundary.crs), "EPSG:32618")
+
+    def testAnnotationWithoutTileIsSkipped(self):
+        rows = self.convert()
+        self.assertEqual([r["tile"] for r in rows], ["PLOT_001_2019"])
+        self.assertEqual(rows[0]["crowns"], 2)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
