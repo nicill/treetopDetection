@@ -776,6 +776,15 @@ class TestNeonImport(unittest.TestCase):
                                    (500000.0, 4000000.0, 500040.0, 4000040.0))
         self.assertEqual(str(boundary.crs), "EPSG:32618")
 
+    def testNestedAnnotationFolderIsSearched(self):
+        from tt.neonImport import convert
+        outer = os.path.join(self.directory, "outer")
+        shutil.copytree(os.path.join(self.directory, "annotations"),
+                        os.path.join(outer, "annotations"))
+        rows = convert(outer, os.path.join(self.directory, "RGB"),
+                       os.path.join(self.directory, "out"))
+        self.assertEqual([r["tile"] for r in rows], ["PLOT_001_2019"])
+
     def testAnnotationWithoutTileIsSkipped(self):
         rows = self.convert()
         self.assertEqual([r["tile"] for r in rows], ["PLOT_001_2019"])

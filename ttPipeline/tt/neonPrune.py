@@ -26,22 +26,12 @@ import os
 import re
 import sys
 
-from tt.neonImport import readBoxes
+from tt.neonImport import annotationFiles, readBoxes
 
 PARENT_TILE = re.compile(r"^\d{4}_[A-Z]{4}_\d+_\d+_\d+")
 HYPERSPECTRAL = "hyperspectral"
 LIDAR = "lidar"
 CHM = "chm"
-MAC_JUNK = "__MACOSX"
-
-
-def annotationFiles(annotationDir):
-    """Every annotation XML under the folder, at any depth."""
-    return [os.path.join(folder, name)
-            for folder, _, names in os.walk(annotationDir)
-            for name in names
-            if name.endswith(".xml") and MAC_JUNK not in folder.split(os.sep)
-            and not name.startswith("._")]
 
 
 def annotatedKeys(annotationDir):

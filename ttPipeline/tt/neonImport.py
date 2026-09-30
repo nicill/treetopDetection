@@ -5,7 +5,8 @@ shapefile and a boundary shapefile per annotated tile.
     python -m tt.neonImport --annotations annotations --rgb evaluation/RGB \\
         --output Data/neon
 
-Each annotation XML (Pascal VOC) names its RGB tile and holds one bounding
+The annotation folder is searched at any depth, so the folder the zip unpacked
+into works as it is. Each annotation XML (Pascal VOC) names its RGB tile and holds one bounding
 box per visible tree, in pixel coordinates of that tile. The tile's GeoTIFF
 transform turns the boxes into map polygons. The boundary is the tile's
 footprint: the evaluation plots are annotated over the whole tile. The large
@@ -33,6 +34,16 @@ import rasterio
 from shapely.geometry import box
 
 BOX_KEYS = ("xmin", "ymin", "xmax", "ymax")
+MAC_JUNK = "__MACOSX"
+
+
+def annotationFiles(annotationDir):
+    """Every annotation XML under the folder, at any depth, sorted."""
+    return sorted(os.path.join(folder, name)
+                  for folder, _, names in os.walk(annotationDir)
+                  for name in names
+                  if name.endswith(".xml") and not name.startswith("._")
+                  and MAC_JUNK not in folder.split(os.sep))
 
 
 def readBoxes(xmlPath):
@@ -94,11 +105,12 @@ def writeManifest(rows, outputDir):
 
 def convert(annotationDir, rgbDir, outputDir):
     os.makedirs(outputDir, exist_ok=True)
-    names = sorted(f for f in os.listdir(annotationDir) if f.endswith(".xml"))
-    rows = [r for r in (convertTile(os.path.join(annotationDir, f), rgbDir,
-                                    outputDir) for f in names) if r]
+    paths = annotationFiles(annotationDir)
+    if not paths:
+        raise SystemExit("no annotation XML found under %s" % annotationDir)
+    rows = [r for r in (convertTile(p, rgbDir, outputDir) for p in paths) if r]
     print("[neon] %d of %d annotations matched an RGB tile in %s"
-          % (len(rows), len(names), rgbDir))
+          % (len(rows), len(paths), rgbDir))
     if not rows:
         return None
     print("[neon] %d crowns -> %s" % (sum(r["crowns"] for r in rows),
