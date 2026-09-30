@@ -7,6 +7,8 @@ geopandas
 shapely
 scikit-learn
 odfpy          # the ODT report
+laspy          # tt.neonChm: point clouds
+lazrs          # laspy: .laz files
 
 # tt/dl only
 torch

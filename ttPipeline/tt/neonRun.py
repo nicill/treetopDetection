@@ -6,8 +6,9 @@ Connected components over every NEON tile, at fixed settings, pooled.
         --output neonCC
 
 Reads the manifest tt.neonImport wrote. Each tile's CHM is looked up beside
-its RGB: <root>/RGB/<tile>.tif -> <root>/CHM/<tile>_CHM.tif; tiles without
-one are listed and skipped.
+its RGB: <root>/RGB/<tile>.tif -> <root>/CHM/<tile>_CHM.tif, or another
+folder with --chmFolder (CHM050 for the 0.5 m CHM tt.neonChm builds). Tiles
+without one are listed and skipped.
 
 The settings are fixed, never tuned on NEON: the detector's defaults and, for
 each --modalFrom run, the setting its cross-validation chose most often
@@ -36,9 +37,9 @@ from .transfer import DEFAULTS, detect, modalSetting
 SITE = re.compile(r"[A-Z]{4}")
 
 
-def chmFor(rgbPath, tile):
+def chmFor(rgbPath, tile, folder="CHM"):
     root = os.path.dirname(os.path.dirname(rgbPath))
-    path = os.path.join(root, "CHM", tile + "_CHM.tif")
+    path = os.path.join(root, folder, tile + "_CHM.tif")
     return path if os.path.exists(path) else None
 
 
@@ -103,11 +104,11 @@ def printTables(pooled):
                          for n in names))
 
 
-def run(manifestPath, settings, minHeight, outputDir):
+def run(manifestPath, settings, minHeight, outputDir, chmFolder="CHM"):
     perSetting = {name: [] for name in settings}
     missing = []
     for row in readManifest(manifestPath):
-        chmPath = chmFor(row["rgb"], row["tile"])
+        chmPath = chmFor(row["rgb"], row["tile"], chmFolder)
         if chmPath is None:
             missing.append(row["tile"])
             continue
@@ -121,6 +122,7 @@ def run(manifestPath, settings, minHeight, outputDir):
     if not pooled:
         raise SystemExit("no tile had a CHM; nothing scored")
     dc.saveJson({"settings": settings, "minHeight": minHeight,
+                 "chmFolder": chmFolder,
                  "skipped": missing, "pooled": pooled, "tiles": perSetting},
                 os.path.join(outputDir, "results.json"))
     printTables(pooled)
@@ -137,10 +139,13 @@ def main(argv=None):
                         metavar="NAME=RUN",
                         help="Also score this run's modal setting")
     parser.add_argument("--minHeight", type=float, default=3.0)
+    parser.add_argument("--chmFolder", default="CHM",
+                        help="Folder beside RGB/ holding <tile>_CHM.tif; "
+                             "CHM050 for the one tt.neonChm builds at 0.5 m")
     parser.add_argument("--output", default="neonCC")
     args = parser.parse_args(argv)
     run(args.manifest, settingsFrom(args.modalFrom), args.minHeight,
-        args.output)
+        args.output, args.chmFolder)
     return 0
 
 

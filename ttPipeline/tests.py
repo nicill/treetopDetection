@@ -902,6 +902,65 @@ class TestNeonRun(Fixture):
         self.assertIn("ABCD", result["pooled"]["defaults"]["sites"])
 
 
+class TestNeonChm(unittest.TestCase):
+    """A cone on sloping ground: the CHM is the cone, the slope is gone."""
+
+    def setUp(self):
+        try:
+            import laspy
+        except ImportError:
+            self.skipTest("laspy not installed")
+        import csv
+        import rasterio
+        from affine import Affine
+        self.directory = tempfile.mkdtemp(prefix="ttChm")
+        root = os.path.join(self.directory, "evaluation")
+        for sub in ("RGB", "LiDAR", "CHM"):
+            os.makedirs(os.path.join(root, sub))
+        west, north = 500000.0, 4000020.0
+        with rasterio.open(os.path.join(root, "RGB", "T_001.tif"), "w",
+                           driver="GTiff", height=200, width=200, count=1,
+                           dtype="uint8", crs="EPSG:32613",
+                           transform=Affine(0.1, 0, west, 0, -0.1, north)
+                           ) as destination:
+            destination.write(np.zeros((1, 200, 200), dtype=np.uint8))
+        rng = np.random.default_rng(0)
+        x = west + rng.uniform(0, 20, 20000)
+        y = north - rng.uniform(0, 20, 20000)
+        ground = 3000.0 + 0.2 * (x - west)
+        distance = np.hypot(x - west - 10, north - y - 10)
+        cone = np.clip(8.0 - 2.0 * distance, 0.0, None)
+        kind = np.where(cone > 0, 5, 2).astype(np.uint8)
+        header = laspy.LasHeader(point_format=3, version="1.2")
+        header.scales = [0.001, 0.001, 0.001]
+        header.offsets = [west, north - 20, 3000.0]
+        cloud = laspy.LasData(header)
+        cloud.x, cloud.y, cloud.z = x, y, ground + cone
+        cloud.classification = kind
+        cloud.write(os.path.join(root, "LiDAR", "T_001.las"))
+        self.manifest = os.path.join(self.directory, "manifest.csv")
+        with open(self.manifest, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["tile", "rgb"])
+            writer.writeheader()
+            writer.writerow({"tile": "T_001", "rgb": os.path.join(
+                root, "RGB", "T_001.tif")})
+
+    def tearDown(self):
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def testConeStandsOnFlatGround(self):
+        import rasterio
+        from tt.neonChm import build
+        rows = build(self.manifest, 0.5, "CHM050")
+        with rasterio.open(rows[0]["chm"]) as source:
+            chm = source.read(1)
+            self.assertEqual(chm.shape, (40, 40))
+            self.assertAlmostEqual(source.transform.a, 0.5)
+        self.assertAlmostEqual(float(chm.max()), 8.0, delta=0.6)
+        self.assertLess(float(chm[0, 0]), 0.2)
+        self.assertLess(float(chm[-1, -1]), 0.2)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
