@@ -962,6 +962,62 @@ class TestNeonChm(unittest.TestCase):
         self.assertFalse(rows[0]["sparse"])
 
 
+class TestNeonCv(Fixture):
+    """Leave-one-site-out picks each site's setting from the other sites."""
+
+    def manifest(self):
+        import csv
+        root = os.path.join(self.directory, "cvNeon")
+        for sub in ("RGB", "CHM050"):
+            os.makedirs(os.path.join(root, sub), exist_ok=True)
+        path = os.path.join(self.directory, "cvManifest.csv")
+        with open(path, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=[
+                "tile", "rgb", "crowns", "crownPath", "boundaryPath"])
+            writer.writeheader()
+            for tile in ("AAAA_001", "BBBB_001", "BBBB_002"):
+                shutil.copy(self.chmPath, os.path.join(
+                    root, "CHM050", tile + "_CHM.tif"))
+                writer.writerow({"tile": tile, "rgb": os.path.join(
+                    root, "RGB", tile + ".tif"), "crowns": 9,
+                    "crownPath": self.crownsPath,
+                    "boundaryPath": self.boundaryPath})
+        return path
+
+    def testFoldsPerSiteAndCachedCounts(self):
+        from tt.dl.dlCommon import loadJson
+        from tt.neonCv import main
+        output = os.path.join(self.directory, "cvOut")
+        arguments = ["--manifest", self.manifest(), "--minHeight", "2",
+                     "--percentiles", "10", "--minTopAreas", "0.12",
+                     "--topSteps", "0.12", "--erosions", "0,1",
+                     "--saddleDrops", "0.5", "--jobs", "1",
+                     "--output", output]
+        self.assertEqual(main(arguments), 0)
+        result = loadJson(os.path.join(output, "results.json"))
+        self.assertEqual([f["block"] for f in result["folds"]],
+                         ["AAAA", "BBBB"])
+        self.assertEqual([f["crowns"] for f in result["folds"]], [9, 18])
+        self.assertGreater(result["pooled"]["f1"], 0.8)
+        self.assertEqual(len(result["grid"]), 2)
+        self.assertEqual(main(arguments), 0)   # second run: from the cache
+
+    def testHeldOutSiteNeverChoosesItsOwnSetting(self):
+        from tt.neonCv import crossValidate
+        from tt.transfer import DEFAULTS
+        grid = [dict(a=1), dict(a=2), dict(DEFAULTS)]
+        good, bad, half = [10, 10, 10, 0, 0], [10, 10, 0, 0, 10], \
+            [10, 10, 5, 0, 5]
+        # setting 0 is perfect on A, B and C; setting 1 only on D
+        counts = np.array([[good, bad, half], [good, bad, half],
+                           [good, bad, half], [bad, good, half]], dtype=float)
+        tuned, default = crossValidate(["AAAA_1", "BBBB_1", "CCCC_1",
+                                        "DDDD_1"], counts, grid)
+        self.assertEqual([f["settings"] for f in tuned], [dict(a=1)] * 4)
+        self.assertEqual([f["f1"] for f in tuned], [1.0, 1.0, 1.0, 0.0])
+        self.assertEqual([f["f1"] for f in default], [0.5] * 4)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
