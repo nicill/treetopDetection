@@ -52,6 +52,8 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import geopandas as gpd
 import matplotlib
@@ -206,17 +208,30 @@ def runPdal(pdalPath, stages):
         os.remove(handle.name)
 
 
+def buildTile(source, tile, args, part):
+    runPdal(args.pdal, pipeline(source, tile, args.marginM,
+                                args.chmResolution, part))
+    return part
+
+
 def buildChm(source, area, args, tileDir, outputPath):
+    """
+    The tiles run --jobs at a time, each its own PDAL process; the CHM is
+    the same whatever the number, only the order they finish in changes.
+    """
     bounds = gridBounds(area, args.chmResolution)
-    parts = []
-    for index, tile in enumerate(tiles(bounds, area, args.tileM)):
-        part = os.path.join(tileDir, "tile%04d.tif" % index)
-        runPdal(args.pdal, pipeline(source, tile, args.marginM,
-                                    args.chmResolution, part))
-        if not parts:
-            checkTileGrid(part, tile, args.chmResolution)
-        parts.append(part)
-        print("[qp]   tile %d done" % (index + 1), flush=True)
+    work = list(tiles(bounds, area, args.tileM))
+    parts = [os.path.join(tileDir, "tile%04d.tif" % i) for i in range(len(work))]
+    start = time.time()
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+        futures = {pool.submit(buildTile, source, tile, args, part): tile
+                   for tile, part in zip(work, parts)}
+        for done, future in enumerate(as_completed(futures), 1):
+            future.result()
+            print("[qp]   tile %d of %d done, %s, %.1f min per tile"
+                  % (done, len(work), time.strftime("%H:%M"),
+                     (time.time() - start) / 60 / done), flush=True)
+    checkTileGrid(parts[0], work[0], args.chmResolution)
     return writeMosaic(parts, bounds, args.chmResolution, area, outputPath)
 
 
@@ -537,6 +552,9 @@ def parseArguments(argv=None):
                         help="Crowns grown by this before the check")
     parser.add_argument("--minPatchM2", type=float, default=0.5,
                         help="Smallest uncovered patch counted")
+    parser.add_argument("--jobs", type=int, default=4,
+                        help="Tiles processed at once (each a PDAL process "
+                             "of 1-2 GB)")
     parser.add_argument("--workDir", default=None,
                         help="Where the temporary PDAL tiles go (default: the "
                              "system's temporary folder, so an --output in "
