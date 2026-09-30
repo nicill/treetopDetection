@@ -1232,6 +1232,39 @@ class TestQpPrepare(unittest.TestCase):
                 "--retries", "0", "--sites", self.site, "20990101_missing"]
         self.assertEqual(main(argv), 1)          # both fail, neither raises
 
+    def testRgbComesFromTheOverviewAndStopsAtTheImage(self):
+        import geopandas as gpd
+        import rasterio
+        from affine import Affine
+        from rasterio.enums import Resampling
+        from shapely.geometry import box
+        from tt.qpPrepare import readRgb
+        path = os.path.join(self.directory, "ov.tif")
+        image = np.zeros((4, 800, 800), np.uint8)
+        image[:, :, 400:] = 200                   # right half bright
+        with rasterio.open(path, "w", driver="GTiff", height=800, width=800,
+                           count=4, dtype="uint8", crs="EPSG:32619",
+                           tiled=True, transform=Affine(0.01, 0, 0, 0, -0.01,
+                                                        8)) as d:
+            d.write(image)
+            d.build_overviews([2, 4], Resampling.average)
+        with rasterio.open(path) as src:
+            from tt.qpPrepare import overviewLevel
+            self.assertEqual(overviewLevel(src, 0.02), 0)
+            self.assertEqual(overviewLevel(src, 0.045), 1)
+            self.assertIsNone(overviewLevel(src, 0.005))
+        # area sticks out 2 m past the image's right edge (x = 8 m)
+        area = gpd.GeoDataFrame(geometry=[box(2, 2, 10, 6)], crs="EPSG:32619")
+        out = os.path.join(self.directory, "rgbOut.tif")
+        readRgb(path, area, 0.04, out)
+        with rasterio.open(out) as rgb:
+            data = rgb.read()
+            self.assertEqual(data.shape, (3, 100, 200))
+            self.assertAlmostEqual(rgb.transform.c, 2.0)
+            self.assertTrue((data[:, :, :50] == 0).all())     # x 2-4: dark
+            self.assertTrue((data[:, :, 60:140] == 200).all())  # x 4.4-7.6
+            self.assertTrue((data[:, :, 150:] == 0).all())    # beyond image
+
     def testWholeCellOffsetIsOnTheLattice(self):
         from tt.qpPrepare import latticeOffset
         self.assertAlmostEqual(latticeOffset(10.05, 10.0, 0.05), 0.0)

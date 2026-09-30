@@ -83,6 +83,14 @@ NO_SHOOT_HEIGHTS = ("height1_no_shoot_cm", "height2_no_shoot_cm",
 DONT_CARE_CLASS = "other"
 EDGE_M = 0.5
 TREE_RADIUS_M = 0.3
+# GDAL over HTTPS: merge neighbouring range requests, cache, and let a
+# stalled request time out and be retried rather than hang
+GDAL_HTTP = {"GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+             "GDAL_HTTP_MULTIRANGE": "YES",
+             "GDAL_HTTP_MERGE_CONSECUTIVE_RANGES": "YES",
+             "VSI_CACHE": "TRUE", "VSI_CACHE_SIZE": str(512 * 1024 * 1024),
+             "GDAL_HTTP_TIMEOUT": "120", "GDAL_HTTP_MAX_RETRY": "5",
+             "GDAL_HTTP_RETRY_DELAY": "10"}
 
 
 def lidarUrl(site):
@@ -305,21 +313,54 @@ def writeRaster(path, data, transform, crs, dtype):
         destination.write(data.astype(dtype))
 
 
+def overviewLevel(src, resolution):
+    """Index of the coarsest overview still at least as fine as resolution."""
+    factors = src.overviews(1)
+    fine = [i for i, f in enumerate(factors)
+            if src.res[0] * f <= resolution * 1.0001]
+    return fine[-1] if fine else None
+
+
 def readRgb(source, area, resolution, outputPath):
-    """The RGB window over the area, resampled; overviews do the reduction."""
+    """
+    The RGB over the area at resolution, read from the overview closest to
+    it and only where the image is; the rest of the grid stays 0. A
+    boundless read would bypass the overviews and fetch the full 0.5 cm
+    image block by block, which over HTTPS takes hours.
+    """
     west, south, east, north = gridBounds(area, resolution)
     width = int(round((east - west) / resolution))
     height = int(round((north - south) / resolution))
+    data = np.zeros((3, height, width), dtype=np.uint8)
     path = source if not source.startswith("http") else "/vsicurl/" + source
-    with rasterio.open(path) as src:
-        window = from_bounds(west, south, east, north, src.transform)
-        data = src.read([1, 2, 3], window=window, out_shape=(3, height, width),
-                        resampling=Resampling.average, boundless=True,
-                        fill_value=0)
-        crs = src.crs
+    with rasterio.Env(**GDAL_HTTP):
+        with rasterio.open(path) as src:
+            level, crs = overviewLevel(src, resolution), src.crs
+        options = {} if level is None else {"overview_level": level}
+        with rasterio.open(path, **options) as src:
+            readInside(src, (west, south, east, north), resolution, data)
     transform = rasterio.transform.from_origin(west, north, resolution,
                                                resolution)
     writeRaster(outputPath, data, transform, crs, "uint8")
+
+
+def readInside(src, bounds, resolution, data):
+    """Fill data (on the bounds' grid) where the source image has pixels."""
+    west, south, east, north = bounds
+    x0, y0 = max(west, src.bounds.left), max(south, src.bounds.bottom)
+    x1, y1 = min(east, src.bounds.right), min(north, src.bounds.top)
+    c0, c1 = int(round((x0 - west) / resolution)), int(round((x1 - west) /
+                                                             resolution))
+    r0, r1 = int(round((north - y1) / resolution)), int(round((north - y0) /
+                                                              resolution))
+    if c1 <= c0 or r1 <= r0:
+        return
+    window = from_bounds(west + c0 * resolution, north - r1 * resolution,
+                         west + c1 * resolution, north - r0 * resolution,
+                         src.transform)
+    data[:, r0:r1, c0:c1] = src.read([1, 2, 3], window=window,
+                                     out_shape=(3, r1 - r0, c1 - c0),
+                                     resampling=Resampling.average)
 
 
 def chmAtTrees(chmPath, trees):
