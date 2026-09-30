@@ -1046,7 +1046,8 @@ class TestQpPrepare(unittest.TestCase):
              "total_height1_cm": [str(int(h * 100)) for *_, h in self.trees],
              "total_height2_cm": ["NA", str(int(self.trees[1][2] * 90)), "NA"],
              "height1_no_shoot_cm": [str(int(h * 80)) for *_, h in self.trees],
-             "date_mesured": ["2023-07-29 10:00:00"] * 3},
+             "height2_no_shoot_cm": ["0", "0", "0"],        # placeholders
+             "date_mesured": ["2023-07-29 10:00:00"] * 2 + ["2023-10-11 10:00:00"]},
             geometry=centres, crs="EPSG:32619")
         vectors = os.path.join(self.directory, "vectors")
         os.makedirs(vectors)
@@ -1104,7 +1105,12 @@ class TestQpPrepare(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(out, name)), name)
         self.assertEqual(check["crowns"], 3)
         self.assertEqual(check["dontCareCrowns"], 1)
-        self.assertEqual(check["measured"], {"2023-07-29": 3})
+        self.assertEqual(check["measured"], {"2023-07-29": 2, "2023-10-11": 1})
+        self.assertEqual(sorted(check["heightsByDay"]), ["2023-07-29",
+                                                        "2023-10-11"])
+        self.assertEqual(check["heightsByDay"]["2023-10-11"]["trees"], 1)
+        self.assertTrue(np.isfinite(
+            check["heightsByDay"]["2023-10-11"]["medianChmMinusFieldM"]))
         self.assertAlmostEqual(check["heightsNoShoot"]["medianFieldHm"], 2.4)
         self.assertGreater(check["chmCellsFilled"], 0.3)   # sparse on purpose
         coverage = check["coverage"]
@@ -1156,6 +1162,16 @@ class TestQpPrepare(unittest.TestCase):
         with open(os.path.join(self.directory, "out", self.site,
                                "check.json")) as handle:
             self.assertEqual(json.load(handle)["coverage"]["canopyM"], 2.0)
+
+    def testZeroHeightsArePlaceholders(self):
+        import pandas as pd
+        from tt.qpPrepare import NO_SHOOT_HEIGHTS, fieldHeight
+        trees = pd.DataFrame({"height1_no_shoot_cm": ["0", "250", "NA"],
+                              "height2_no_shoot_cm": [0, 240, 0]})
+        heights = fieldHeight(trees, NO_SHOOT_HEIGHTS)
+        self.assertTrue(np.isnan(heights.iloc[0]))
+        self.assertAlmostEqual(heights.iloc[1], 2.5)
+        self.assertTrue(np.isnan(heights.iloc[2]))
 
     def testInteriorAndEdgePatchesAreTold(self):
         import argparse

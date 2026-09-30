@@ -120,20 +120,28 @@ def annotatedArea(crowns, bufferM):
 
 
 def fieldHeight(trees, columns=FIELD_HEIGHTS):
-    """Highest of the three measured heights, in metres; NaN when none."""
+    """
+    Highest of the three measured heights, in metres; NaN when none. Zero
+    or negative values are placeholders (trees measured once carry 0 in the
+    no-shoot fields), so they count as missing.
+    """
     values = trees.reindex(columns=list(columns))
     values = values.apply(lambda c: pd.to_numeric(c, errors="coerce"))
-    return values.max(axis=1, skipna=True) / 100.0
+    return values.where(values > 0).max(axis=1, skipna=True) / 100.0
+
+
+def measurementDays(trees):
+    """Each tree's measurement day; the column is spelt differently."""
+    columns = [c for c in trees.columns if "date" in c.lower()]
+    if not columns:
+        return pd.Series(["unknown"] * len(trees), index=trees.index)
+    days = pd.to_datetime(trees[columns[0]], errors="coerce", utc=True)
+    return days.dt.strftime("%Y-%m-%d").fillna("unknown")
 
 
 def measurementDates(trees):
-    """Measurement days and tree counts; the column is spelt differently."""
-    columns = [c for c in trees.columns if "date" in c.lower()]
-    if not columns:
-        return {}
-    days = pd.to_datetime(trees[columns[0]], errors="coerce", utc=True)
-    days = days.dt.strftime("%Y-%m-%d").fillna("unknown")
-    return {str(k): int(v) for k, v in days.value_counts().items()}
+    return {str(k): int(v) for k, v in
+            measurementDays(trees).value_counts().items()}
 
 
 def isDontCare(crowns):
@@ -304,15 +312,24 @@ def chmAtTrees(chmPath, trees):
 def heightCheck(trees, column="fieldHm"):
     """Field against CHM heights, for trees measured and inside the CHM."""
     both = trees[np.isfinite(trees[column]) & np.isfinite(trees["chmHm"])]
-    if len(both) < 2:
-        return {"trees": int(len(both))}
+    if both.empty:
+        return {"trees": 0}
     difference = both["chmHm"] - both[column]
+    spread = len(both) > 1 and both[column].std() > 0 \
+        and both["chmHm"].std() > 0
     return {"trees": int(len(both)),
             "medianFieldHm": float(both[column].median()),
             "medianChmMinusFieldM": float(difference.median()),
             "meanAbsDiffM": float(difference.abs().mean()),
-            "correlation": float(np.corrcoef(both[column],
-                                             both["chmHm"])[0, 1])}
+            "correlation": float(np.corrcoef(both[column], both["chmHm"])[0, 1])
+            if spread else float("nan")}
+
+
+def heightsByDay(table):
+    """The total-height check per measurement day: growth after the flight
+    shows as a bias that grows with the day."""
+    return {day: heightCheck(group, "fieldHm")
+            for day, group in table.groupby("day")}
 
 
 def uncoveredCanopy(chmPath, crowns, area, args):
@@ -430,7 +447,8 @@ def recheckSite(site, args):
 def treeTable(trees, chmPath):
     table = trees[["class_code", "geometry"]].assign(
         fieldHm=fieldHeight(trees).values,
-        noShootHm=fieldHeight(trees, NO_SHOOT_HEIGHTS).values)
+        noShootHm=fieldHeight(trees, NO_SHOOT_HEIGHTS).values,
+        day=measurementDays(trees).values)
     table["chmHm"] = chmAtTrees(chmPath, table)
     return table
 
@@ -463,6 +481,7 @@ def finishSite(site, outDir, crowns, trees, area, chmPath, rgbPath, filled,
              "measured": measurementDates(trees),
              "heights": heightCheck(table, "fieldHm"),
              "heightsNoShoot": heightCheck(table, "noShootHm"),
+             "heightsByDay": heightsByDay(table),
              "sizesMB": {n: os.path.getsize(os.path.join(outDir, n)) / 1e6
                          for n in ("chm.tif", "rgb.tif")}}
     with open(os.path.join(outDir, "check.json"), "w") as handle:
@@ -489,7 +508,10 @@ def reportSite(check):
               % (site, label, h.get("medianChmMinusFieldM", np.nan),
                  h.get("meanAbsDiffM", np.nan), h.get("correlation", np.nan),
                  h["trees"]), flush=True)
-    print("[qp] %s: measured %s" % (site, check["measured"]), flush=True)
+    for day, h in check["heightsByDay"].items():
+        print("[qp] %s:   measured %s: %3d trees, CHM - field median %+.2f m"
+              % (site, day, h["trees"], h.get("medianChmMinusFieldM", np.nan)),
+              flush=True)
 
 
 def parseArguments(argv=None):
