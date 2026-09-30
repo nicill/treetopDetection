@@ -209,9 +209,19 @@ def runPdal(pdalPath, stages):
 
 
 def buildTile(source, tile, args, part):
-    runPdal(args.pdal, pipeline(source, tile, args.marginM,
-                                args.chmResolution, part))
-    return part
+    """One tile, retried: reading over HTTPS fails now and then."""
+    stages = pipeline(source, tile, args.marginM, args.chmResolution, part)
+    for attempt in range(1, args.retries + 2):
+        try:
+            runPdal(args.pdal, stages)
+            return part
+        except RuntimeError as error:
+            if attempt > args.retries:
+                raise
+            print("[qp]   tile failed (attempt %d), retrying in %d s: %s"
+                  % (attempt, args.retryWaitS * attempt,
+                     str(error).splitlines()[-1][:200]), flush=True)
+            time.sleep(args.retryWaitS * attempt)
 
 
 def buildChm(source, area, args, tileDir, outputPath):
@@ -555,6 +565,10 @@ def parseArguments(argv=None):
     parser.add_argument("--jobs", type=int, default=4,
                         help="Tiles processed at once (each a PDAL process "
                              "of 1-2 GB)")
+    parser.add_argument("--retries", type=int, default=3,
+                        help="Retries of a failed tile before its site fails")
+    parser.add_argument("--retryWaitS", type=float, default=30.0,
+                        help="Wait before retry n is n times this")
     parser.add_argument("--workDir", default=None,
                         help="Where the temporary PDAL tiles go (default: the "
                              "system's temporary folder, so an --output in "
@@ -569,6 +583,7 @@ def parseArguments(argv=None):
 def main(argv=None):
     args = parseArguments(argv)
     sites = args.sites or sitesIn(args.vectors)
+    failed = []
     for site in sites:
         prepared = os.path.exists(os.path.join(args.output, site,
                                                "check.json"))
@@ -579,8 +594,15 @@ def main(argv=None):
         if prepared:
             print("[qp] %s: already prepared, skipped" % site)
             continue
-        prepareSite(site, args)
-    return 0
+        try:
+            prepareSite(site, args)
+        except (RuntimeError, OSError, ValueError) as error:
+            print("[qp] %s: FAILED, skipped: %s" % (site, error), flush=True)
+            failed.append(site)
+    if failed:
+        print("[qp] %d site(s) failed; run the same command again to retry "
+              "them: %s" % (len(failed), " ".join(failed)), flush=True)
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

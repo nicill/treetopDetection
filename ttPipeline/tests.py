@@ -1203,6 +1203,35 @@ class TestQpPrepare(unittest.TestCase):
         self.assertGreater(summary["interiorShare"], 0.4)
         self.assertGreater(summary["edgeShare"], 0.1)
 
+    def testFlakyTileIsRetried(self):
+        import tt.qpPrepare as qp
+        args = self.arguments()
+        args.retries, args.retryWaitS = 2, 0.0
+        calls = []
+        real = qp.runPdal
+
+        def flaky(pdalPath, stages):
+            calls.append(1)
+            if len(calls) < 3:
+                raise RuntimeError("pdal failed: Could not read from 'x'")
+            real(pdalPath, stages)
+        qp.runPdal = flaky
+        try:
+            part = os.path.join(self.directory, "tile.tif")
+            qp.buildTile(self.lidar, (300007.0, 5000007.0, 300027.0,
+                                      5000027.0), args, part)
+        finally:
+            qp.runPdal = real
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(os.path.exists(part))
+
+    def testFailedSiteDoesNotStopTheRun(self):
+        from tt.qpPrepare import main
+        argv = ["--vectors", self.vectors, "--pdal", "/nonexistent/pdal",
+                "--output", os.path.join(self.directory, "out"),
+                "--retries", "0", "--sites", self.site, "20990101_missing"]
+        self.assertEqual(main(argv), 1)          # both fail, neither raises
+
     def testWholeCellOffsetIsOnTheLattice(self):
         from tt.qpPrepare import latticeOffset
         self.assertAlmostEqual(latticeOffset(10.05, 10.0, 0.05), 0.0)
