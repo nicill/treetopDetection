@@ -860,6 +860,39 @@ class TestNeonPrune(unittest.TestCase):
                          self.remaining())
 
 
+class TestNeonRun(Fixture):
+    """The NEON loop finds each tile's CHM, scores it and pools the counts."""
+
+    def testRunScoresEveryTileWithACHM(self):
+        import csv
+        from tt.neonRun import main
+        root = os.path.join(self.directory, "neon")
+        for sub in ("RGB", "CHM"):
+            os.makedirs(os.path.join(root, sub), exist_ok=True)
+        shutil.copy(self.chmPath, os.path.join(root, "CHM", "ABCD_001_CHM.tif"))
+        manifest = os.path.join(self.directory, "manifest.csv")
+        with open(manifest, "w", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=[
+                "tile", "rgb", "crowns", "crownPath", "boundaryPath"])
+            writer.writeheader()
+            for tile in ("ABCD_001", "ABCD_002"):
+                writer.writerow({"tile": tile,
+                                 "rgb": os.path.join(root, "RGB",
+                                                     tile + ".tif"),
+                                 "crowns": 9, "crownPath": self.crownsPath,
+                                 "boundaryPath": self.boundaryPath})
+        output = os.path.join(self.directory, "neonOut")
+        self.assertEqual(main(["--manifest", manifest, "--minHeight", "2",
+                               "--output", output]), 0)
+        from tt.dl.dlCommon import loadJson
+        result = loadJson(os.path.join(output, "results.json"))
+        self.assertEqual(result["skipped"], ["ABCD_002"])
+        overall = result["pooled"]["defaults"]["overall"]
+        self.assertEqual((overall["folds"], overall["crowns"]), (1, 9))
+        self.assertGreater(overall["f1"], 0.8)
+        self.assertIn("ABCD", result["pooled"]["defaults"]["sites"])
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
