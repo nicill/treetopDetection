@@ -1037,13 +1037,16 @@ class TestQpPrepare(unittest.TestCase):
         self.directory = tempfile.mkdtemp(prefix="ttQp")
         self.west, self.south = 300000.0, 5000000.0
         centres = [Point(self.west + x, self.south + y) for x, y, _ in self.trees]
-        crowns = gpd.GeoDataFrame({"class_code": ["PIGL"] * 3},
-                                  geometry=[c.buffer(1.0) for c in centres],
-                                  crs="EPSG:32619")
+        thicket = Point(self.west + 40, self.south + 30).buffer(1.5)
+        crowns = gpd.GeoDataFrame({"class_code": ["PIGL"] * 3 + ["other"]},
+                                  geometry=[c.buffer(1.0) for c in centres]
+                                  + [thicket], crs="EPSG:32619")
         points = gpd.GeoDataFrame(
             {"class_code": ["PIGL"] * 3,
              "total_height1_cm": [str(int(h * 100)) for *_, h in self.trees],
-             "total_height2_cm": ["NA", str(int(self.trees[1][2] * 90)), "NA"]},
+             "total_height2_cm": ["NA", str(int(self.trees[1][2] * 90)), "NA"],
+             "height1_no_shoot_cm": [str(int(h * 80)) for *_, h in self.trees],
+             "date_mesured": ["2023-07-29 10:00:00"] * 3},
             geometry=centres, crs="EPSG:32619")
         vectors = os.path.join(self.directory, "vectors")
         os.makedirs(vectors)
@@ -1100,12 +1103,25 @@ class TestQpPrepare(unittest.TestCase):
                      "uncovered.shp"):
             self.assertTrue(os.path.exists(os.path.join(out, name)), name)
         self.assertEqual(check["crowns"], 3)
+        self.assertEqual(check["dontCareCrowns"], 1)
+        self.assertEqual(check["measured"], {"2023-07-29": 3})
+        self.assertAlmostEqual(check["heightsNoShoot"]["medianFieldHm"], 2.4)
         self.assertGreater(check["chmCellsFilled"], 0.3)   # sparse on purpose
         coverage = check["coverage"]
         self.assertEqual(coverage["patches"], 1)          # the unannotated tree
         uncovered = gpd.read_file(os.path.join(out, "uncovered.shp"))
-        self.assertTrue(uncovered.geometry.iloc[0].intersects(
-            Point(self.west + 12.5, self.south + 10.0).buffer(0.5)))
+        loose = Point(self.west + 12.5, self.south + 10.0)
+        self.assertTrue(uncovered.geometry.iloc[0].intersects(loose.buffer(0.5)))
+        self.assertTrue(bool(uncovered["edge"].iloc[0]))   # reaches the edge
+        scored = gpd.read_file(os.path.join(out, "scoredArea.shp")).geometry[0]
+        whole = gpd.read_file(os.path.join(out, "area.shp")).geometry[0]
+        thicket = Point(self.west + 40, self.south + 30)
+        for place in (loose, thicket):
+            self.assertTrue(whole.contains(place))
+            self.assertFalse(scored.contains(place))
+        self.assertEqual(len(gpd.read_file(os.path.join(out, "crowns.shp"))), 3)
+        ignored = gpd.read_file(os.path.join(out, "ignored.shp"))
+        self.assertEqual(sorted(ignored["reason"]), ["other", "uncovered"])
         heights = check["heights"]
         self.assertEqual(heights["trees"], 3)
         self.assertLess(abs(heights["medianChmMinusFieldM"]), 0.5)
@@ -1140,6 +1156,36 @@ class TestQpPrepare(unittest.TestCase):
         with open(os.path.join(self.directory, "out", self.site,
                                "check.json")) as handle:
             self.assertEqual(json.load(handle)["coverage"]["canopyM"], 2.0)
+
+    def testInteriorAndEdgePatchesAreTold(self):
+        import argparse
+        import geopandas as gpd
+        import rasterio
+        from affine import Affine
+        from shapely.geometry import Point, box
+        from tt.qpPrepare import uncoveredCanopy
+        chm = np.zeros((200, 200), np.float32)          # 20 x 20 m at 0.1 m
+        rows, columns = np.mgrid[0:200, 0:200]
+        chm[np.hypot(rows - 100, columns - 100) < 10] = 3.0   # middle
+        chm[np.hypot(rows - 100, columns - 5) < 10] = 3.0     # on the edge
+        path = os.path.join(self.directory, "patches.tif")
+        with rasterio.open(path, "w", driver="GTiff", height=200, width=200,
+                           count=1, dtype="float32", crs="EPSG:32619",
+                           transform=Affine(0.1, 0, 0, 0, -0.1, 20)) as d:
+            d.write(chm, 1)
+        area = gpd.GeoDataFrame(geometry=[box(0.5, 0.5, 19.5, 19.5)],
+                                crs="EPSG:32619")
+        crowns = gpd.GeoDataFrame({"class_code": ["PIGL"]},
+                                  geometry=[Point(18, 18).buffer(0.5)],
+                                  crs="EPSG:32619")
+        args = argparse.Namespace(canopyM=1.5, crownMarginM=0.2, minPatchM2=0.5)
+        summary, patches = uncoveredCanopy(path, crowns, area, args)
+        self.assertEqual(summary["patches"], 2)
+        self.assertEqual(summary["interiorPatches"], 1)
+        middle = patches[patches.contains(Point(10, 10))]
+        self.assertFalse(bool(middle["edge"].iloc[0]))
+        self.assertGreater(summary["interiorShare"], 0.4)
+        self.assertGreater(summary["edgeShare"], 0.1)
 
     def testWholeCellOffsetIsOnTheLattice(self):
         from tt.qpPrepare import latticeOffset

@@ -19,16 +19,23 @@ the FRDR server for the annotated area only. Per site, in <output>/<site>/:
                Cells without a point take their nearest filled cell; the
                share is chmCellsFilled in check.json.
   rgb.tif      the orthomosaic over the area at --rgbResolution
-  crowns.shp   the hand-made crown polygons
+  crowns.shp   the hand-made crown polygons to score: all but 'other'
+  ignored.shp  don't-care areas: 'other' crowns (thickets drawn as one
+               polygon) and uncovered canopy (below); reason says which
+  scoredArea.shp  area.shp minus ignored.shp: the boundary to score in
   trees.shp    the field-measured trees; fieldHm is the highest of the three
-               total heights, chmHm the CHM's highest cell within 0.3 m
+               total heights, noShootHm the same without this year's shoot
+               (the fair one when the flight was earlier in the season),
+               chmHm the CHM's highest cell within 0.3 m
   uncovered.shp  canopy (CHM >= --canopyM) in the area that no crown covers,
                as patches of at least --minPatchM2: unannotated trees, or
-               tall shrubs and herbs. Measured only; nothing is masked.
+               tall shrubs and herbs. edge marks patches on the area's
+               boundary, where the buffer reaches into vegetation nobody
+               meant to annotate; interior ones mean missing annotations.
   check.json   CHM against field heights, the uncovered share of the area's
                canopy, and the product sizes
-  quicklook.png  crowns (yellow), area (red) and uncovered canopy (cyan) over
-               the RGB, to judge annotation coverage by eye
+  quicklook.png  scored crowns (yellow), area (red), uncovered canopy (cyan)
+               and 'other' crowns (magenta) over the RGB
 
 --recheck redoes the checks for sites already prepared, from their saved
 chm.tif and rgb.tif, without reading anything from the server.
@@ -66,6 +73,10 @@ import matplotlib.pyplot as plt  # noqa: E402  (after the backend is chosen)
 BASE = ("https://g-154be2.cd4fe.0ec8.data.globus.org/13/published/"
         "publication_974/submitted_data/Dataset/")
 FIELD_HEIGHTS = ("total_height1_cm", "total_height2_cm", "total_height3_cm")
+NO_SHOOT_HEIGHTS = ("height1_no_shoot_cm", "height2_no_shoot_cm",
+                    "height3_no_shoot_cm")
+DONT_CARE_CLASS = "other"
+EDGE_M = 0.5
 TREE_RADIUS_M = 0.3
 
 
@@ -108,11 +119,25 @@ def annotatedArea(crowns, bufferM):
         gpd.GeoSeries([Polygon(p.exterior) for p in parts]).union_all()])
 
 
-def fieldHeight(trees):
-    """Highest of the three total heights, in metres; NaN when none."""
-    values = trees.reindex(columns=list(FIELD_HEIGHTS))
+def fieldHeight(trees, columns=FIELD_HEIGHTS):
+    """Highest of the three measured heights, in metres; NaN when none."""
+    values = trees.reindex(columns=list(columns))
     values = values.apply(lambda c: pd.to_numeric(c, errors="coerce"))
     return values.max(axis=1, skipna=True) / 100.0
+
+
+def measurementDates(trees):
+    """Measurement days and tree counts; the column is spelt differently."""
+    columns = [c for c in trees.columns if "date" in c.lower()]
+    if not columns:
+        return {}
+    days = pd.to_datetime(trees[columns[0]], errors="coerce", utc=True)
+    days = days.dt.strftime("%Y-%m-%d").fillna("unknown")
+    return {str(k): int(v) for k, v in days.value_counts().items()}
+
+
+def isDontCare(crowns):
+    return crowns["class_code"].astype(str).str.lower().eq(DONT_CARE_CLASS)
 
 
 def gridBounds(area, resolution):
@@ -276,17 +301,17 @@ def chmAtTrees(chmPath, trees):
     return np.array(values)
 
 
-def heightCheck(trees):
+def heightCheck(trees, column="fieldHm"):
     """Field against CHM heights, for trees measured and inside the CHM."""
-    both = trees[np.isfinite(trees["fieldHm"]) & np.isfinite(trees["chmHm"])]
-    if both.empty:
-        return {"trees": 0}
-    difference = both["chmHm"] - both["fieldHm"]
+    both = trees[np.isfinite(trees[column]) & np.isfinite(trees["chmHm"])]
+    if len(both) < 2:
+        return {"trees": int(len(both))}
+    difference = both["chmHm"] - both[column]
     return {"trees": int(len(both)),
-            "medianFieldHm": float(both["fieldHm"].median()),
+            "medianFieldHm": float(both[column].median()),
             "medianChmMinusFieldM": float(difference.median()),
             "meanAbsDiffM": float(difference.abs().mean()),
-            "correlation": float(np.corrcoef(both["fieldHm"],
+            "correlation": float(np.corrcoef(both[column],
                                              both["chmHm"])[0, 1])}
 
 
@@ -308,18 +333,44 @@ def uncoveredCanopy(chmPath, crowns, area, args):
     patches = np.isin(labels, keep)
     polygons = [shape(g) for g, v in shapes(labels.astype(np.int32),
                                             mask=patches, transform=transform)]
-    frame = gpd.GeoDataFrame({"areaM2": [p.area for p in polygons]},
-                             geometry=polygons, crs=crowns.crs)
-    canopyM2 = float(canopy.sum() * cell)
+    edge = area.geometry.iloc[0].boundary
+    frame = gpd.GeoDataFrame(
+        {"areaM2": [p.area for p in polygons],
+         "edge": [p.distance(edge) < EDGE_M for p in polygons]},
+        geometry=polygons, crs=crowns.crs)
+    canopyM2 = max(float(canopy.sum() * cell), 1e-9)
+    interiorM2 = float(frame.loc[~frame["edge"], "areaM2"].sum())
+    edgeM2 = float(frame.loc[frame["edge"], "areaM2"].sum())
     summary = {"canopyM": args.canopyM, "canopyM2": canopyM2,
-               "uncoveredM2": float(patches.sum() * cell),
-               "uncoveredShare": float(patches.sum() * cell) / max(canopyM2,
-                                                                   1e-9),
-               "patches": int(len(keep))}
+               "uncoveredShare": (interiorM2 + edgeM2) / canopyM2,
+               "edgeShare": edgeM2 / canopyM2,
+               "interiorShare": interiorM2 / canopyM2,
+               "patches": int(len(frame)),
+               "interiorPatches": int((~frame["edge"]).sum())}
     return summary, frame
 
 
-def quicklook(rgbPath, crowns, area, uncovered, outputPath, maxPixels=2000):
+def scoredRegion(crowns, area, uncovered):
+    """
+    Crowns to score and the area to score them in: 'other' thickets and
+    uncovered canopy are don't-care, cut out of the area, so a detection
+    there counts neither as a hit nor as a false positive.
+    """
+    dontCare = isDontCare(crowns)
+    ignored = gpd.GeoDataFrame(
+        {"reason": ["other"] * int(dontCare.sum()) + ["uncovered"] *
+         len(uncovered)},
+        geometry=list(crowns.geometry[dontCare]) + list(uncovered.geometry),
+        crs=crowns.crs)
+    shape = area.geometry.iloc[0]
+    if len(ignored):
+        shape = shape.difference(ignored.geometry.union_all())
+    region = gpd.GeoDataFrame({"name": ["scored"]}, geometry=[shape],
+                              crs=crowns.crs)
+    return crowns[~dontCare], ignored, region
+
+
+def quicklook(rgbPath, crowns, area, ignored, outputPath, maxPixels=2000):
     with rasterio.open(rgbPath) as src:
         scale = max(src.width, src.height) / float(maxPixels)
         shape = (3, int(src.height / max(scale, 1)),
@@ -331,8 +382,10 @@ def quicklook(rgbPath, crowns, area, uncovered, outputPath, maxPixels=2000):
     axis.imshow(np.moveaxis(image, 0, -1), extent=extent)
     crowns.boundary.plot(ax=axis, color="yellow", linewidth=0.4)
     area.boundary.plot(ax=axis, color="red", linewidth=1.0)
-    if len(uncovered):
-        uncovered.boundary.plot(ax=axis, color="cyan", linewidth=0.6)
+    for reason, colour in (("uncovered", "cyan"), ("other", "magenta")):
+        part = ignored[ignored["reason"] == reason]
+        if len(part):
+            part.boundary.plot(ax=axis, color=colour, linewidth=0.6)
     axis.set_axis_off()
     figure.savefig(outputPath, dpi=150, bbox_inches="tight")
     plt.close(figure)
@@ -344,8 +397,6 @@ def prepareSite(site, args):
     crowns, trees = readLayers(os.path.join(args.vectors, site + "_p1.gpkg"))
     area = annotatedArea(crowns, args.areaBufferM)
     area.to_file(os.path.join(outDir, "area.shp"))
-    crowns[["class_code", "geometry"]].to_file(
-        os.path.join(outDir, "crowns.shp"))
     print("[qp] %s: %d crowns, area %.0f m2" % (site, len(crowns),
                                                area.area.iloc[0]), flush=True)
     chmPath, rgbPath = (os.path.join(outDir, n) for n in ("chm.tif", "rgb.tif"))
@@ -376,40 +427,69 @@ def recheckSite(site, args):
                       os.path.join(outDir, "rgb.tif"), filled, args)
 
 
+def treeTable(trees, chmPath):
+    table = trees[["class_code", "geometry"]].assign(
+        fieldHm=fieldHeight(trees).values,
+        noShootHm=fieldHeight(trees, NO_SHOOT_HEIGHTS).values)
+    table["chmHm"] = chmAtTrees(chmPath, table)
+    return table
+
+
+def writeLayers(outDir, layers):
+    """Shapefiles written afresh; an empty layer leaves no stale file."""
+    for name, frame in layers.items():
+        path = os.path.join(outDir, name + ".shp")
+        removeShapefile(path)
+        if len(frame):
+            frame.to_file(path)
+
+
 def finishSite(site, outDir, crowns, trees, area, chmPath, rgbPath, filled,
                args):
-    trees = trees[["class_code", "geometry"]].assign(
-        fieldHm=fieldHeight(trees).values)
-    trees["chmHm"] = chmAtTrees(chmPath, trees)
-    trees.to_file(os.path.join(outDir, "trees.shp"))
+    table = treeTable(trees, chmPath)
     coverage, uncovered = uncoveredCanopy(chmPath, crowns, area, args)
-    removeShapefile(os.path.join(outDir, "uncovered.shp"))
-    if len(uncovered):
-        uncovered.to_file(os.path.join(outDir, "uncovered.shp"))
-    quicklook(rgbPath, crowns, area, uncovered,
+    scored, ignored, region = scoredRegion(crowns, area, uncovered)
+    writeLayers(outDir, {"trees": table, "uncovered": uncovered,
+                         "crowns": scored[["class_code", "geometry"]],
+                         "ignored": ignored, "scoredArea": region})
+    quicklook(rgbPath, scored, area, ignored,
               os.path.join(outDir, "quicklook.png"))
-    check = {"site": site, "crowns": int(len(crowns)),
+    check = {"site": site, "crowns": int(len(scored)),
+             "dontCareCrowns": int(len(crowns) - len(scored)),
              "areaM2": float(area.area.iloc[0]),
-             "medianCrownM2": float(crowns.area.median()),
-             "chmCellsFilled": filled,
-             "coverage": coverage,
-             "heights": heightCheck(trees),
+             "scoredAreaM2": float(region.area.iloc[0]),
+             "medianCrownM2": float(scored.area.median()),
+             "chmCellsFilled": filled, "coverage": coverage,
+             "measured": measurementDates(trees),
+             "heights": heightCheck(table, "fieldHm"),
+             "heightsNoShoot": heightCheck(table, "noShootHm"),
              "sizesMB": {n: os.path.getsize(os.path.join(outDir, n)) / 1e6
                          for n in ("chm.tif", "rgb.tif")}}
     with open(os.path.join(outDir, "check.json"), "w") as handle:
         json.dump(check, handle, indent=2)
-    h = check["heights"]
-    print("[qp] %s: %.1f%% of CHM cells filled; CHM-field median %+.2f m, "
-          "|diff| %.2f m, r %.2f over %d trees; chm %.0f MB, rgb %.0f MB"
-          % (site, 100 * filled, h.get("medianChmMinusFieldM", np.nan),
-             h.get("meanAbsDiffM", np.nan), h.get("correlation", np.nan),
-             h["trees"], check["sizesMB"]["chm.tif"],
-             check["sizesMB"]["rgb.tif"]), flush=True)
-    print("[qp] %s: %.1f%% of the area's canopy (>= %.1f m) outside every "
-          "crown, in %d patches" % (site, 100 * coverage["uncoveredShare"],
-                                    coverage["canopyM"], coverage["patches"]),
-          flush=True)
+    reportSite(check)
     return check
+
+
+def reportSite(check):
+    site, c = check["site"], check["coverage"]
+    print("[qp] %s: %d crowns scored, %d 'other' don't-care; scored area "
+          "%.0f of %.0f m2; CHM cells filled %.1f%%"
+          % (site, check["crowns"], check["dontCareCrowns"],
+             check["scoredAreaM2"], check["areaM2"],
+             100 * check["chmCellsFilled"]), flush=True)
+    print("[qp] %s: uncovered canopy (>= %.1f m) %.1f%% at the edge, %.1f%% "
+          "inside (%d interior patches)"
+          % (site, c["canopyM"], 100 * c["edgeShare"],
+             100 * c["interiorShare"], c["interiorPatches"]), flush=True)
+    for label, key in (("total", "heights"), ("no shoot", "heightsNoShoot")):
+        h = check[key]
+        print("[qp] %s: CHM - field %-8s median %+.2f m, |diff| %.2f m, "
+              "r %.2f over %d trees"
+              % (site, label, h.get("medianChmMinusFieldM", np.nan),
+                 h.get("meanAbsDiffM", np.nan), h.get("correlation", np.nan),
+                 h["trees"]), flush=True)
+    print("[qp] %s: measured %s" % (site, check["measured"]), flush=True)
 
 
 def parseArguments(argv=None):
