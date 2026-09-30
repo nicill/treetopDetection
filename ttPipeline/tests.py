@@ -1022,7 +1022,7 @@ class TestQpPrepare(unittest.TestCase):
     """Quebec Plantations prep on a synthetic site, with a stand-in PDAL."""
 
     site = "20990101_testsite"
-    trees = ((10.0, 10.0, 3.0), (20.0, 12.0, 4.0), (60.0, 30.0, 2.5))
+    trees = ((10.0, 10.0, 3.0), (27.0, 12.0, 4.0), (60.0, 30.0, 2.5))
 
     def setUp(self):
         try:
@@ -1066,7 +1066,7 @@ class TestQpPrepare(unittest.TestCase):
         z = np.full(x.shape, 100.0)
         for tx, ty, h in self.trees:
             d = np.hypot(x - self.west - tx, y - self.south - ty)
-            z = np.maximum(z, 100.0 + h * np.clip(1 - d, 0, None))
+            z = np.maximum(z, 100.0 + h * np.clip(1 - d / 1.5, 0, None))
         header = laspy.LasHeader(point_format=3, version="1.2")
         header.scales, header.offsets = [0.001] * 3, [self.west, self.south, 0]
         cloud = laspy.LasData(header)
@@ -1097,6 +1097,7 @@ class TestQpPrepare(unittest.TestCase):
                      "trees.shp", "check.json", "quicklook.png"):
             self.assertTrue(os.path.exists(os.path.join(out, name)), name)
         self.assertEqual(check["crowns"], 3)
+        self.assertGreater(check["chmCellsFilled"], 0.3)   # sparse on purpose
         heights = check["heights"]
         self.assertEqual(heights["trees"], 3)
         self.assertLess(abs(heights["medianChmMinusFieldM"]), 0.5)
@@ -1112,6 +1113,14 @@ class TestQpPrepare(unittest.TestCase):
             # ground between the trees but outside every buffered crown
             row, column = chm.index(self.west + 40, self.south + 20)
             self.assertEqual(data[row, column], 0.0)
+            # tiles start at 7 m and are 20 m wide: tree 2 sits on the seam
+            row, column = chm.index(self.west + 27.0, self.south + 12.0)
+            self.assertGreater(data[row, column], 3.0)
+
+    def testWholeCellOffsetIsOnTheLattice(self):
+        from tt.qpPrepare import latticeOffset
+        self.assertAlmostEqual(latticeOffset(10.05, 10.0, 0.05), 0.0)
+        self.assertAlmostEqual(latticeOffset(10.025, 10.0, 0.05), 0.025)
 
     def testAreaFillsHolesAndMergesNeighbours(self):
         import geopandas as gpd

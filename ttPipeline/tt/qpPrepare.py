@@ -16,6 +16,8 @@ the FRDR server for the annotated area only. Per site, in <output>/<site>/:
                at --chmResolution. Built in tiles by PDAL: statistical outlier
                removal, SMRF ground, height above the Delaunay ground. The
                points carry no classification, so ground is classified here.
+               Cells without a point take their nearest filled cell; the
+               share is chmCellsFilled in check.json.
   rgb.tif      the orthomosaic over the area at --rgbResolution
   crowns.shp   the hand-made crown polygons
   trees.shp    the field-measured trees; fieldHm is the highest of the three
@@ -42,6 +44,7 @@ from rasterio.enums import Resampling
 from rasterio.features import geometry_mask
 from rasterio.merge import merge
 from rasterio.windows import from_bounds
+from scipy.ndimage import distance_transform_edt
 from shapely.geometry import Polygon, box
 
 try:                                    # geopandas' newer backend
@@ -91,10 +94,10 @@ def readLayers(gpkgPath):
 
 def annotatedArea(crowns, bufferM):
     """All crowns buffered and merged, holes filled."""
-    merged = crowns.geometry.buffer(bufferM).unary_union
+    merged = crowns.geometry.buffer(bufferM).union_all()
     parts = getattr(merged, "geoms", [merged])
     return gpd.GeoDataFrame({"name": ["area"]}, crs=crowns.crs, geometry=[
-        gpd.GeoSeries([Polygon(p.exterior) for p in parts]).unary_union])
+        gpd.GeoSeries([Polygon(p.exterior) for p in parts]).union_all()])
 
 
 def fieldHeight(trees):
@@ -128,7 +131,11 @@ def pipeline(source, tile, marginM, resolution, output):
     x0, y0, x1, y1 = tile
     read = "([%f,%f],[%f,%f])" % (x0 - marginM, x1 + marginM,
                                   y0 - marginM, y1 + marginM)
-    write = "([%f,%f],[%f,%f])" % (x0, x1 - resolution, y0, y1 - resolution)
+    # one cell beyond the tile on every side: PDAL may start its grid a whole
+    # cell off, and the overlap guarantees no gap where tiles meet (the
+    # overlapping cells come from the same points, so they agree)
+    write = "([%f,%f],[%f,%f])" % (x0 - resolution, x1 + resolution,
+                                   y0 - resolution, y1 + resolution)
     return [
         {"type": "readers.copc", "filename": source, "bounds": read},
         {"type": "filters.outlier", "method": "statistical",
@@ -166,22 +173,45 @@ def buildChm(source, area, args, tileDir, outputPath):
             checkTileGrid(part, tile, args.chmResolution)
         parts.append(part)
         print("[qp]   tile %d done" % (index + 1), flush=True)
-    writeMosaic(parts, bounds, args.chmResolution, area, outputPath)
+    return writeMosaic(parts, bounds, args.chmResolution, area, outputPath)
+
+
+def latticeOffset(value, reference, resolution):
+    """Distance of value from the reference lattice, within half a cell."""
+    remainder = (value - reference) % resolution
+    return min(remainder, resolution - remainder)
 
 
 def checkTileGrid(path, tile, resolution):
-    """Warn when PDAL placed a tile's grid off the expected cell edges."""
+    """
+    Warn when PDAL's grid is off the CHM lattice by a fraction of a cell,
+    which would shift the data. Whole-cell offsets only change the extent.
+    """
     with rasterio.open(path) as src:
-        offset = max(abs(src.transform.c - tile[0]),
-                     abs(src.transform.f - tile[3]))
+        offset = max(latticeOffset(src.transform.c, tile[0], resolution),
+                     latticeOffset(src.transform.f, tile[3], resolution))
         size = src.res[0]
     if offset > resolution / 10 or abs(size - resolution) > 1e-9:
-        print("[qp] WARNING first tile origin off by %.3f m, cell %.3f m: "
-              "the CHM grid is shifted" % (offset, size), flush=True)
+        print("[qp] WARNING tile grid off the CHM lattice by %.3f m, cell "
+              "%.3f m: the CHM would be shifted" % (offset, size), flush=True)
+
+
+def fillEmpty(chm, outside):
+    """
+    Cells without a point take their nearest cell with one. At 5 cm and
+    about 1,700 points per m2 some 1-2% of cells get no point; left at 0 each
+    would be a pit inside a crown. Returns the share of the area filled.
+    """
+    empty = (chm < 0) & ~outside
+    if (chm >= 0).any():
+        _, (rows, columns) = distance_transform_edt(chm < 0,
+                                                    return_indices=True)
+        chm[empty] = chm[rows, columns][empty]
+    return float(empty.sum()) / max(int((~outside).sum()), 1)
 
 
 def writeMosaic(parts, bounds, resolution, area, outputPath):
-    """Tiles merged; no-data and ground outside the area set to 0."""
+    """Tiles merged, empty cells filled, everything outside the area 0."""
     sources = [rasterio.open(p) for p in parts]
     try:
         mosaic, transform = merge(sources, bounds=bounds, res=resolution,
@@ -190,10 +220,12 @@ def writeMosaic(parts, bounds, resolution, area, outputPath):
     finally:
         for s in sources:
             s.close()
-    chm = np.where(mosaic[0] < 0, 0.0, mosaic[0]).astype(np.float32)
+    chm = mosaic[0].astype(np.float32)
     outside = geometry_mask(area.geometry, chm.shape, transform)
-    chm[outside] = 0.0
+    filled = fillEmpty(chm, outside)
+    chm[outside | (chm < 0)] = 0.0
     writeRaster(outputPath, chm[None], transform, crs, "float32")
+    return filled
 
 
 def writeRaster(path, data, transform, crs, dtype):
@@ -279,12 +311,13 @@ def prepareSite(site, args):
                                                area.area.iloc[0]), flush=True)
     chmPath, rgbPath = (os.path.join(outDir, n) for n in ("chm.tif", "rgb.tif"))
     with tempfile.TemporaryDirectory(dir=outDir) as tileDir:
-        buildChm(args.lidarSource(site), area, args, tileDir, chmPath)
+        filled = buildChm(args.lidarSource(site), area, args, tileDir, chmPath)
     readRgb(args.rgbSource(site), area, args.rgbResolution, rgbPath)
-    return finishSite(site, outDir, crowns, trees, area, chmPath, rgbPath)
+    return finishSite(site, outDir, crowns, trees, area, chmPath, rgbPath,
+                      filled)
 
 
-def finishSite(site, outDir, crowns, trees, area, chmPath, rgbPath):
+def finishSite(site, outDir, crowns, trees, area, chmPath, rgbPath, filled):
     trees = trees[["class_code", "geometry"]].assign(
         fieldHm=fieldHeight(trees).values)
     trees["chmHm"] = chmAtTrees(chmPath, trees)
@@ -293,15 +326,16 @@ def finishSite(site, outDir, crowns, trees, area, chmPath, rgbPath):
     check = {"site": site, "crowns": int(len(crowns)),
              "areaM2": float(area.area.iloc[0]),
              "medianCrownM2": float(crowns.area.median()),
+             "chmCellsFilled": filled,
              "heights": heightCheck(trees),
              "sizesMB": {n: os.path.getsize(os.path.join(outDir, n)) / 1e6
                          for n in ("chm.tif", "rgb.tif")}}
     with open(os.path.join(outDir, "check.json"), "w") as handle:
         json.dump(check, handle, indent=2)
     h = check["heights"]
-    print("[qp] %s: CHM-field median %+.2f m, |diff| %.2f m, r %.2f over %d "
-          "trees; chm %.0f MB, rgb %.0f MB"
-          % (site, h.get("medianChmMinusFieldM", np.nan),
+    print("[qp] %s: %.1f%% of CHM cells filled; CHM-field median %+.2f m, "
+          "|diff| %.2f m, r %.2f over %d trees; chm %.0f MB, rgb %.0f MB"
+          % (site, 100 * filled, h.get("medianChmMinusFieldM", np.nan),
              h.get("meanAbsDiffM", np.nan), h.get("correlation", np.nan),
              h["trees"], check["sizesMB"]["chm.tif"],
              check["sizesMB"]["rgb.tif"]), flush=True)
