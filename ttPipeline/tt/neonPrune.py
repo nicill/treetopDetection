@@ -4,6 +4,10 @@ Remove NeonTreeEvaluation files the pipeline will never use.
     python -m tt.neonPrune --annotations annotations --roots evaluation training
     python -m tt.neonPrune --annotations annotations --roots evaluation training --delete
 
+The annotation folder is searched at any depth, so pointing at the folder the
+zip unpacked into works. The run stops without removing anything when no
+annotation is found or when no file would be kept.
+
 A file is kept when it belongs to an annotated tile: its name is the tile's
 name, or starts with it followed by "_" (BART_036_2019.tif, BART_036_2019_CHM.tif).
 For the training crops the parent 1 km tile counts too
@@ -28,15 +32,23 @@ PARENT_TILE = re.compile(r"^\d{4}_[A-Z]{4}_\d+_\d+_\d+")
 HYPERSPECTRAL = "hyperspectral"
 LIDAR = "lidar"
 CHM = "chm"
+MAC_JUNK = "__MACOSX"
+
+
+def annotationFiles(annotationDir):
+    """Every annotation XML under the folder, at any depth."""
+    return [os.path.join(folder, name)
+            for folder, _, names in os.walk(annotationDir)
+            for name in names
+            if name.endswith(".xml") and MAC_JUNK not in folder.split(os.sep)
+            and not name.startswith("._")]
 
 
 def annotatedKeys(annotationDir):
     """Names a kept file may start with: tile stems and their parent tiles."""
     keys = set()
-    for name in os.listdir(annotationDir):
-        if not name.endswith(".xml"):
-            continue
-        stem = os.path.splitext(readBoxes(os.path.join(annotationDir, name))[0])[0]
+    for path in annotationFiles(annotationDir):
+        stem = os.path.splitext(readBoxes(path)[0])[0]
         keys.add(stem)
         parent = PARENT_TILE.match(stem)
         if parent:
@@ -104,6 +116,16 @@ def report(remove, keep, keys):
         print("[prune] WARNING no CHM found for annotated tile %s" % stem)
 
 
+def refuse(keys, keep, roots):
+    """A reason not to go on, or None. Deleting everything is never right."""
+    if not keys:
+        return "no annotation XML found; is --annotations the right folder?"
+    if not keep:
+        return ("no file under %s belongs to an annotated tile; the "
+                "annotations and the data do not match" % " ".join(roots))
+    return None
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Remove NEON files the pipeline will not use.")
@@ -118,6 +140,10 @@ def main(argv=None):
     keys = annotatedKeys(args.annotations)
     remove, keep = survey(args.roots, keys, args.dropLidar)
     report(remove, keep, keys)
+    reason = refuse(keys, keep, args.roots)
+    if reason:
+        print("[prune] STOPPED, nothing removed: " + reason)
+        return 1
     if not args.delete:
         for path in remove[:20]:
             print("  would remove %s" % path)

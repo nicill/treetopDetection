@@ -834,6 +834,26 @@ class TestNeonPrune(unittest.TestCase):
              "training/RGB/2018_NIWO_2_450000_4426000_image_crop.tif",
              "training/CHM/2018_NIWO_2_450000_4426000_CHM.tif"]))
 
+    def testNoAnnotationsRemovesNothing(self):
+        from tt.neonPrune import main
+        empty = os.path.join(self.directory, "empty")
+        os.makedirs(empty)
+        code = main(["--annotations", empty, "--roots",
+                     os.path.join(self.directory, "evaluation"), "--delete"])
+        self.assertEqual(code, 1)
+        self.assertEqual(len(self.remaining()), len(self.files))
+
+    def testNestedAnnotationsAreFound(self):
+        from tt.neonPrune import main
+        nested = os.path.join(self.directory, "outer")
+        shutil.copytree(os.path.join(self.directory, "annotations"),
+                        os.path.join(nested, "annotations"))
+        code = main(["--annotations", nested, "--roots",
+                     os.path.join(self.directory, "evaluation"), "--delete"])
+        self.assertEqual(code, 0)
+        self.assertIn("evaluation/CHM/PLOT_001_2019_CHM.tif",
+                      self.remaining())
+
     def testDropLidar(self):
         self.prune("--delete", "--dropLidar")
         self.assertNotIn("evaluation/LiDAR/PLOT_001_2019.laz",
