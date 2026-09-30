@@ -41,6 +41,9 @@ the FRDR server for the annotated area only. Per site, in <output>/<site>/:
 chm.tif and rgb.tif, without reading anything from the server.
 
 PDAL runs as a program (--pdal) so it can live in its own environment.
+A site counts as prepared once its check.json exists, which is written last,
+so --output can be a synced folder (Dropbox) and a run interrupted on one
+computer can be continued on another: finished sites are skipped.
 """
 
 import argparse
@@ -417,7 +420,7 @@ def prepareSite(site, args):
     print("[qp] %s: %d crowns, area %.0f m2" % (site, len(crowns),
                                                area.area.iloc[0]), flush=True)
     chmPath, rgbPath = (os.path.join(outDir, n) for n in ("chm.tif", "rgb.tif"))
-    with tempfile.TemporaryDirectory(dir=outDir) as tileDir:
+    with tempfile.TemporaryDirectory(dir=args.workDir) as tileDir:
         filled = buildChm(args.lidarSource(site), area, args, tileDir, chmPath)
     readRgb(args.rgbSource(site), area, args.rgbResolution, rgbPath)
     return finishSite(site, outDir, crowns, trees, area, chmPath, rgbPath,
@@ -534,6 +537,10 @@ def parseArguments(argv=None):
                         help="Crowns grown by this before the check")
     parser.add_argument("--minPatchM2", type=float, default=0.5,
                         help="Smallest uncovered patch counted")
+    parser.add_argument("--workDir", default=None,
+                        help="Where the temporary PDAL tiles go (default: the "
+                             "system's temporary folder, so an --output in "
+                             "Dropbox syncs only finished products)")
     parser.add_argument("--recheck", action="store_true",
                         help="Redo the checks of prepared sites only")
     args = parser.parse_args(argv)
