@@ -1218,11 +1218,11 @@ class TestQpPrepare(unittest.TestCase):
         calls = []
         real = qp.runPdal
 
-        def flaky(pdalPath, stages):
+        def flaky(pdalPath, stages, timeoutS=None):
             calls.append(1)
             if len(calls) < 3:
                 raise RuntimeError("pdal failed: Could not read from 'x'")
-            real(pdalPath, stages)
+            real(pdalPath, stages, timeoutS)
         qp.runPdal = flaky
         try:
             part = os.path.join(self.directory, "tile.tif")
@@ -1232,6 +1232,25 @@ class TestQpPrepare(unittest.TestCase):
             qp.runPdal = real
         self.assertEqual(len(calls), 3)
         self.assertTrue(os.path.exists(part))
+
+    def testHungPdalIsKilledAndRetried(self):
+        import stat
+        import time
+        import tt.qpPrepare as qp
+        slow = os.path.join(self.directory, "slowPdal.sh")
+        with open(slow, "w") as handle:
+            handle.write("#!/bin/sh\nsleep 30\n")
+        os.chmod(slow, os.stat(slow).st_mode | stat.S_IEXEC)
+        args = self.arguments()
+        args.pdal, args.retries, args.retryWaitS = slow, 1, 0.0
+        args.tileTimeoutMin = 1.0 / 60          # one second
+        start = time.time()
+        with self.assertRaises(RuntimeError) as caught:
+            qp.buildTile(self.lidar, (300007.0, 5000007.0, 300027.0,
+                                      5000027.0), args,
+                         os.path.join(self.directory, "t.tif"))
+        self.assertIn("timed out", str(caught.exception))
+        self.assertLess(time.time() - start, 10)
 
     def testFailedSiteDoesNotStopTheRun(self):
         from tt.qpPrepare import main

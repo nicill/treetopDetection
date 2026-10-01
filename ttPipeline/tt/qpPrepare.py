@@ -228,14 +228,16 @@ def buildTile(source, tile, args, part):
     stages = pipeline(source, tile, args.marginM, args.chmResolution, part)
     for attempt in range(1, args.retries + 2):
         try:
-            runPdal(args.pdal, stages)
+            runPdal(args.pdal, stages, args.tileTimeoutMin * 60)
             return part
         except RuntimeError as error:
             if attempt > args.retries:
                 raise
+            lines = [l for l in str(error).splitlines() if l.strip()]
             print("[qp]   tile failed (attempt %d), retrying in %d s: %s"
                   % (attempt, args.retryWaitS * attempt,
-                     str(error).splitlines()[-1][:200]), flush=True)
+                     (lines[-1] if lines else "no message")[:200]),
+                  flush=True)
             time.sleep(args.retryWaitS * attempt)
 
 
@@ -650,10 +652,13 @@ def parseArguments(argv=None):
     parser.add_argument("--jobs", type=int, default=4,
                         help="Tiles processed at once (each a PDAL process "
                              "of 1-2 GB)")
-    parser.add_argument("--retries", type=int, default=3,
+    parser.add_argument("--retries", type=int, default=5,
                         help="Retries of a failed tile before its site fails")
-    parser.add_argument("--retryWaitS", type=float, default=30.0,
+    parser.add_argument("--retryWaitS", type=float, default=60.0,
                         help="Wait before retry n is n times this")
+    parser.add_argument("--tileTimeoutMin", type=float, default=15.0,
+                        help="A PDAL process running longer is killed and "
+                             "retried (a hung HTTPS read never ends)")
     parser.add_argument("--workDir", default=None,
                         help="Where the temporary PDAL tiles go (default: the "
                              "system's temporary folder, so an --output in "
