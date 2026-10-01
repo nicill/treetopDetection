@@ -19,6 +19,8 @@
 #                area; also the whole-area best, the optimistic ceiling
 #   mrcnnRgb     Mask R-CNN on the RGB
 #   calibration  CC calibrated from the RGB Mask R-CNN's confident boxes
+#   pseudoTuning CC's grid searched against the RGB Mask R-CNN's boxes instead
+#                of the crowns (tt.pseudoTuning)
 #   report       every RGB x height combination, all strategies
 #   mrcnnHeight  Mask R-CNN on the height model
 #   report       again, now with the second height detector
@@ -126,7 +128,8 @@ done
 # shellcheck disable=SC2086  (CCGRID is a list of options)
 stage "$CC" "$OUT/runs/$CC/results.json" python -m tt.dl concomp \
     --dataset "$OUT/ds/chm" --output "$OUT/runs/$CC" --resolution "$CCRES" \
-    --minHeight "$MINH" --minTreeArea "$MINTREE" --jobs "$CCJOBS" $CCGRID
+    --minHeight "$MINH" --minTreeArea "$MINTREE" --jobs "$CCJOBS" \
+    --saveDetections $CCGRID
 
 train mrcnnRgb "$OUT/ds/rgb"
 if [ -f "$OUT/runs/mrcnnRgb/results.json" ] && [ -f "$OUT/runs/$CC/results.json" ]; then
@@ -135,6 +138,13 @@ if [ -f "$OUT/runs/mrcnnRgb/results.json" ] && [ -f "$OUT/runs/$CC/results.json"
         --dataset "$OUT/ds/chm" --rgbRun "$OUT/runs/mrcnnRgb" \
         --ccRun "$OUT/runs/$CC" --resolution "$CCRES" --minHeight "$MINH" \
         --minTreeArea "$MINTREE" --output "$OUT/calibration"
+fi
+# CC tuned on the RGB Mask R-CNN's boxes instead of the crowns (no crown of
+# the held-out block is used), against CC tuned on the real crowns
+if [ -f "$OUT/runs/mrcnnRgb/results.json" ] && [ -f "$OUT/runs/$CC/results.json" ]; then
+    stage pseudoTuning "$OUT/pseudoTuning/pseudoTuning.json" python -m tt.pseudoTuning \
+        --ccRun "$OUT/runs/$CC" --rgbRun "$OUT/runs/mrcnnRgb" \
+        --dataset "$OUT/ds/chm" --jobs "$CCJOBS" --output "$OUT/pseudoTuning"
 fi
 report rgbAndCc
 

@@ -82,11 +82,29 @@ def calibrated(siteDir):
             for level, row in loadJson(path)["summary"].items()}
 
 
+def pseudoTuned(siteDir):
+    """
+    ({'pseudo:<scorer>': pooled}, {bound}) from tt.pseudoTuning: CC tuned on
+    the RGB Mask R-CNN's boxes is a hybrid; tuning on each block's own crowns
+    is an optimistic bound, shown with the ceilings.
+    """
+    path = os.path.join(siteDir, "pseudoTuning", "pseudoTuning.json")
+    if not os.path.exists(path):
+        return {}, {}
+    pooled = loadJson(path)["pooled"]
+    tuned = {"pseudo:%s" % k: v for k, v in pooled.items() if k != "real"}
+    bound = {"cc own-block bound": pooled["real"]} if "real" in pooled else {}
+    return tuned, bound
+
+
 def readSite(siteDir):
     methods, ceilings = singles(siteDir)
+    tuned, bound = pseudoTuned(siteDir)
+    ceilings.update(bound)
     site = {"singles": methods, "ceilings": ceilings,
             "hybrids": dict(hybrids(siteDir))}
     site["hybrids"].update(calibrated(siteDir))
+    site["hybrids"].update(tuned)
     if site["singles"]:
         best = max(site["singles"], key=lambda n: site["singles"][n]["f1"])
         site["bestSingle"] = best
@@ -133,15 +151,26 @@ def writeCsv(sites, path):
                                      "%.4f" % p["f1"], p.get("crowns", "")])
 
 
+def shortLabel(name):
+    """Column headings short enough to stay distinct."""
+    for old, new in (("pseudo:pseudoF1", "pseudoF1"), ("pseudo:zones", "pzones"),
+                     ("calibrated", "calib"), ("cc own-block bound", "ownBlock*"),
+                     (" ceiling", " ceil*")):
+        name = name.replace(old, new)
+    return name
+
+
 def printSites(sites):
     methods = sorted({m for s in sites.values() for m in s["singles"]})
     cal = sorted({h for s in sites.values() for h in s["hybrids"]
-                  if h.startswith("calibrated")})
+                  if h.startswith(("calibrated", "pseudo"))})
     ceilings = sorted({c for s in sites.values() for c in s["ceilings"]})
     columns = methods + ceilings + cal
-    print("F1 per site (best single marked *; 'ceiling' is CC tuned and "
-          "scored on the whole site, optimistic)")
-    print("%-34s " % "site" + " ".join("%14s" % c[:14] for c in columns))
+    print("F1 per site. Best single method marked *. Columns ending in * are "
+          "optimistic bounds, never methods: 'ceil' tuned and scored on the "
+          "whole site, 'ownBlock' tuned on each block's own crowns.")
+    print("%-34s " % "site" + " ".join("%14s" % shortLabel(c)[:14]
+                                       for c in columns))
     for name, site in sites.items():
         cells = []
         for c in columns:

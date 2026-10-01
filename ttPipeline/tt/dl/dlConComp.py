@@ -69,6 +69,25 @@ _WORKER = None      # the cross-validation, shared with forked workers
 def _detectInWorker(index):
     return _WORKER.detectOne(index)
 
+
+def saveDetections(path, detections):
+    """Every setting's tops (x, y, height), compactly, in setting order."""
+    arrays = {"s%05d" % i: np.array([[p["centreX"], p["centreY"], p["score"]]
+                                     for p in d], float).reshape(-1, 3)
+              for i, d in enumerate(detections)}
+    np.savez_compressed(path, **arrays)
+    return path
+
+
+def loadDetections(path):
+    """saveDetections read back as prediction dicts."""
+    with np.load(path) as data:
+        return [[{"box": [x - POINT_BOX_M, y - POINT_BOX_M, x + POINT_BOX_M,
+                          y + POINT_BOX_M],
+                  "centreX": float(x), "centreY": float(y), "score": float(h)}
+                 for x, y, h in data["s%05d" % i]]
+                for i in range(len(data.files))]
+
 # the half-width of the box drawn round each point, only so the shared scoring
 # and NMS code, written for boxes, has something to work with
 POINT_BOX_M = 0.5
@@ -268,6 +287,9 @@ def crossValidate(args):
         resolution=args.resolution, minHeight=args.minHeight,
         minTreeAreaM2=args.minTreeArea, output=args.output, jobs=args.jobs)
     folds, pooled = validation.run()
+    if args.saveDetections:
+        saveDetections(os.path.join(args.output, "detections.npz"),
+                       validation.detections)
 
     print("\n[concomp] pooled over %d folds: R %.3f  P %.3f  F1 %.3f "
           "(per-fold F1 %.3f +- %.3f)"
@@ -319,6 +341,9 @@ def parseArguments(argv=None):
                              "--minTreeArea is fixed)")
     parser.add_argument("--jobs", type=int, default=1,
                         help="Settings detected at once, in parallel")
+    parser.add_argument("--saveDetections", action="store_true",
+                        help="Keep every setting's detections in "
+                             "detections.npz (for tt.pseudoTuning)")
     return parser.parse_args(argv)
 
 

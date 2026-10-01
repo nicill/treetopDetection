@@ -1429,6 +1429,47 @@ class TestConCompGrid(Fixture):
         self.assertEqual(serial.detectAll(), parallel.detectAll())
 
 
+class TestPseudoTuning(unittest.TestCase):
+    """The pseudo scorers pick settings without the crowns; scored with them."""
+
+    def testExactlyOneShare(self):
+        from tt.pseudoTuning import exactlyOneShare
+        boxes = np.array([[0, 0, 2, 2], [5, 5, 7, 7], [10, 10, 12, 12]], float)
+        points = np.array([[1, 1], [6, 6], [6.5, 6.5]], float)
+        self.assertAlmostEqual(exactlyOneShare(points, boxes), 1.0 / 3)
+        self.assertEqual(exactlyOneShare(np.zeros((0, 2)), boxes), 0.0)
+
+    def testChosenSettingIsScoredOnTheRealCrowns(self):
+        from tt.pseudoTuning import tuneBlock
+
+        class Stub(object):
+            def realScores(self):
+                return [{"crowns": 10, "f1": f, "hits": 0, "predictions": 0,
+                         "repeats": 0, "falsePositives": 0, "recall": f,
+                         "precision": f} for f in (0.5, 0.9, 0.7)]
+
+            def scorers(self):
+                # pseudoF1 prefers setting 2, the zones setting 1
+                return {"pseudoF1": [0.1, 0.2, 0.3], "zones@0.9": [0.2, 0.8, 0.5]}
+
+        rows = tuneBlock(Stub())
+        self.assertEqual(rows["real"]["chosen"], 1)
+        self.assertAlmostEqual(rows["pseudoF1"]["f1"], 0.7)
+        self.assertAlmostEqual(rows["zones@0.9"]["f1"], 0.9)
+        self.assertAlmostEqual(rows["zones@0.9"]["spearman"], 1.0)
+        self.assertAlmostEqual(rows["pseudoF1"]["spearman"], 0.5)
+
+    def testDetectionsRoundTrip(self):
+        from tt.dl.dlConComp import loadDetections, saveDetections
+        path = os.path.join(tempfile.mkdtemp(), "d.npz")
+        detections = [[{"centreX": 1.0, "centreY": 2.0, "score": 3.0}], []]
+        saveDetections(path, detections)
+        back = loadDetections(path)
+        self.assertEqual(len(back), 2)
+        self.assertEqual((back[0][0]["centreX"], back[0][0]["score"]), (1.0, 3.0))
+        self.assertEqual(back[1], [])
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
