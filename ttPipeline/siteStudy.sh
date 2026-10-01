@@ -14,8 +14,9 @@
 #
 # Stages, in this order, each skipped when its result already exists:
 #   datasets     ds/chm and ds/rgb, tiled, 4 x 2 spatial blocks
-#   sweep        whole-area CC sweep (optimistic, for reference only)
-#   cc           CC tuned on the training blocks, scored on the held-out one
+#   cc           CC tuned on the training blocks, scored on the held-out one,
+#                over a grid that includes the minimum height and minimum tree
+#                area; also the whole-area best, the optimistic ceiling
 #   mrcnnRgb     Mask R-CNN on the RGB
 #   calibration  CC calibrated from the RGB Mask R-CNN's confident boxes
 #   report       every RGB x height combination, all strategies
@@ -29,15 +30,16 @@
 #             (photogrammetric height, Sergi); the report pairs runs by name
 #   RES       tile resolution of the datasets, m (0.03: small crowns ~ 55 px)
 #   CCRES     resolution connected components works at, m
-#   MINH      minimum height, m; the same as the prep's visibleM, so the trees
-#             scored are the trees the detector can see
-#   MINTREE   minimum tree area, m2
+#   MINH      minimum height, m, and MINTREE minimum tree area, m2: the fixed
+#             values the calibration uses (it may not tune on the crowns);
+#             CC tunes its own over --minHeights and --minTreeAreas
 #   CCGRID    the connected-component grid, as tt.dl concomp options
+#   CCJOBS    settings detected in parallel
 #   EPOCHS, BATCH, DEVICE, BLOCKCOLS, BLOCKROWS
 #   DRYRUN=1  everything but the training, to test the chain quickly
 #
-# The fixed settings MINH and MINTREE for Quebec were chosen while exploring
-# afcamoisan: state that, or leave afcamoisan out of the final tables.
+# The calibration's fixed MINH and MINTREE for Quebec were chosen while
+# exploring afcamoisan: state that, or leave afcamoisan out of the final tables.
 
 set -u
 cd "$(dirname "$0")"
@@ -51,7 +53,8 @@ RES=${RES:-0.03}
 CCRES=${CCRES:-0.05}
 MINH=${MINH:-1.0}
 MINTREE=${MINTREE:-0.1}
-CCGRID=${CCGRID:---percentiles 0,10 --minTopAreas 0.06,0.12 --topSteps 0.12,0.25 --erosions 0,1 --saddleDrops 0.3,0.5}
+CCGRID=${CCGRID:---percentiles 0,10 --minTopAreas 0.06,0.12 --topSteps 0.12,0.25 --erosions 0,1 --saddleDrops 0.3,0.5 --minHeights 0.75,1.0,1.5 --minTreeAreas 0.05,0.1,0.25,0.5}
+CCJOBS=${CCJOBS:-16}
 EPOCHS=${EPOCHS:-40}
 BATCH=${BATCH:-4}
 DEVICE=${DEVICE:-0}
@@ -117,15 +120,13 @@ for kind in chm rgb; do
         || { status "no dataset, site stopped"; exit 1; }
 done
 
+# connected components tuned to the site: the grid includes the minimum height
+# and minimum tree area, chosen per fold on the training blocks; the run also
+# reports the whole-area best, the optimistic ceiling (no separate sweep)
 # shellcheck disable=SC2086  (CCGRID is a list of options)
-stage sweep "$OUT/sweep.json" python -m tt.cli sweep --chm "$CHM" \
-    --crowns "$CROWNS" --boundary "$AREA" --resolution "$CCRES" \
-    --minHeight "$MINH" --minTreeArea "$MINTREE" $CCGRID \
-    --output "$OUT/sweep.json"
-# shellcheck disable=SC2086
 stage "$CC" "$OUT/runs/$CC/results.json" python -m tt.dl concomp \
     --dataset "$OUT/ds/chm" --output "$OUT/runs/$CC" --resolution "$CCRES" \
-    --minHeight "$MINH" --minTreeArea "$MINTREE" $CCGRID
+    --minHeight "$MINH" --minTreeArea "$MINTREE" --jobs "$CCJOBS" $CCGRID
 
 train mrcnnRgb "$OUT/ds/rgb"
 if [ -f "$OUT/runs/mrcnnRgb/results.json" ] && [ -f "$OUT/runs/$CC/results.json" ]; then

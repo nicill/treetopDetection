@@ -53,10 +53,11 @@ log "start (ONLY=$ONLY DRYRUN=${DRYRUN:-0})"
 
 if [ "$ONLY" != quebec ]; then
     if [ -f "$SERGI_SITE/check.json" ]; then
-        # Sergi: larch, photogrammetric height, crowns like Terelj's: the
-        # Terelj P1 settings and grid
+        # Sergi: larch, photogrammetric height, crowns like Terelj's: Terelj's
+        # P1 fixed settings for the calibration, and CC tuned over a grid
+        # around Terelj's that includes minimum height and tree area
         HEIGHT=P1 RES=0.05 CCRES=0.25 MINH=2.0 MINTREE=0.5 \
-        CCGRID="--percentiles 10,20 --minTopAreas 0.25,0.12 --topSteps 0.12,0.25 --erosions 1,2 --saddleDrops 0.2,0.3,0.5" \
+        CCGRID="--percentiles 0,10,20 --minTopAreas 0.12,0.25 --topSteps 0.12,0.25 --erosions 1,2 --saddleDrops 0.2,0.3,0.5 --minHeights 1.0,1.5,2.0,3.0 --minTreeAreas 0.1,0.25,0.5,1.0" \
             runSite "$SERGI_SITE"
     else
         log "sergi: $SERGI_SITE not prepared (no check.json); skipped"

@@ -33,6 +33,7 @@ several land in the same one, the rule the detector already uses internally.
 
 import argparse
 import itertools
+import multiprocessing
 import os
 import sys
 
@@ -56,6 +57,17 @@ DEFAULT_GRID = {
     "saddleDropM": [0.2, 0.3, 0.5],
 }
 GRID_CASTS = {"lowerPercentile": int, "erosionIterations": int}
+# the minimum height and minimum tree area are fixed unless given as lists
+# (--minHeights, --minTreeAreas); then they are tuned like the rest. The crowns
+# scored never depend on them: only the detector's input does.
+SCENE_KEY = "minHeight"
+TREE_AREA_KEY = "minTreeAreaM2"
+
+_WORKER = None      # the cross-validation, shared with forked workers
+
+
+def _detectInWorker(index):
+    return _WORKER.detectOne(index)
 
 # the half-width of the box drawn round each point, only so the shared scoring
 # and NMS code, written for boxes, has something to work with
@@ -66,7 +78,7 @@ class ConCompCrossValidation(object):
 
     def __init__(self, datasetPath, grid=None, resolution=0.25, minHeight=2.0,
                  minTreeAreaM2=0.5, windowSizeM=40.0, saddleEpsM=8.0,
-                 output=None, verbose=True):
+                 output=None, verbose=True, jobs=1):
         self.output = output
         self.meta = dp.loadDataset(datasetPath)
         self.grid = grid or dict(DEFAULT_GRID)
@@ -76,7 +88,9 @@ class ConCompCrossValidation(object):
         self.windowSizeM = windowSizeM
         self.saddleEpsM = saddleEpsM
         self.verbose = verbose
+        self.jobs = max(1, int(jobs))
 
+        self.scenes = {}
         self.scene = self._loadScene()
         self.blocks = self.meta["blockGeometries"]
         self.settings = self._expandGrid()
@@ -84,16 +98,25 @@ class ConCompCrossValidation(object):
 
     # ------------------------------------------------------------------ #
 
-    def _loadScene(self):
+    def _loadScene(self, minHeight=None):
+        """The scene at one minimum height, built once and kept."""
+        minHeight = self.minHeight if minHeight is None else minHeight
+        if minHeight in self.scenes:
+            return self.scenes[minHeight]
         chmPath = next((c["path"] for c in self.meta["channels"]
                         if c["kind"] == "chm"), None)
         if chmPath is None:
             raise ValueError("this dataset has no height model, so the "
                              "connected-component detector cannot run on it")
-        return Scene(chmPath, crownsPath=self.meta["crownsPath"],
-                     boundaryPath=self.meta["boundaryPath"],
-                     resolution=self.resolution, minHeight=self.minHeight,
-                     verbose=False)
+        scene = Scene(chmPath, crownsPath=self.meta["crownsPath"],
+                      boundaryPath=self.meta["boundaryPath"],
+                      resolution=self.resolution, minHeight=minHeight,
+                      verbose=False)
+        self.scenes[minHeight] = scene
+        return scene
+
+    def sceneFor(self, setting):
+        return self._loadScene(setting.get(SCENE_KEY, self.minHeight))
 
     def _expandGrid(self):
         keys = list(self.grid)
@@ -102,7 +125,8 @@ class ConCompCrossValidation(object):
 
     def _detector(self, setting):
         return ConCompDetector(
-            windowSizeM=self.windowSizeM, minTreeAreaM2=self.minTreeAreaM2,
+            windowSizeM=self.windowSizeM,
+            minTreeAreaM2=setting.get(TREE_AREA_KEY, self.minTreeAreaM2),
             lowerPercentile=setting["lowerPercentile"],
             minTopAreaM2=setting["minTopAreaM2"],
             topStepM=setting["topStepM"],
@@ -124,15 +148,33 @@ class ConCompCrossValidation(object):
 
     # ------------------------------------------------------------------ #
 
+    def detectOne(self, index):
+        setting = self.settings[index]
+        scene = self.sceneFor(setting)
+        return self._asPredictions(self._detector(setting).detect(scene))
+
     def detectAll(self):
-        """One detector run per setting, over the whole area."""
-        self.detections = []
-        for index, setting in enumerate(self.settings):
-            tops = self._detector(setting).detect(self.scene)
-            self.detections.append(self._asPredictions(tops))
-            if self.verbose:
-                print("  detected setting %d/%d: %d tops"
-                      % (index + 1, len(self.settings), len(tops)))
+        """
+        One detector run per setting, over the whole area; --jobs settings at
+        a time in forked processes (the scenes are built first, so the
+        workers share them). The detections are the same in any case.
+        """
+        global _WORKER
+        for setting in self.settings:
+            self.sceneFor(setting)
+        indices = range(len(self.settings))
+        if self.jobs == 1:
+            self.detections = [self.detectOne(i) for i in indices]
+        else:
+            _WORKER = self
+            context = multiprocessing.get_context("fork")
+            with context.Pool(self.jobs) as pool:
+                self.detections = pool.map(_detectInWorker, indices,
+                                           chunksize=1)
+            _WORKER = None
+        if self.verbose:
+            print("  detected %d settings, %d jobs" % (len(self.settings),
+                                                     self.jobs))
         return self.detections
 
     def foldResult(self, name, geometry):
@@ -169,17 +211,33 @@ class ConCompCrossValidation(object):
         pooled = dc.averageFolds(folds)
         pooled["tuningOptimism"] = float(np.mean(
             [f["tuningF1"] - f["f1"] for f in folds]))
+        pooled["wholeAreaBest"] = self.wholeAreaBest()
         return folds, pooled
+
+    def wholeAreaBest(self):
+        """
+        The best setting tuned and scored on all blocks at once: the ceiling
+        connected components can reach here, optimistic by construction since
+        the crowns it is scored on also chose it.
+        """
+        area = unary_union([g for _, g in self.blocks])
+        scores = [dc.evaluateDetections(p, self.scene.crowns, area)
+                  for p in self.detections]
+        best = int(np.argmax([r["f1"] for r in scores]))
+        return dict(scores[best], settings=self.settings[best])
 
     @staticmethod
     def _printFold(fold):
         s = fold["settings"]
+        extra = "".join(", %s %s" % (k, s[k]) for k in (SCENE_KEY,
+                                                         TREE_AREA_KEY)
+                        if k in s)
         print("  fold %s: tuned F1 %.3f -> held-out R %.3f P %.3f F1 %.3f  "
-              "(%dth, minTop %.2f, step %.2f, erode %d, drop %.2f)"
+              "(%dth, minTop %.2f, step %.2f, erode %d, drop %.2f%s)"
               % (fold["block"], fold["tuningF1"], fold["recall"],
                  fold["precision"], fold["f1"], s["lowerPercentile"],
                  s["minTopAreaM2"], s["topStepM"], s["erosionIterations"],
-                 s["saddleDropM"]))
+                 s["saddleDropM"], extra))
 
 
 # ---------------------------------------------------------------------- #
@@ -194,6 +252,10 @@ def gridFromArguments(args):
         if option:
             cast = GRID_CASTS.get(key, float)
             grid[key] = [cast(v) for v in option.split(",") if v.strip()]
+    for key, option in ((SCENE_KEY, args.minHeights),
+                        (TREE_AREA_KEY, args.minTreeAreas)):
+        if option:
+            grid[key] = [float(v) for v in option.split(",") if v.strip()]
     return grid
 
 
@@ -204,7 +266,7 @@ def crossValidate(args):
     validation = ConCompCrossValidation(
         args.dataset, grid=gridFromArguments(args),
         resolution=args.resolution, minHeight=args.minHeight,
-        minTreeAreaM2=args.minTreeArea, output=args.output)
+        minTreeAreaM2=args.minTreeArea, output=args.output, jobs=args.jobs)
     folds, pooled = validation.run()
 
     print("\n[concomp] pooled over %d folds: R %.3f  P %.3f  F1 %.3f "
@@ -214,6 +276,10 @@ def crossValidate(args):
     print("[concomp] tuning optimism: %+.3f F1 — how much the figure would "
           "have been overstated by reporting the tuning score"
           % pooled["tuningOptimism"])
+    ceiling = pooled["wholeAreaBest"]
+    print("[concomp] whole-area best (optimistic ceiling): R %.3f  P %.3f  "
+          "F1 %.3f at %s" % (ceiling["recall"], ceiling["precision"],
+                             ceiling["f1"], ceiling["settings"]))
 
     dc.saveJson({"method": "concomp", "dataset": validation.meta["name"],
                  "source": validation.meta["source"], "settings": vars(args),
@@ -245,6 +311,14 @@ def parseArguments(argv=None):
     parser.add_argument("--topSteps", default=None)
     parser.add_argument("--erosions", default=None)
     parser.add_argument("--saddleDrops", default=None)
+    parser.add_argument("--minHeights", default=None,
+                        help="Minimum heights to tune over (else --minHeight "
+                             "is fixed)")
+    parser.add_argument("--minTreeAreas", default=None,
+                        help="Minimum tree areas to tune over (else "
+                             "--minTreeArea is fixed)")
+    parser.add_argument("--jobs", type=int, default=1,
+                        help="Settings detected at once, in parallel")
     return parser.parse_args(argv)
 
 

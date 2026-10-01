@@ -43,14 +43,22 @@ def loadJson(path):
 
 
 def singles(siteDir):
-    """{method: pooled scores} from the site's cross-validated runs."""
-    out = {}
+    """
+    ({method: pooled scores}, {method ceiling: whole-area best}) from the
+    site's cross-validated runs. The ceilings (connected components tuned
+    and scored on the whole area) are optimistic, so they are shown but
+    never count as a method.
+    """
+    out, ceilings = {}, {}
     for path in sorted(glob.glob(os.path.join(siteDir, "runs", "*",
                                               "results.json"))):
         data = loadJson(path)
         if "pooled" in data:
-            out[os.path.basename(os.path.dirname(path))] = data["pooled"]
-    return out
+            name = os.path.basename(os.path.dirname(path))
+            out[name] = data["pooled"]
+            if "wholeAreaBest" in data["pooled"]:
+                ceilings[name + " ceiling"] = data["pooled"]["wholeAreaBest"]
+    return out, ceilings
 
 
 def hybrids(siteDir):
@@ -75,7 +83,9 @@ def calibrated(siteDir):
 
 
 def readSite(siteDir):
-    site = {"singles": singles(siteDir), "hybrids": dict(hybrids(siteDir))}
+    methods, ceilings = singles(siteDir)
+    site = {"singles": methods, "ceilings": ceilings,
+            "hybrids": dict(hybrids(siteDir))}
     site["hybrids"].update(calibrated(siteDir))
     if site["singles"]:
         best = max(site["singles"], key=lambda n: site["singles"][n]["f1"])
@@ -115,7 +125,7 @@ def writeCsv(sites, path):
         writer.writerow(["site", "kind", "method", "recall", "precision",
                          "f1", "crowns"])
         for name, site in sites.items():
-            for kind in ("singles", "hybrids"):
+            for kind in ("singles", "ceilings", "hybrids"):
                 for method, p in sorted(site[kind].items()):
                     writer.writerow([name, kind[:-1], method,
                                      "%.4f" % p["recall"],
@@ -127,13 +137,16 @@ def printSites(sites):
     methods = sorted({m for s in sites.values() for m in s["singles"]})
     cal = sorted({h for s in sites.values() for h in s["hybrids"]
                   if h.startswith("calibrated")})
-    columns = methods + cal
-    print("F1 per site (best single marked *)")
+    ceilings = sorted({c for s in sites.values() for c in s["ceilings"]})
+    columns = methods + ceilings + cal
+    print("F1 per site (best single marked *; 'ceiling' is CC tuned and "
+          "scored on the whole site, optimistic)")
     print("%-34s " % "site" + " ".join("%14s" % c[:14] for c in columns))
     for name, site in sites.items():
         cells = []
         for c in columns:
-            p = site["singles"].get(c) or site["hybrids"].get(c)
+            p = (site["singles"].get(c) or site["ceilings"].get(c)
+                 or site["hybrids"].get(c))
             mark = "*" if c == site.get("bestSingle") else " "
             cells.append("%13s%s" % ("%.3f" % p["f1"] if p else "-", mark))
         print("%-34s " % name[:34] + " ".join(cells))

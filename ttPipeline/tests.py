@@ -1331,8 +1331,11 @@ class TestStudySummary(unittest.TestCase):
                 "siteB": (0.60, 0.75, 0.78, 0.55),
                 "siteC": (0.70, 0.72, 0.71, 0.74)}.items():
             for name, f1 in (("ccLidar", cc), ("mrcnnRgb", rgb)):
+                pooled = self.pooled(f1)
+                if name == "ccLidar":
+                    pooled["wholeAreaBest"] = self.pooled(min(f1 + 0.1, 1.0))
                 self.write(site, "runs/%s/results.json" % name,
-                           {"pooled": self.pooled(f1)})
+                           {"pooled": pooled})
             self.write(site, "report/fused/mrcnnRgb_ccLidar/summary.json",
                        {"boxes": {"pooled": self.pooled(rgb)},
                         "points": {"pooled": self.pooled(cc)},
@@ -1366,13 +1369,64 @@ class TestStudySummary(unittest.TestCase):
                                / 3)
         self.assertEqual((union["wins"], union["sites"]), (2, 3))
         self.assertEqual(rows["calibrated@0.9"]["wins"], 2)
+        self.assertIn("ccLidar ceiling", sites["siteA"]["ceilings"])
+        self.assertNotIn("ccLidar ceiling", sites["siteA"]["singles"])
 
     def testWritesTheTables(self):
         from tt.studySummary import main
         out = os.path.join(self.directory, "out")
         self.assertEqual(main(["--root", self.directory, "--output", out]), 0)
         with open(os.path.join(out, "sites.csv")) as handle:
-            self.assertEqual(len(handle.readlines()), 1 + 3 * 4)
+            self.assertEqual(len(handle.readlines()), 1 + 3 * 5)
+
+
+class TestConCompGrid(Fixture):
+    """Minimum height and tree area tuned like the rest; jobs change nothing."""
+
+    def dataset(self):
+        import subprocess
+        out = os.path.join(self.directory, "ccds")
+        if not os.path.exists(os.path.join(out, "dataset.json")):
+            subprocess.run([sys.executable, "-m", "tt.dl", "prepare",
+                            "--source", "chm:" + self.chmPath,
+                            "--crowns", self.crownsPath,
+                            "--boundary", self.boundaryPath, "--output", out,
+                            "--name", "t", "--resolution", "0.25",
+                            "--minHeight", "1.0", "--blockCols", "2",
+                            "--blockRows", "1"], check=True,
+                           capture_output=True)
+        return out
+
+    def validation(self, jobs):
+        from tt.dl.dlConComp import ConCompCrossValidation
+        grid = {"lowerPercentile": [10], "minTopAreaM2": [0.12],
+                "topStepM": [0.25], "erosionIterations": [1],
+                "saddleDropM": [0.5], "minHeight": [1.0, 3.0],
+                "minTreeAreaM2": [0.5, 40.0]}
+        return ConCompCrossValidation(self.dataset(), grid=grid,
+                                      minHeight=2.0, verbose=False, jobs=jobs)
+
+    def testTheTwoAreTunedDimensions(self):
+        validation = self.validation(1)
+        self.assertEqual(len(validation.settings), 4)
+        validation.detectAll()
+        self.assertEqual(sorted(validation.scenes), [1.0, 2.0, 3.0])
+        counts = {(s["minHeight"], s["minTreeAreaM2"]): len(d)
+                  for s, d in zip(validation.settings, validation.detections)}
+        # a 40 m2 minimum tree area leaves none of the small cones
+        self.assertLess(counts[(1.0, 40.0)], counts[(1.0, 0.5)])
+
+    def testCeilingIsNoWorseThanAnyFold(self):
+        validation = self.validation(1)
+        folds, pooled = validation.run()
+        self.assertIn(pooled["wholeAreaBest"]["settings"], validation.settings)
+        self.assertGreaterEqual(pooled["wholeAreaBest"]["f1"],
+                                pooled["f1"] - 1e-9)
+
+    def testParallelEqualsSerial(self):
+        serial = self.validation(1)
+        parallel = self.validation(3)
+        self.assertEqual(serial.detectAll(), parallel.detectAll())
 
 
 class TestCommandLine(Fixture):
