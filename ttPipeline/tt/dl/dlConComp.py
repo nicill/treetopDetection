@@ -70,6 +70,12 @@ def _detectInWorker(index):
     return _WORKER.detectOne(index)
 
 
+def _scoreInWorker(task):
+    region, setting = task
+    return dc.evaluateDetections(_WORKER.detections[setting],
+                                 _WORKER.scene.crowns, _WORKER.regions[region])
+
+
 def saveDetections(path, detections):
     """Every setting's tops (x, y, height), compactly, in setting order."""
     arrays = {"s%05d" % i: np.array([[p["centreX"], p["centreY"], p["score"]]
@@ -196,13 +202,41 @@ class ConCompCrossValidation(object):
                                                      self.jobs))
         return self.detections
 
+    def scoreAll(self):
+        """
+        Every setting on every fold's training blocks and on the whole area,
+        --jobs at a time: {region index: [result per setting]}. Regions 0..n-1
+        are the folds' training blocks, region n the whole area. Each score is
+        computed exactly as one at a time would be.
+        """
+        global _WORKER
+        names = [n for n, _ in self.blocks]
+        self.regions = [unary_union([g for m, g in self.blocks if m != n])
+                        for n in names] + [unary_union([g for _, g in
+                                                         self.blocks])]
+        tasks = [(r, s) for r in range(len(self.regions))
+                 for s in range(len(self.settings))]
+        if self.jobs == 1:
+            _WORKER = self
+            results = [_scoreInWorker(t) for t in tasks]
+        else:
+            _WORKER = self
+            context = multiprocessing.get_context("fork")
+            with context.Pool(self.jobs) as pool:
+                results = pool.map(_scoreInWorker, tasks,
+                                   chunksize=max(1, len(tasks) //
+                                                 (self.jobs * 8)))
+        _WORKER = None
+        self.scores = {r: [] for r in range(len(self.regions))}
+        for (r, _), result in zip(tasks, results):
+            self.scores[r].append(result)
+        return self.scores
+
     def foldResult(self, name, geometry):
         """Tune on every other block, then score the chosen setting here."""
-        training = unary_union([g for n, g in self.blocks if n != name])
         crowns = self.scene.crowns
-
-        tuning = [dc.evaluateDetections(p, crowns, training)["f1"]
-                  for p in self.detections]
+        index = [n for n, _ in self.blocks].index(name)
+        tuning = [r["f1"] for r in self.scores[index]]
         best = int(np.argmax(tuning))
 
         result = dc.evaluateDetections(self.detections[best], crowns,
@@ -222,6 +256,7 @@ class ConCompCrossValidation(object):
             print("[concomp] %s, %d blocks, %d settings, one run each"
                   % (self.meta["name"], len(self.blocks), len(self.settings)))
         self.detectAll()
+        self.scoreAll()
         folds = [self.foldResult(name, geometry)
                  for name, geometry in self.blocks]
         if self.verbose:
@@ -239,9 +274,7 @@ class ConCompCrossValidation(object):
         connected components can reach here, optimistic by construction since
         the crowns it is scored on also chose it.
         """
-        area = unary_union([g for _, g in self.blocks])
-        scores = [dc.evaluateDetections(p, self.scene.crowns, area)
-                  for p in self.detections]
+        scores = self.scores[len(self.blocks)]
         best = int(np.argmax([r["f1"] for r in scores]))
         return dict(scores[best], settings=self.settings[best])
 

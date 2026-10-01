@@ -1428,6 +1428,13 @@ class TestConCompGrid(Fixture):
         parallel = self.validation(3)
         self.assertEqual(serial.detectAll(), parallel.detectAll())
 
+    def testParallelRunEqualsSerialRun(self):
+        foldsA, pooledA = self.validation(1).run()
+        foldsB, pooledB = self.validation(3).run()
+        self.assertEqual([(f["block"], f["f1"], f["settings"]) for f in foldsA],
+                         [(f["block"], f["f1"], f["settings"]) for f in foldsB])
+        self.assertEqual(pooledA["wholeAreaBest"], pooledB["wholeAreaBest"])
+
 
 class TestPseudoTuning(unittest.TestCase):
     """The pseudo scorers pick settings without the crowns; scored with them."""
