@@ -598,6 +598,16 @@ class TestCalibration(Fixture):
                                min(0.5, max(0.05,
                                             settings["saddleDropM"] / 2)))
 
+    def testMinTreeAreaReachesTheDetector(self):
+        from tt.calibration import CalibratedDetector, buildDetector
+        scene, zones = self.zones()
+        self.assertAlmostEqual(CalibratedDetector(scene, zones, 0.1)
+                               .minTreeAreaM2, 0.1)
+        settings = {"lowerPercentile": 10, "erosionIterations": 1,
+                    "minTopAreaM2": 0.12, "saddleDropM": 0.5, "topStepM": 0.25}
+        detector = buildDetector(settings, 0.1)
+        self.assertAlmostEqual(detector.minTreeAreaM2, 0.1)
+
     def testCheckCountsCoverageAndMultiplicity(self):
         from tt.calibration import ZoneCheck
         scene, zones = self.zones()
@@ -1308,6 +1318,61 @@ class TestQpPrepare(unittest.TestCase):
         shape = area.geometry.iloc[0]
         self.assertEqual(shape.geom_type, "Polygon")
         self.assertTrue(shape.contains(Point(0, 0)))
+
+
+class TestStudySummary(unittest.TestCase):
+    """Each hybrid is held against the best single method of every site."""
+
+    def setUp(self):
+        self.directory = tempfile.mkdtemp(prefix="ttStudy")
+        # site: (cc, mrcnnRgb, union hybrid, calibrated@0.9)
+        for site, (cc, rgb, union, cal) in {
+                "siteA": (0.80, 0.70, 0.85, 0.82),
+                "siteB": (0.60, 0.75, 0.78, 0.55),
+                "siteC": (0.70, 0.72, 0.71, 0.74)}.items():
+            for name, f1 in (("ccLidar", cc), ("mrcnnRgb", rgb)):
+                self.write(site, "runs/%s/results.json" % name,
+                           {"pooled": self.pooled(f1)})
+            self.write(site, "report/fused/mrcnnRgb_ccLidar/summary.json",
+                       {"boxes": {"pooled": self.pooled(rgb)},
+                        "points": {"pooled": self.pooled(cc)},
+                        "union": {"pooled": self.pooled(union)}})
+            self.write(site, "calibration/calibration.json",
+                       {"summary": {"0.9": {"calibrated": self.pooled(cal)}}})
+
+    def tearDown(self):
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def pooled(self, f1):
+        return {"recall": f1, "precision": f1, "f1": f1, "crowns": 100}
+
+    def write(self, site, relative, data):
+        import json
+        path = os.path.join(self.directory, site, relative)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as handle:
+            json.dump(data, handle)
+
+    def testBestSingleAndDifferences(self):
+        from tt.studySummary import compareHybrids, readStudy
+        sites = readStudy(self.directory)
+        self.assertEqual([sites[s]["bestSingle"] for s in sorted(sites)],
+                         ["ccLidar", "mrcnnRgb", "mrcnnRgb"])
+        self.assertNotIn("mrcnnRgb+ccLidar:boxes", sites["siteA"]["hybrids"])
+        rows = {r["hybrid"]: r for r in compareHybrids(sites)}
+        union = rows["mrcnnRgb+ccLidar:union"]
+        self.assertAlmostEqual(union["meanDifference"],
+                               ((0.85 - 0.80) + (0.78 - 0.75) + (0.71 - 0.72))
+                               / 3)
+        self.assertEqual((union["wins"], union["sites"]), (2, 3))
+        self.assertEqual(rows["calibrated@0.9"]["wins"], 2)
+
+    def testWritesTheTables(self):
+        from tt.studySummary import main
+        out = os.path.join(self.directory, "out")
+        self.assertEqual(main(["--root", self.directory, "--output", out]), 0)
+        with open(os.path.join(out, "sites.csv")) as handle:
+            self.assertEqual(len(handle.readlines()), 1 + 3 * 4)
 
 
 class TestCommandLine(Fixture):

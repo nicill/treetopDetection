@@ -55,6 +55,8 @@ COVERAGE_REQUIRED = 0.95
 MULTIPLICITY_ALLOWED = 0.10
 
 # --- fixed detector settings, not proposed --------------------------------- #
+# (defaults; the resolution, minimum height and minimum tree area can be set on
+# the command line, to match the connected-component run on another site)
 WINDOW_M = 40.0
 WINDOW_OVERLAP = 0.2
 MIN_TREE_AREA_M2 = 0.5
@@ -195,10 +197,10 @@ def topStep(drop):
     return float(np.clip(drop / 2.0, 0.05, 0.5))
 
 
-def buildDetector(settings):
+def buildDetector(settings, minTreeAreaM2=MIN_TREE_AREA_M2):
     return ConCompDetector(
         windowSizeM=WINDOW_M, windowOverlap=WINDOW_OVERLAP,
-        minTreeAreaM2=MIN_TREE_AREA_M2,
+        minTreeAreaM2=minTreeAreaM2,
         lowerPercentile=settings["lowerPercentile"],
         minTopAreaM2=settings["minTopAreaM2"], topStepM=settings["topStepM"],
         erosionIterations=settings["erosionIterations"],
@@ -290,14 +292,15 @@ class ZoneCheck(object):
 class CalibratedDetector(object):
     """Steps 2 to 5 for one set of zones."""
 
-    def __init__(self, scene, zones):
+    def __init__(self, scene, zones, minTreeAreaM2=MIN_TREE_AREA_M2):
         self.scene = scene
         self.zones = zones
+        self.minTreeAreaM2 = minTreeAreaM2
         self.proposal = ParameterProposal(zones)
         self.log = {}
 
     def detect(self, settings):
-        tops = buildDetector(settings).detect(self.scene)
+        tops = buildDetector(settings, self.minTreeAreaM2).detect(self.scene)
         return asPredictions(tops, self.scene)
 
     def adjust(self, settings, check):
@@ -368,12 +371,13 @@ class CalibrationExperiment(object):
     """
 
     def __init__(self, scene, blocks, rgbRun, ccRun,
-                 levels=CONFIDENCE_LEVELS):
+                 levels=CONFIDENCE_LEVELS, minTreeAreaM2=MIN_TREE_AREA_M2):
         self.scene = scene
         self.blocks = dict(blocks)
         self.rgbRun = rgbRun
         self.ccRun = ccRun
         self.levels = levels
+        self.minTreeAreaM2 = minTreeAreaM2
 
     def _score(self, predictions, block):
         return dc.evaluateDetections(predictions, self.scene.crowns,
@@ -391,7 +395,8 @@ class CalibrationExperiment(object):
         rows = {}
         for level in self.levels:
             zones = ConfidentZones(rgb, self.scene, level, region)
-            calibrated = CalibratedDetector(self.scene, zones)
+            calibrated = CalibratedDetector(self.scene, zones,
+                                            self.minTreeAreaM2)
             result = self._score(calibrated.run(), block)
             result.update(calibrated.log)
             rows[level] = dict(self.baselines(block, zones),
@@ -481,6 +486,12 @@ def parseArguments(argv=None):
                         help="Connected-component run on the same CHM, for "
                              "the baselines")
     parser.add_argument("--output", default="calibration")
+    # fixed detector settings, not proposed: set them as in the connected-
+    # component run the calibration is compared with (tt.dl concomp)
+    parser.add_argument("--resolution", type=float, default=0.25,
+                        help="CHM resolution the detector works at")
+    parser.add_argument("--minHeight", type=float, default=2.0)
+    parser.add_argument("--minTreeArea", type=float, default=MIN_TREE_AREA_M2)
     return parser.parse_args(argv)
 
 
@@ -488,10 +499,12 @@ def main(argv=None):
     args = parseArguments(argv)
     blocks = dp.loadDataset(args.dataset)["blockGeometries"]
     scene = Scene(args.chm, crownsPath=args.crowns,
-                  boundaryPath=args.boundary, verbose=False)
+                  boundaryPath=args.boundary, resolution=args.resolution,
+                  minHeight=args.minHeight, verbose=False)
     experiment = CalibrationExperiment(
         scene, blocks, MethodRun("rgb", args.rgbRun, blocks),
-        MethodRun("cc", args.ccRun, blocks))
+        MethodRun("cc", args.ccRun, blocks),
+        minTreeAreaM2=args.minTreeArea)
     results = experiment.run()
     table = summarise(results, experiment.levels)
     printSummary(table)

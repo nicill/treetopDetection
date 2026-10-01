@@ -97,9 +97,10 @@ class Evidence(object):
             self.scene.crowns, self.blocks, self.runs[box], self.runs[height],
             surface=self.surfaceFor(height), verbose=False)
         summary = validation.run()
-        saveFusedOutputs(os.path.join(self.args.output, "fused",
-                                      "%s_%s" % (box, height)),
-                         validation.outputs)
+        folder = os.path.join(self.args.output, "fused", "%s_%s" % (box, height))
+        saveFusedOutputs(folder, validation.outputs)
+        # the scores too, so results can be gathered across sites
+        dc.saveJson(summary, os.path.join(folder, "summary.json"))
         return summary
 
     def surfaceFor(self, height):
@@ -185,8 +186,19 @@ class ResultsReport(object):
         return os.path.join(self.figureDir, name + ".png")
 
     def write(self):
+        """
+        Every section; one that fails is reported in its place and the rest
+        still written, so an unattended run on a new site always ends with a
+        document (and the combination scores, saved before any text).
+        """
         for section in SECTIONS:
-            section(self)
+            try:
+                section(self)
+            except Exception as error:   # noqa: BLE001 — reported, not hidden
+                message = "section %s failed: %s: %s" % (
+                    section.__name__, type(error).__name__, error)
+                print("[report] " + message, file=sys.stderr)
+                self.doc.paragraph("[" + message + "]")
         return self.doc.save(os.path.join(self.outputDir, "report.odt"))
 
 

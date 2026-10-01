@@ -404,6 +404,12 @@ def mrcnnSources(r):
 
 # ---------------------------------------------------------------------- #
 
+def pairText(missed, found, digits):
+    """'missed / found', with a dash for a side that has no crowns."""
+    show = lambda v: "-" if v is None else "%.*f" % (digits, v)
+    return "%s / %s" % (show(missed), show(found))
+
+
 def missed(r):
     r.doc.heading("2. Where are the missed trees?")
     c = r.e.comparison
@@ -413,13 +419,10 @@ def missed(r):
     rows = []
     for name in c.results:
         m = c.missedProfile(name)
-        rows.append([label(name, True), str(m["missed"]),
-                     "%.1f / %.1f" % (m["missedCrowns"]["area"],
-                                      m["found"]["area"]),
-                     "%.1f / %.1f" % (m["missedCrowns"]["peak"],
-                                      m["found"]["peak"]),
-                     "%.2f / %.2f" % (m["missedCrowns"]["nearest"],
-                                      m["found"]["nearest"])])
+        rows.append([label(name, True), str(m["missed"])] +
+                    [pairText(m["missedCrowns"][key], m["found"][key], digits)
+                     for key, digits in (("area", 1), ("peak", 1),
+                                         ("nearest", 2))])
     r.doc.paragraph(
         "Table %d compares the crowns each method missed with those it found, "
         "on the held-out predictions stitched across all folds. Missed crowns "
