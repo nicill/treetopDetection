@@ -207,17 +207,20 @@ def pipeline(source, tile, marginM, resolution, output):
          "gdalopts": "COMPRESS=DEFLATE"}]
 
 
-def runPdal(pdalPath, stages):
+def runPdal(pdalPath, stages, timeoutS=900):
     with tempfile.NamedTemporaryFile("w", suffix=".json",
                                      delete=False) as handle:
         json.dump(stages, handle)
     try:
         subprocess.run([pdalPath, "pipeline", handle.name], check=True,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, timeout=timeoutS)
     except subprocess.CalledProcessError as error:
         raise RuntimeError("pdal failed: %s" % error.stderr.strip()[-2000:])
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("pdal timed out after %d s" % timeoutS)
     finally:
         os.remove(handle.name)
+
 
 
 def buildTile(source, tile, args, part):
