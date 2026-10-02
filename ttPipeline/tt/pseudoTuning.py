@@ -113,8 +113,8 @@ class BlockScores(object):
         """{scorer: score per setting}, none of them using the crowns."""
         points = [np.array([[p["centreX"], p["centreY"]] for p in d],
                            float).reshape(-1, 2) for d in self.inBlock]
-        out = {"pseudoF1": [dc.evaluateDetections(d, self.pseudo,
-                                                  self.region)["f1"]
+        out = {"pseudoF1": [dc.objectiveOf(dc.evaluateDetections(
+                                d, self.pseudo, self.region))
                             for d in self.inBlock]}
         for c, boxes in self.zones.items():
             out["zones@%.1f" % c] = [exactlyOneShare(p, boxes) for p in points]
@@ -129,7 +129,7 @@ def tuneBlock(scores):
     real = scores.realScores()
     if not real or not real[0]["crowns"]:
         return None
-    realF1 = np.array([r["f1"] for r in real])
+    realF1 = np.array([dc.objectiveOf(r) for r in real])
     rows = {"real": dict(real[int(np.argmax(realF1))], spearman=1.0,
                          chosen=int(np.argmax(realF1)))}
     for name, values in scores.scorers().items():

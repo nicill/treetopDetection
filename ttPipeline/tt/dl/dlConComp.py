@@ -240,13 +240,15 @@ class ConCompCrossValidation(object):
         """Tune on every other block, then score the chosen setting here."""
         crowns = self.scene.crowns
         index = [n for n, _ in self.blocks].index(name)
-        tuning = [r["f1"] for r in self.scores[index]]
+        tuning = [dc.objectiveOf(r) for r in self.scores[index]]
         best = int(np.argmax(tuning))
 
         result = dc.evaluateDetections(self.detections[best], crowns,
                                        geometry)
+        # tuningF1 is the objective on the training blocks (F1 unless
+        # TT_OBJECTIVE says otherwise); the name is kept for older readers
         result.update(block=name, settings=self.settings[best],
-                      tuningF1=tuning[best])
+                      tuningF1=tuning[best], tuningScore=tuning[best])
         if self.output:
             # the whole area, not just this block: fusion needs this fold's
             # detections on its validation block as well as its test block
@@ -268,7 +270,7 @@ class ConCompCrossValidation(object):
                 self._printFold(fold)
         pooled = dc.averageFolds(folds)
         pooled["tuningOptimism"] = float(np.mean(
-            [f["tuningF1"] - f["f1"] for f in folds]))
+            [f["tuningScore"] - dc.objectiveOf(f) for f in folds]))
         pooled["wholeAreaBest"] = self.wholeAreaBest()
         pooled["byMergeMetric"] = self.byMergeMetric()
         return folds, pooled
@@ -277,7 +279,7 @@ class ConCompCrossValidation(object):
         """The same cross-validation, choosing only among these settings."""
         folds = []
         for position, (name, geometry) in enumerate(self.blocks):
-            tuning = [self.scores[position][i]["f1"] for i in indices]
+            tuning = [dc.objectiveOf(self.scores[position][i]) for i in indices]
             best = indices[int(np.argmax(tuning))]
             result = dc.evaluateDetections(self.detections[best],
                                            self.scene.crowns, geometry)
@@ -305,7 +307,7 @@ class ConCompCrossValidation(object):
         the crowns it is scored on also chose it.
         """
         scores = self.scores[len(self.blocks)]
-        best = int(np.argmax([r["f1"] for r in scores]))
+        best = int(np.argmax([dc.objectiveOf(r) for r in scores]))
         return dict(scores[best], settings=self.settings[best])
 
     @staticmethod
@@ -362,7 +364,12 @@ def crossValidate(args):
           "(per-fold F1 %.3f +- %.3f)"
           % (pooled["folds"], pooled["recall"], pooled["precision"],
              pooled["f1"], pooled["perFoldF1Mean"], pooled["perFoldF1Std"]))
-    print("[concomp] tuning optimism: %+.3f F1 — how much the figure would "
+    print("[concomp] objective %s (weighted = %.1f R + %.1f P): R %.3f P %.3f "
+          "F1 %.3f weighted %.3f" % (dc.tuningObjective(), dc.RECALL_WEIGHT,
+                                     1 - dc.RECALL_WEIGHT, pooled["recall"],
+                                     pooled["precision"], pooled["f1"],
+                                     pooled["weighted"]))
+    print("[concomp] tuning optimism: %+.3f — how much the figure would "
           "have been overstated by reporting the tuning score"
           % pooled["tuningOptimism"])
     for metric, p in pooled["byMergeMetric"].items():

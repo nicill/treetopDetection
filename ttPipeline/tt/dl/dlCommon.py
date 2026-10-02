@@ -422,6 +422,46 @@ def nonMaximumSuppression(predictions, iouThreshold=0.4):
 
 
 # ---------------------------------------------------------------------- #
+# the tuning objective
+# ---------------------------------------------------------------------- #
+
+# Every choice made on held-out-free data (a connected-component setting per
+# fold, a network's score threshold, a combination's settings, a pseudo-tuned
+# setting) maximises one objective, chosen by the environment so a whole run
+# uses one: TT_OBJECTIVE=f1 (the default) or TT_OBJECTIVE=weighted, the
+# weighted mean RECALL_WEIGHT * recall + (1 - RECALL_WEIGHT) * precision.
+# Every result carries both "f1" and "weighted", whichever was tuned on.
+RECALL_WEIGHT = 0.6
+OBJECTIVES = ("f1", "weighted")
+
+
+def tuningObjective():
+    objective = os.environ.get("TT_OBJECTIVE", "f1")
+    if objective not in OBJECTIVES:
+        raise ValueError("TT_OBJECTIVE must be one of %s, not %r"
+                         % (OBJECTIVES, objective))
+    return objective
+
+
+def weightedScore(recall, precision):
+    return RECALL_WEIGHT * recall + (1.0 - RECALL_WEIGHT) * precision
+
+
+def objectiveOf(result):
+    """The value the tuning maximises for one scored result."""
+    if tuningObjective() == "weighted":
+        return result.get("weighted",
+                          weightedScore(result["recall"], result["precision"]))
+    return result["f1"]
+
+
+def _scores(recall, precision):
+    f1 = (2 * recall * precision / (recall + precision)
+          if recall + precision else 0.0)
+    return f1, weightedScore(recall, precision)
+
+
+# ---------------------------------------------------------------------- #
 # the one evaluation
 # ---------------------------------------------------------------------- #
 
@@ -439,7 +479,7 @@ def evaluateDetections(predictions, crowns, blockGeometry, verbose=False):
 
     result = {"crowns": len(inBlock), "predictions": len(kept),
               "hits": 0, "repeats": 0, "falsePositives": 0,
-              "recall": 0.0, "precision": 0.0, "f1": 0.0}
+              "recall": 0.0, "precision": 0.0, "f1": 0.0, "weighted": 0.0}
     if not len(inBlock) or not kept:
         return result
 
@@ -453,9 +493,8 @@ def evaluateDetections(predictions, crowns, blockGeometry, verbose=False):
     precision = hits / float(len(kept))
     result.update({"hits": hits, "repeats": kinds.count("repeat"),
                    "falsePositives": kinds.count("background"),
-                   "recall": recall, "precision": precision,
-                   "f1": (2 * recall * precision / (recall + precision)
-                          if recall + precision else 0.0)})
+                   "recall": recall, "precision": precision})
+    result["f1"], result["weighted"] = _scores(recall, precision)
     if verbose:
         print("    crowns %d, predictions %d -> hits %d, repeats %d, fp %d  "
               "| R %.3f P %.3f F1 %.3f"
@@ -503,7 +542,8 @@ THRESHOLD_CANDIDATES = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40,
 def selectThreshold(predictions, crowns, blockGeometry,
                     candidates=THRESHOLD_CANDIDATES, verbose=True):
     """
-    Pick the score threshold that maximises F1 on a validation block.
+    Pick the score threshold that maximises the tuning objective (F1, or the
+    recall-weighted mean: tuningObjective) on a validation block.
 
     Without this the comparison is between thresholds, not methods: Mask R-CNN
     and YOLO default to different confidence scales, and comparing each at its
@@ -515,8 +555,8 @@ def selectThreshold(predictions, crowns, blockGeometry,
     score among its points clears t, which answers every candidate from one
     spatial join instead of one join per candidate.
 
-    Returns (threshold, f1AtThatThreshold). When no candidate keeps anything
-    the lowest is returned with F1 0.0, and said so.
+    Returns (threshold, objectiveAtThatThreshold). When no candidate keeps
+    anything the lowest is returned with 0.0, and said so.
     """
     inBlock = crownsInRegion(crowns, blockGeometry)
     kept = predictionsInRegion(predictions, blockGeometry)
@@ -530,12 +570,16 @@ def selectThreshold(predictions, crowns, blockGeometry,
     best, bestScore = max(curve, key=lambda item: item[1])
     if verbose:
         print("    operating point chosen on the validation block: "
-              "score >= %.2f (F1 %.3f there)" % (best, bestScore))
+              "score >= %.2f (%s %.3f there)"
+              % (best, tuningObjective(), bestScore))
     return best, bestScore
 
 
 def thresholdCurve(predictions, crowns, candidates):
-    """[(threshold, f1)] for every candidate that keeps at least one point."""
+    """
+    [(threshold, objective)] for every candidate that keeps at least one
+    point; the objective is the tuning one (F1 unless TT_OBJECTIVE says).
+    """
     if not predictions or not len(crowns):
         return []
     scores = np.array([p["score"] for p in predictions])
@@ -556,8 +600,9 @@ def thresholdCurve(predictions, crowns, candidates):
             continue
         hits = int((crownBest >= threshold).sum())
         recall, precision = hits / float(len(crowns)), hits / float(kept)
-        curve.append((threshold, 2 * recall * precision / (recall + precision)
-                      if recall + precision else 0.0))
+        f1, weighted = _scores(recall, precision)
+        curve.append((threshold, weighted if tuningObjective() == "weighted"
+                      else f1))
     return curve
 
 
@@ -576,11 +621,11 @@ def averageFolds(foldResults):
     recall = total["hits"] / float(total["crowns"]) if total["crowns"] else 0.0
     precision = total["hits"] / float(total["predictions"]) \
         if total["predictions"] else 0.0
-    f1 = 2 * recall * precision / (recall + precision) \
-        if (recall + precision) > 0 else 0.0
+    f1, weighted = _scores(recall, precision)
 
     perFoldF1 = [f["f1"] for f in foldResults if f["crowns"] > 0]
     total.update({"recall": recall, "precision": precision, "f1": f1,
+                  "weighted": weighted, "objective": tuningObjective(),
                   "folds": len(foldResults),
                   "perFoldF1Mean": float(np.mean(perFoldF1))
                   if perFoldF1 else 0.0,

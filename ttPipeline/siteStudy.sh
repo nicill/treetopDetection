@@ -38,6 +38,7 @@
 #   CCGRID    the connected-component grid, as tt.dl concomp options
 #   CCJOBS    settings detected in parallel
 #   EPOCHS, BATCH, DEVICE, BLOCKCOLS, BLOCKROWS
+#   OBJECTIVE f1 (default) or weighted: what every tuning step maximises
 #   DRYRUN=1  everything but the training, to test the chain quickly
 #
 # The calibration's fixed MINH and MINTREE for Quebec were chosen while
@@ -63,6 +64,9 @@ DEVICE=${DEVICE:-0}
 BLOCKCOLS=${BLOCKCOLS:-4}
 BLOCKROWS=${BLOCKROWS:-2}
 DRYRUN=${DRYRUN:-0}
+# what every tuning step maximises: f1, or weighted (0.6 recall + 0.4
+# precision); every result reports both
+export TT_OBJECTIVE=${OBJECTIVE:-${TT_OBJECTIVE:-f1}}
 
 CHM="$SITE/chm.tif"; RGB="$SITE/rgb.tif"
 CROWNS="$SITE/crowns.shp"; AREA="$SITE/scoredArea.shp"
@@ -111,7 +115,7 @@ report() {   # report LABEL: combinations of whatever runs exist
 for f in "$CHM" "$RGB" "$CROWNS" "$AREA"; do
     [ -e "$f" ] || { status "ERROR: $f missing; site skipped"; exit 1; }
 done
-status "start (HEIGHT=$HEIGHT RES=$RES CCRES=$CCRES MINH=$MINH MINTREE=$MINTREE)"
+status "start (HEIGHT=$HEIGHT RES=$RES CCRES=$CCRES MINH=$MINH MINTREE=$MINTREE OBJECTIVE=$TT_OBJECTIVE)"
 
 for kind in chm rgb; do
     src="$CHM"; [ $kind = rgb ] && src="$RGB"

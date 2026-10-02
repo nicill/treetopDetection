@@ -390,8 +390,9 @@ class FusionCrossValidation(object):
         boxes, points = inputs["validation"]
         best, bestF1 = {}, -1.0
         for setting in _grid(parameters):
-            f1 = self._score(self.apply(name, boxes, points, setting),
-                             inputs["validationBlock"])["f1"]
+            f1 = dc.objectiveOf(self._score(self.apply(name, boxes, points,
+                                                       setting),
+                                            inputs["validationBlock"]))
             if f1 > bestF1:
                 best, bestF1 = setting, f1
         return best, bestF1

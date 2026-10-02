@@ -35,6 +35,16 @@ import numpy as np
 from scipy.stats import wilcoxon
 
 ALONE = {"boxes", "points"}      # a combination's parts, repeated in its table
+RECALL_WEIGHT = 0.6              # as tt.dl.dlCommon.RECALL_WEIGHT
+METRICS = ("f1", "weighted")
+
+
+def score(pooled, metric):
+    """F1, or the recall-weighted mean (computed when an old run lacks it)."""
+    if metric == "weighted" and "weighted" not in pooled:
+        return (RECALL_WEIGHT * pooled["recall"]
+                + (1 - RECALL_WEIGHT) * pooled["precision"])
+    return pooled[metric]
 
 
 def loadJson(path):
@@ -106,8 +116,8 @@ def readSite(siteDir):
     site["hybrids"].update(calibrated(siteDir))
     site["hybrids"].update(tuned)
     if site["singles"]:
-        best = max(site["singles"], key=lambda n: site["singles"][n]["f1"])
-        site["bestSingle"] = best
+        site["bestSingle"] = {m: max(site["singles"], key=lambda n: score(
+            site["singles"][n], m)) for m in METRICS}
     return site
 
 
@@ -121,13 +131,13 @@ def readStudy(root):
     return sites
 
 
-def compareHybrids(sites):
-    """Each hybrid against the best single method at each site it ran on."""
+def compareHybrids(sites, metric="f1"):
+    """Each hybrid against the best single method (by metric) at each site."""
     names = sorted({h for s in sites.values() for h in s["hybrids"]})
     rows = []
     for name in names:
-        differences = [s["hybrids"][name]["f1"] -
-                       s["singles"][s["bestSingle"]]["f1"]
+        differences = [score(s["hybrids"][name], metric) -
+                       score(s["singles"][s["bestSingle"][metric]], metric)
                        for s in sites.values() if name in s["hybrids"]]
         d = np.array(differences)
         p = wilcoxon(d).pvalue if len(d) > 1 and np.any(d) else float("nan")
@@ -141,14 +151,16 @@ def writeCsv(sites, path):
     with open(path, "w", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["site", "kind", "method", "recall", "precision",
-                         "f1", "crowns"])
+                         "f1", "weighted", "crowns"])
         for name, site in sites.items():
             for kind in ("singles", "ceilings", "hybrids"):
                 for method, p in sorted(site[kind].items()):
                     writer.writerow([name, kind[:-1], method,
                                      "%.4f" % p["recall"],
                                      "%.4f" % p["precision"],
-                                     "%.4f" % p["f1"], p.get("crowns", "")])
+                                     "%.4f" % p["f1"],
+                                     "%.4f" % score(p, "weighted"),
+                                     p.get("crowns", "")])
 
 
 def shortLabel(name):
@@ -160,15 +172,16 @@ def shortLabel(name):
     return name
 
 
-def printSites(sites):
+def printSites(sites, metric="f1"):
     methods = sorted({m for s in sites.values() for m in s["singles"]})
     cal = sorted({h for s in sites.values() for h in s["hybrids"]
                   if h.startswith(("calibrated", "pseudo"))})
     ceilings = sorted({c for s in sites.values() for c in s["ceilings"]})
     columns = methods + ceilings + cal
-    print("F1 per site. Best single method marked *. Columns ending in * are "
+    print("\n%s per site. Best single method marked *. Columns ending in * are "
           "optimistic bounds, never methods: 'ceil' tuned and scored on the "
-          "whole site, 'ownBlock' tuned on each block's own crowns.")
+          "whole site, 'ownBlock' tuned on each block's own crowns."
+          % {"f1": "F1", "weighted": "0.6 R + 0.4 P"}[metric])
     print("%-34s " % "site" + " ".join("%14s" % shortLabel(c)[:14]
                                        for c in columns))
     for name, site in sites.items():
@@ -176,13 +189,15 @@ def printSites(sites):
         for c in columns:
             p = (site["singles"].get(c) or site["ceilings"].get(c)
                  or site["hybrids"].get(c))
-            mark = "*" if c == site.get("bestSingle") else " "
-            cells.append("%13s%s" % ("%.3f" % p["f1"] if p else "-", mark))
+            mark = "*" if c == site.get("bestSingle", {}).get(metric) else " "
+            cells.append("%13s%s" % ("%.3f" % score(p, metric) if p else "-",
+                                     mark))
         print("%-34s " % name[:34] + " ".join(cells))
 
 
-def printHybrids(rows):
-    print("\nEach hybrid against the best single method at the same site")
+def printHybrids(rows, metric="f1"):
+    print("\nEach hybrid against the best single method at the same site, by %s"
+          % {"f1": "F1", "weighted": "0.6 R + 0.4 P"}[metric])
     print("%-52s %5s %8s %6s %7s" % ("hybrid", "sites", "mean dF1", "wins",
                                       "p"))
     for r in rows:
@@ -204,12 +219,13 @@ def main(argv=None):
         print("no site with results under %s" % args.root)
         return 1
     os.makedirs(args.output, exist_ok=True)
-    rows = compareHybrids(sites)
+    rows = {m: compareHybrids(sites, m) for m in METRICS}
     writeCsv(sites, os.path.join(args.output, "sites.csv"))
     with open(os.path.join(args.output, "summary.json"), "w") as handle:
         json.dump({"sites": sites, "hybrids": rows}, handle, indent=1)
-    printSites(sites)
-    printHybrids(rows)
+    for metric in METRICS:
+        printSites(sites, metric)
+        printHybrids(rows[metric], metric)
     return 0
 
 

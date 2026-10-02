@@ -1359,7 +1359,7 @@ class TestStudySummary(unittest.TestCase):
     def testBestSingleAndDifferences(self):
         from tt.studySummary import compareHybrids, readStudy
         sites = readStudy(self.directory)
-        self.assertEqual([sites[s]["bestSingle"] for s in sorted(sites)],
+        self.assertEqual([sites[s]["bestSingle"]["f1"] for s in sorted(sites)],
                          ["ccLidar", "mrcnnRgb", "mrcnnRgb"])
         self.assertNotIn("mrcnnRgb+ccLidar:boxes", sites["siteA"]["hybrids"])
         rows = {r["hybrid"]: r for r in compareHybrids(sites)}
@@ -1461,6 +1461,53 @@ class TestPseudoCrownCanopy(Fixture):
                            verbose=False).canopyMask() > 0
         self.assertTrue((cut <= whole).all())
         self.assertLess(cut.sum(), whole.sum())
+
+
+class TestObjective(unittest.TestCase):
+    """F1 picks the strict threshold, 0.6 R + 0.4 P the lenient one."""
+
+    def setUp(self):
+        import geopandas as gpd
+        from shapely.geometry import box
+        self.crowns = gpd.GeoDataFrame(
+            geometry=[box(10 * i, 0, 10 * i + 2, 2) for i in range(10)],
+            crs="EPSG:32619")
+        point = lambda x, y, s: {"centreX": x, "centreY": y, "score": s,
+                                 "box": [x - .5, y - .5, x + .5, y + .5]}
+        self.predictions = ([point(10 * i + 1, 1, 0.9) for i in range(6)] +
+                            [point(10 * i + 1, 1, 0.3) for i in range(6, 9)] +
+                            [point(10 * i + 5, 5, 0.3) for i in range(6)])
+        self.area = box(-5, -5, 105, 10)
+        self.previous = os.environ.get("TT_OBJECTIVE")
+
+    def tearDown(self):
+        if self.previous is None:
+            os.environ.pop("TT_OBJECTIVE", None)
+        else:
+            os.environ["TT_OBJECTIVE"] = self.previous
+
+    def threshold(self, objective):
+        from tt.dl import dlCommon as dc
+        os.environ["TT_OBJECTIVE"] = objective
+        return dc.selectThreshold(self.predictions, self.crowns, self.area,
+                                  candidates=(0.3, 0.9), verbose=False)[0]
+
+    def testTheObjectiveDecides(self):
+        self.assertEqual(self.threshold("f1"), 0.9)
+        self.assertEqual(self.threshold("weighted"), 0.3)
+
+    def testEveryResultCarriesBoth(self):
+        from tt.dl import dlCommon as dc
+        result = dc.evaluateDetections(self.predictions, self.crowns, self.area)
+        self.assertAlmostEqual(result["weighted"],
+                               0.6 * result["recall"] + 0.4 * result["precision"])
+        self.assertIn("f1", result)
+
+    def testAnUnknownObjectiveIsRefused(self):
+        from tt.dl import dlCommon as dc
+        os.environ["TT_OBJECTIVE"] = "recall"
+        with self.assertRaises(ValueError):
+            dc.tuningObjective()
 
 
 class TestSharedBlocks(unittest.TestCase):
