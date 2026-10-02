@@ -31,7 +31,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 from scipy.stats import wilcoxon
 
-from .comparison import MethodRun
+from .comparison import MethodRun, sharedBlocks
 from .detector import ConCompDetector
 from .dl import dlCommon as dc
 from .dl import dlPrepare as dp
@@ -376,6 +376,7 @@ class CalibrationExperiment(object):
         self.blocks = dict(blocks)
         self.rgbRun = rgbRun
         self.ccRun = ccRun
+        self.blocks = sharedBlocks(self.blocks, (rgbRun, ccRun))
         self.levels = levels
         self.minTreeAreaM2 = minTreeAreaM2
 

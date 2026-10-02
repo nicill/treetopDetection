@@ -85,6 +85,15 @@ class MethodRun(object):
         """The operating point this run chose for the fold, if it chose one."""
         return self.record(block).get("threshold", -np.inf)
 
+    def has(self, block):
+        """Whether this run has a fold for the block (exact or by _bNN)."""
+        if os.path.exists(os.path.join(self.runDir,
+                                       "predictions_%s.json" % block)):
+            return True
+        suffix = block[block.rindex("_b"):] if "_b" in block else block
+        return len(glob.glob(os.path.join(self.runDir, "predictions_*%s.json"
+                                          % suffix))) == 1
+
     def record(self, block):
         """
         One fold's saved predictions. Datasets prefix their blocks with their
@@ -105,6 +114,21 @@ class MethodRun(object):
     @property
     def isBoxDetector(self):
         return any(p["box"][2] - p["box"][0] > 1.01 for p in self.predictions)
+
+
+def sharedBlocks(blocks, runs, verbose=True):
+    """
+    The blocks every run has a fold for. A learned model skips a block it
+    cannot train or test on while connected components scores every block,
+    so a comparison or combination is made on the blocks they share, and the
+    ones left out are named.
+    """
+    blocks = dict(blocks)
+    kept = {b: g for b, g in blocks.items() if all(r.has(b) for r in runs)}
+    if verbose and len(kept) < len(blocks):
+        print("[blocks] left out, not in every run: %s"
+              % ", ".join(sorted(set(blocks) - set(kept))))
+    return kept
 
 
 class TreeComparison(object):

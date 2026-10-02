@@ -47,6 +47,7 @@ from rasterio.features import geometry_mask
 from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
 
+from .comparison import sharedBlocks
 from .dl import dlCommon as dc
 from .merging import saddleDrop
 
@@ -332,9 +333,10 @@ class FusionCrossValidation(object):
     def __init__(self, crowns, blocks, boxRun, pointRun, surface=None,
                  strategies=None, verbose=True):
         self.crowns = crowns
-        self.blocks = dict(blocks)
+        self.allBlocks = dict(blocks)
         self.boxRun = boxRun
         self.pointRun = pointRun
+        self.blocks = sharedBlocks(blocks, (boxRun, pointRun), verbose)
         self.surface = surface
         available = [n for n in STRATEGIES
                      if surface is not None or n not in SURFACE_STRATEGIES]
@@ -356,7 +358,9 @@ class FusionCrossValidation(object):
         pointValidation = [p for p in pointValidation if p["score"] >= floor]
         pointTest = [p for p in pointTest if p["score"] >= floor]
 
-        region, test = self.blocks[validationBlock], self.blocks[block]
+        # geometry from every block: a block a model skipped as a test fold
+        # can still be another fold's validation block
+        region, test = self.allBlocks[validationBlock], self.allBlocks[block]
         inputs = {
             "validationBlock": validationBlock,
             "boxThreshold": self.boxRun.threshold(block),
@@ -375,7 +379,7 @@ class FusionCrossValidation(object):
 
     def _score(self, predictions, block):
         return dc.evaluateDetections(predictions, self.crowns,
-                                     self.blocks[block])
+                                     self.allBlocks[block])
 
     def tune(self, name, inputs):
         """The strategy's setting that scores best on the validation block."""

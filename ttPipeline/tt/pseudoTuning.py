@@ -39,7 +39,7 @@ import numpy as np
 from scipy.stats import spearmanr
 from shapely.geometry import box
 
-from .comparison import MethodRun
+from .comparison import MethodRun, sharedBlocks
 from .dl import dlCommon as dc
 from .dl import dlPrepare as dp
 from .dl.dlConComp import (ConCompCrossValidation, gridFromArguments,
@@ -186,7 +186,7 @@ def main(argv=None):
     blocks = dict(validation.blocks)
     rgb = MethodRun("rgb", args.rgbRun, blocks)
     perBlock = {}
-    for name, region in sorted(blocks.items()):
+    for name, region in sorted(sharedBlocks(blocks, (rgb,)).items()):
         rows = tuneBlock(BlockScores(name, region, validation.scene.crowns,
                                      rgb.record(name), found))
         if rows is not None:

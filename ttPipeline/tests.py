@@ -1436,6 +1436,26 @@ class TestConCompGrid(Fixture):
         self.assertEqual(pooledA["wholeAreaBest"], pooledB["wholeAreaBest"])
 
 
+class TestSharedBlocks(unittest.TestCase):
+    """A block a learned model skipped is left out, by name or _bNN suffix."""
+
+    def testOnlyBlocksEveryRunHas(self):
+        from tt.comparison import MethodRun, sharedBlocks
+        directory = tempfile.mkdtemp()
+        for name in ("site_b00", "site_b01"):
+            with open(os.path.join(directory, "predictions_%s.json" % name),
+                      "w") as handle:
+                handle.write("{}")
+        run = MethodRun.__new__(MethodRun)
+        run.runDir = directory
+        self.assertTrue(run.has("site_b00"))
+        self.assertTrue(run.has("other_b01"))      # matched by suffix
+        self.assertFalse(run.has("site_b02"))
+        kept = sharedBlocks({"site_b00": 0, "site_b01": 1, "site_b02": 2},
+                            (run,), verbose=False)
+        self.assertEqual(sorted(kept), ["site_b00", "site_b01"])
+
+
 class TestPseudoTuning(unittest.TestCase):
     """The pseudo scorers pick settings without the crowns; scored with them."""
 
