@@ -6,10 +6,15 @@ by cutting a species mask with the Voronoi diagram of its treetops and then
 shrinking the resulting boxes using a distance transform.
 
 The one substitution: that notebook had hand-drawn species masks to cut up, and
-here there are none. The canopy mask is built instead by thresholding the CHM
-at a local percentile — the same 20th percentile the detector already cuts each
-window at, so a pseudo-crown covers the part of the canopy the detector was
-actually looking at.
+here there are none. The canopy mask is instead every cell the scene keeps: the
+CHM above the scene's minimum height (1 m for the Quebec plantations, the
+height below which a crown counts as invisible; 2 m for Terelj). One fixed,
+explained threshold.
+
+A local percentile cut can be asked for (percentile > 0): per 40 m window the
+lowest share of canopy heights is dropped, as the detector does. It is not the
+default because it removes short trees standing among tall ones whatever their
+height, so their pseudo-crowns would shrink or vanish.
 
 The method, per treetop:
 
@@ -58,7 +63,7 @@ VORONOI_WEIGHT = 0.65
 
 class PseudoCrowns(object):
 
-    def __init__(self, scene, tops, percentile=20, windowSizeM=40.0,
+    def __init__(self, scene, tops, percentile=0, windowSizeM=40.0,
                  many=MANY, lots=LOTS, voronoiWeight=VORONOI_WEIGHT,
                  verbose=True):
         self.scene = scene
@@ -85,13 +90,23 @@ class PseudoCrowns(object):
 
     def canopyMask(self):
         """
-        Canopy where the CHM stands above its local percentile.
+        Canopy: every cell the scene keeps (above its minimum height), or,
+        with percentile > 0, where the CHM also stands above its local
+        percentile.
 
         The threshold is computed per tile and then bilinearly upsampled rather
         than applied tile by tile, because a piecewise-constant threshold
         leaves straight seams across the mask at the tile borders and those
         seams cut crowns in half.
         """
+
+        if self.percentile <= 0:
+            canopy = (self.scene.chm > 0).astype(np.uint8) * 255
+            if self.verbose:
+                print("[crowns] canopy: every cell above the scene's minimum "
+                      "height, %.1f%% of the grid"
+                      % (100.0 * np.count_nonzero(canopy) / canopy.size))
+            return canopy
 
         tile = self.scene.metresToPixels(self.windowSizeM, 8)
         rows, columns = self.scene.chm.shape

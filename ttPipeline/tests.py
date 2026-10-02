@@ -1436,6 +1436,20 @@ class TestConCompGrid(Fixture):
         self.assertEqual(pooledA["wholeAreaBest"], pooledB["wholeAreaBest"])
 
 
+class TestPseudoCrownCanopy(Fixture):
+    """The canopy mask is the whole kept CHM unless a percentile is asked for."""
+
+    def testWholeChmByDefaultSmallerWithAPercentile(self):
+        from tt.pseudoCrowns import PseudoCrowns
+        scene = self.scene()
+        whole = PseudoCrowns(scene, None, verbose=False).canopyMask() > 0
+        np.testing.assert_array_equal(whole, scene.chm > 0)
+        cut = PseudoCrowns(scene, None, percentile=20,
+                           verbose=False).canopyMask() > 0
+        self.assertTrue((cut <= whole).all())
+        self.assertLess(cut.sum(), whole.sum())
+
+
 class TestSharedBlocks(unittest.TestCase):
     """A block a learned model skipped is left out, by name or _bNN suffix."""
 
