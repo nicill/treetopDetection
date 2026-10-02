@@ -62,6 +62,9 @@ GRID_CASTS = {"lowerPercentile": int, "erosionIterations": int}
 # scored never depend on them: only the detector's input does.
 SCENE_KEY = "minHeight"
 TREE_AREA_KEY = "minTreeAreaM2"
+# the merge rule: "saddle" (straight-line drop) or "prominence" (elder rule in
+# the descent); a grid dimension when --mergeMetrics lists both
+MERGE_KEY = "mergeMetric"
 
 _WORKER = None      # the cross-validation, shared with forked workers
 
@@ -156,7 +159,8 @@ class ConCompCrossValidation(object):
             minTopAreaM2=setting["minTopAreaM2"],
             topStepM=setting["topStepM"],
             erosionIterations=setting["erosionIterations"],
-            merger=TopMerger("saddle", epsM=self.saddleEpsM,
+            merger=TopMerger(setting.get(MERGE_KEY, "saddle"),
+                             epsM=self.saddleEpsM,
                              saddleDropM=setting["saddleDropM"]),
             verbose=False)
 
@@ -266,7 +270,33 @@ class ConCompCrossValidation(object):
         pooled["tuningOptimism"] = float(np.mean(
             [f["tuningF1"] - f["f1"] for f in folds]))
         pooled["wholeAreaBest"] = self.wholeAreaBest()
+        pooled["byMergeMetric"] = self.byMergeMetric()
         return folds, pooled
+
+    def restrictedCv(self, indices):
+        """The same cross-validation, choosing only among these settings."""
+        folds = []
+        for position, (name, geometry) in enumerate(self.blocks):
+            tuning = [self.scores[position][i]["f1"] for i in indices]
+            best = indices[int(np.argmax(tuning))]
+            result = dc.evaluateDetections(self.detections[best],
+                                           self.scene.crowns, geometry)
+            result.update(block=name, settings=self.settings[best])
+            folds.append(result)
+        return dc.averageFolds(folds)
+
+    def byMergeMetric(self):
+        """
+        {merge rule: pooled cross-validated score with only that rule}, when
+        the grid holds more than one: the comparison of the rules, each tuned
+        exactly as the whole grid is.
+        """
+        metrics = sorted({s.get(MERGE_KEY, "saddle") for s in self.settings})
+        if len(metrics) < 2:
+            return {}
+        return {m: self.restrictedCv([i for i, s in enumerate(self.settings)
+                                      if s.get(MERGE_KEY, "saddle") == m])
+                for m in metrics}
 
     def wholeAreaBest(self):
         """
@@ -282,7 +312,8 @@ class ConCompCrossValidation(object):
     def _printFold(fold):
         s = fold["settings"]
         extra = "".join(", %s %s" % (k, s[k]) for k in (SCENE_KEY,
-                                                         TREE_AREA_KEY)
+                                                         TREE_AREA_KEY,
+                                                         MERGE_KEY)
                         if k in s)
         print("  fold %s: tuned F1 %.3f -> held-out R %.3f P %.3f F1 %.3f  "
               "(%dth, minTop %.2f, step %.2f, erode %d, drop %.2f%s)"
@@ -304,10 +335,13 @@ def gridFromArguments(args):
         if option:
             cast = GRID_CASTS.get(key, float)
             grid[key] = [cast(v) for v in option.split(",") if v.strip()]
-    for key, option in ((SCENE_KEY, args.minHeights),
-                        (TREE_AREA_KEY, args.minTreeAreas)):
+    for key, option in ((SCENE_KEY, getattr(args, "minHeights", None)),
+                        (TREE_AREA_KEY, getattr(args, "minTreeAreas", None))):
         if option:
             grid[key] = [float(v) for v in option.split(",") if v.strip()]
+    metrics = getattr(args, "mergeMetrics", None)
+    if metrics:
+        grid[MERGE_KEY] = [v.strip() for v in metrics.split(",") if v.strip()]
     return grid
 
 
@@ -331,6 +365,9 @@ def crossValidate(args):
     print("[concomp] tuning optimism: %+.3f F1 — how much the figure would "
           "have been overstated by reporting the tuning score"
           % pooled["tuningOptimism"])
+    for metric, p in pooled["byMergeMetric"].items():
+        print("[concomp] %-10s only: R %.3f  P %.3f  F1 %.3f"
+              % (metric, p["recall"], p["precision"], p["f1"]))
     ceiling = pooled["wholeAreaBest"]
     print("[concomp] whole-area best (optimistic ceiling): R %.3f  P %.3f  "
           "F1 %.3f at %s" % (ceiling["recall"], ceiling["precision"],
@@ -374,6 +411,9 @@ def parseArguments(argv=None):
                              "--minTreeArea is fixed)")
     parser.add_argument("--jobs", type=int, default=1,
                         help="Settings detected at once, in parallel")
+    parser.add_argument("--mergeMetrics", default=None,
+                        help="Merge rules to tune over: saddle,prominence "
+                             "(default: saddle only)")
     parser.add_argument("--saveDetections", action="store_true",
                         help="Keep every setting's detections in "
                              "detections.npz (for tt.pseudoTuning)")

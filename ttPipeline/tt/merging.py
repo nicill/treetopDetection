@@ -18,6 +18,14 @@ Four metrics:
     "saddle"     merge only if the canopy between the two tops never dips more
                  than saddleDropM below the lower of them.
 
+    "prominence" inside the descent, the elder rule: when two components of
+                 the superlevel set join, the younger one's highest top dies
+                 with prominence = its height - the level they joined at, and
+                 is removed if that is below saddleDropM. Exact on the
+                 descent's steps, transitive, no line to cross the wrong gap
+                 (ConCompDetector._descendProminence). The final pass across
+                 windows still uses the saddle test, with the same drop.
+
 "saddle" is the one that works, and it needs a large eps to do anything.
 Measured on real data: tops in one crown sit a median 0.25 m apart with a
 median dip of 0.00 m between them; tops in different crowns sit 5.84 m apart
@@ -32,7 +40,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 
-METRICS = ("2d", "3d", "composite", "saddle")
+METRICS = ("2d", "3d", "composite", "saddle", "prominence")
 
 
 class TopMerger(object):
@@ -50,7 +58,7 @@ class TopMerger(object):
         detail = ""
         if self.metric == "composite":
             detail = ", w=%.2f" % self.heightWeight
-        elif self.metric == "saddle":
+        elif self.metric in ("saddle", "prominence"):
             detail = ", drop=%.2f" % self.saddleDropM
         return "TopMerger(%s, eps=%.2f m%s)" % (self.metric, self.epsM, detail)
 
@@ -79,7 +87,7 @@ class TopMerger(object):
         """Should these two tops be merged?"""
         if horizontalM >= self.horizontalReachM:
             return False
-        if self.metric == "saddle":
+        if self.metric in ("saddle", "prominence"):
             if surface is None:
                 return horizontalM < self.epsM
             return (horizontalM < self.epsM

@@ -1416,6 +1416,19 @@ class TestConCompGrid(Fixture):
         # a 40 m2 minimum tree area leaves none of the small cones
         self.assertLess(counts[(1.0, 40.0)], counts[(1.0, 0.5)])
 
+    def testEachMergeRuleGetsItsOwnScore(self):
+        from tt.dl.dlConComp import ConCompCrossValidation
+        grid = {"lowerPercentile": [10], "minTopAreaM2": [0.12],
+                "topStepM": [0.25], "erosionIterations": [1],
+                "saddleDropM": [0.5], "mergeMetric": ["saddle", "prominence"]}
+        validation = ConCompCrossValidation(self.dataset(), grid=grid,
+                                            minHeight=2.0, verbose=False)
+        folds, pooled = validation.run()
+        self.assertEqual(sorted(pooled["byMergeMetric"]),
+                         ["prominence", "saddle"])
+        best = max(p["f1"] for p in pooled["byMergeMetric"].values())
+        self.assertGreater(best, 0.5)
+
     def testCeilingIsNoWorseThanAnyFold(self):
         validation = self.validation(1)
         folds, pooled = validation.run()
@@ -1468,6 +1481,72 @@ class TestSharedBlocks(unittest.TestCase):
         kept = sharedBlocks({"site_b00": 0, "site_b01": 1, "site_b02": 2},
                             (run,), verbose=False)
         self.assertEqual(sorted(kept), ["site_b00", "site_b01"])
+
+
+class TestProminence(unittest.TestCase):
+    """A chain of branch pseudotops: the saddle test keeps the far one, the
+    elder rule merges it through the branch."""
+
+    def setUp(self):
+        import rasterio
+        from affine import Affine
+        self.directory = tempfile.mkdtemp(prefix="ttProm")
+        chm = np.full((100, 100), 2.0, np.float32)            # low canopy
+        rows, columns = np.mgrid[0:100, 0:100]
+        chm[47:54, 30:63] = 9.0                               # east arm
+        chm[18:54, 57:64] = 9.0                               # north arm
+        distance = np.hypot(rows - 50, columns - 30)
+        chm[distance < 8] = (9.6 + 0.4 * (1 - distance / 8))[distance < 8]
+        chm[np.hypot(rows - 50, columns - 60) < 2.5] = 9.5    # P1, at the bend
+        chm[np.hypot(rows - 20, columns - 60) < 2.5] = 9.4    # P2, arm's end
+        chm[58:72, 24:37] = 5.0      # lower canopy, so the descent goes
+                                     # below the branches, as in a real CHM
+        self.path = os.path.join(self.directory, "branch.tif")
+        with rasterio.open(self.path, "w", driver="GTiff", height=100,
+                           width=100, count=1, dtype="float32",
+                           crs="EPSG:32619",
+                           transform=Affine(0.1, 0, 0, 0, -0.1, 10)) as d:
+            d.write(chm, 1)
+
+    def tearDown(self):
+        shutil.rmtree(self.directory, ignore_errors=True)
+
+    def tops(self, metric):
+        from tt.detector import ConCompDetector
+        from tt.merging import TopMerger
+        from tt.scene import Scene
+        scene = Scene(self.path, resolution=0.1, minHeight=1.0, verbose=False)
+        detector = ConCompDetector(
+            windowSizeM=40.0, lowerPercentile=0, erosionIterations=0,
+            minTreeAreaM2=0.05, minTopAreaM2=0.01, topStepM=0.1,
+            merger=TopMerger(metric, epsM=8.0, saddleDropM=0.6),
+            verbose=False)
+        return sorted((y, x) for x, y, _ in detector.detect(scene))
+
+    def testSaddleKeepsASpuriousTopOnTheBranch(self):
+        # a straight line from the apex to a pseudotop leaves the narrow
+        # branch and dips to the ground, so the saddle test keeps a top there
+        tops = self.tops("saddle")
+        self.assertEqual(len(tops), 2)
+        self.assertTrue(any(c > 50 for r, c in tops))       # on the branch
+
+    def testProminenceMergesThePseudotopsIntoTheTree(self):
+        tops = self.tops("prominence")
+        self.assertEqual(len(tops), 1)
+        row, column = tops[0]
+        self.assertLess(np.hypot(row - 50, column - 30), 8)   # on T's crown
+
+    def testAProminentNeighbourStaysApart(self):
+        from tt.detector import ConCompDetector
+        from tt.merging import TopMerger
+        from tt.scene import Scene
+        import rasterio
+        with rasterio.open(self.path, "r+") as d:
+            chm = d.read(1)
+            chm[np.hypot(*np.mgrid[0:100, 0:100] - np.array([[[20]], [[60]]]))
+                < 2.5] = 11.0                                 # P2 now a tree
+            d.write(chm, 1)
+        self.assertEqual(len(self.tops("prominence")), 2)
 
 
 class TestPseudoTuning(unittest.TestCase):

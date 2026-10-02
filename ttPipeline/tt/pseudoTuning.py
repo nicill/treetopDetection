@@ -47,7 +47,7 @@ from .dl.dlConComp import (ConCompCrossValidation, gridFromArguments,
 
 ZONE_LEVELS = (0.5, 0.7, 0.9)
 GRID_OPTIONS = ("percentiles", "minTopAreas", "topSteps", "erosions",
-                "saddleDrops", "minHeights", "minTreeAreas")
+                "saddleDrops", "minHeights", "minTreeAreas", "mergeMetrics")
 
 
 def runGrid(ccRun):

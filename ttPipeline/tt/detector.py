@@ -158,6 +158,69 @@ class ConCompDetector(object):
         return tops
 
     def _descend(self, scene, blob, heights, metresPerLevel, geometry):
+        if self.merger.metric == "prominence":
+            return self._descendProminence(blob, metresPerLevel, geometry)
+        return self._descendSaddle(scene, blob, heights, metresPerLevel,
+                                   geometry)
+
+    def _descendProminence(self, blob, metresPerLevel, geometry):
+        """
+        The descent with the elder rule. Every surviving top belongs to a
+        cluster whose representative is its highest top. When a level joins
+        components holding different clusters, the cluster with the highest
+        representative survives; every other cluster's representative dies
+        there, with prominence = its height - this level, and is removed if
+        that is below the merger's drop; its cluster joins the elder's either
+        way, so its other tops stay as they were decided. A chain of branch
+        tops cannot survive through a removed one: the components join where
+        the canopy joins them, whatever was removed before.
+
+        The join happened between the previous level and this one, so the
+        prominence is measured at most one step high, never low.
+        """
+        values = blob[blob > 0]
+        if values.size == 0:
+            return []
+        highest, lowest = float(values.max()), float(values.min())
+        if highest <= lowest:
+            return []
+        step = max(1.0, self.topStepM / max(metresPerLevel, 1e-6))
+        threshold = self.merger.saddleDropM / max(metresPerLevel, 1e-6)
+        above = np.empty(blob.shape, bool)
+        tops = []          # [height, (row, column), cluster]
+        clusters = 0
+        level = highest - step
+        while level > lowest:
+            np.greater_equal(blob, level, out=above)
+            count, labels, stats, _ = cv2.connectedComponentsWithStats(
+                above.view(np.uint8), connectivity=8)
+            byLabel = {}
+            for top in tops:
+                byLabel.setdefault(int(labels[top[1]]), []).append(top)
+            removed = set()
+            for label, members in byLabel.items():
+                elder = max(members, key=lambda t: t[0])[2]
+                for cluster in {t[2] for t in members} - {elder}:
+                    inCluster = [t for t in members if t[2] == cluster]
+                    representative = max(inCluster, key=lambda t: t[0])
+                    if representative[0] - level < threshold:
+                        removed.add(id(representative))
+                    for t in inCluster:
+                        t[2] = elder
+                peak, position = self._peakIn(blob, labels, stats, label)
+                if peak > max(t[0] for t in members):
+                    tops.append([peak, position, elder])
+            tops = [t for t in tops if id(t) not in removed]
+            for label in range(1, count):
+                if label in byLabel or stats[label, AREA] <= geometry["minPixTop"]:
+                    continue
+                peak, position = self._peakIn(blob, labels, stats, label)
+                tops.append([peak, position, clusters])
+                clusters += 1
+            level -= step
+        return [t[1] for t in tops]
+
+    def _descendSaddle(self, scene, blob, heights, metresPerLevel, geometry):
         """
         Walk one blob down in height steps, registering each new sub-blob.
 
