@@ -50,7 +50,8 @@ ZONE_LEVELS = (0.5, 0.7, 0.9)
 # fixed before any result: plain F1 (or the tuning objective) against the boxes
 AUTO_SCORER = "pseudoF1"
 GRID_OPTIONS = ("percentiles", "minTopAreas", "topSteps", "erosions",
-                "saddleDrops", "minHeights", "minTreeAreas", "mergeMetrics")
+                "saddleDrops", "minHeights", "minTreeAreas", "mergeMetrics",
+                "smooths")
 
 
 def runGrid(ccRun):
@@ -177,9 +178,34 @@ def parseArguments(argv=None):
     return parser.parse_args(argv)
 
 
+def autoFromSaved(args):
+    """
+    The automatic run from a finished pseudo-tuning: the choices recorded in
+    pseudoTuning.json and the detections saved with the run (or cached),
+    without scoring anything again. False when there is nothing to use.
+    """
+    saved = os.path.join(args.output, "pseudoTuning.json")
+    if not os.path.exists(saved):
+        return False
+    paths = [p for p in (os.path.join(args.ccRun, "detections.npz"),
+                         os.path.join(args.output, "detections.npz"))
+             if os.path.exists(p)]
+    if not paths:
+        return False
+    record = dc.loadJson(saved)
+    found = loadDetections(paths[0])
+    writeAutoRun(args.ccRun, record["blocks"], found,
+                 record["pooled"][AUTO_SCORER])
+    return True
+
+
 def main(argv=None):
     args = parseArguments(argv)
     os.makedirs(args.output, exist_ok=True)
+    if not os.path.exists(os.path.join(autoRunDir(args.ccRun),
+                                       "results.json")) and autoFromSaved(args):
+        print("[pseudo] automatic run written from the saved pseudo-tuning")
+        return 0
     grid, fixed = runGrid(args.ccRun)
     validation = ConCompCrossValidation(
         args.dataset, grid=grid, resolution=fixed["resolution"],

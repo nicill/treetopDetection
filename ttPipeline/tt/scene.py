@@ -13,6 +13,7 @@ import os
 
 import geopandas as gpd
 import numpy as np
+from scipy.ndimage import gaussian_filter
 import rasterio
 from rasterio.enums import Resampling
 from rasterio.features import geometry_mask
@@ -70,7 +71,11 @@ class Scene(object):
     def __init__(self, chmPath, crownsPath=None, boundaryPath=None,
                  resolution=0.25, minHeight=2.0, resampling="average",
                  crownShiftEast=0.0, crownShiftSouth=0.0,
-                 classField="tree_class", restrict=True, verbose=True):
+                 classField="tree_class", restrict=True, verbose=True,
+                 smoothM=0.0):
+        # smoothM: a Gaussian of this standard deviation (m) over the CHM
+        # before the minimum height is applied; 0 leaves it as read
+        self.smoothM = float(smoothM)
         self.chmPath = chmPath
         self.crownsPath = crownsPath
         self.boundaryPath = boundaryPath
@@ -142,6 +147,8 @@ class Scene(object):
         chm[~np.isfinite(chm)] = 0.0
         chm[chm < 0.0] = 0.0
         chm[chm > 100.0] = 0.0
+        if self.smoothM > 0:
+            chm = gaussian_filter(chm, sigma=self.smoothM / self.pixelSize)
         chm[chm < self.minHeight] = 0.0
         self.chm = chm
 

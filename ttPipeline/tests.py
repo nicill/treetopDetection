@@ -1421,7 +1421,8 @@ class TestConCompGrid(Fixture):
         validation = self.validation(1)
         self.assertEqual(len(validation.settings), 4)
         validation.detectAll()
-        self.assertEqual(sorted(validation.scenes), [1.0, 2.0, 3.0])
+        self.assertEqual(sorted(k[0] for k in validation.scenes),
+                         [1.0, 2.0, 3.0])
         counts = {(s["minHeight"], s["minTreeAreaM2"]): len(d)
                   for s, d in zip(validation.settings, validation.detections)}
         # a 40 m2 minimum tree area leaves none of the small cones
@@ -1437,6 +1438,7 @@ class TestConCompGrid(Fixture):
         folds, pooled = validation.run()
         self.assertEqual(sorted(pooled["byMergeMetric"]),
                          ["prominence", "saddle"])
+        self.assertEqual(pooled["bySmoothing"], {})       # not in this grid
         best = max(p["f1"] for p in pooled["byMergeMetric"].values())
         self.assertGreater(best, 0.5)
 
@@ -1519,6 +1521,35 @@ class TestObjective(unittest.TestCase):
         os.environ["TT_OBJECTIVE"] = "recall"
         with self.assertRaises(ValueError):
             dc.tuningObjective()
+
+
+class TestSiteAnalysis(unittest.TestCase):
+    """Crowns drawn 0.5 m east of the trees: the scan finds the shift back."""
+
+    def setUp(self):
+        import geopandas as gpd
+        from shapely.geometry import Point, box
+        centres = [(2.0 + 3 * i, 2.0) for i in range(8)]
+        self.crowns = gpd.GeoDataFrame(
+            geometry=[Point(x + 0.5, y).buffer(0.3) for x, y in centres],
+            crs="EPSG:32619")
+        self.predictions = [{"centreX": x, "centreY": y, "score": 3.0,
+                             "box": [x - .5, y - .5, x + .5, y + .5]}
+                            for x, y in centres]
+        self.region = box(-5, -5, 40, 10)
+
+    def testTheShiftIsFound(self):
+        from tt.siteAnalysis import offsetScan
+        result = offsetScan(self.predictions, self.crowns, self.region)
+        self.assertEqual([round(v, 1) for v in result["bestShiftM"]],
+                         [-0.5, 0.0])
+        self.assertAlmostEqual(result["unshiftedF1"], 0.0)
+        self.assertAlmostEqual(result["bestF1"], 1.0)
+
+    def testGrowingTheCrownsRecoversEdgeTops(self):
+        from tt.siteAnalysis import tolerance
+        result = tolerance(self.predictions, self.crowns, self.region)
+        self.assertAlmostEqual(result["0.25"]["f1"], 1.0)   # 0.3 + 0.25 > 0.5
 
 
 class TestSharedBlocks(unittest.TestCase):
@@ -1606,6 +1637,20 @@ class TestProminence(unittest.TestCase):
                                 [5.7, 7.7, 6.3, 8.3]])  # around P2
         zones.apexes = [zones._apex(b) for b in zones.boxes]
         self.assertAlmostEqual(zones._mergeDip(0, 1), 0.4, delta=0.05)
+
+    def testSmoothingFlattensASpikeButKeepsTheCrown(self):
+        import rasterio
+        from tt.scene import Scene
+        with rasterio.open(self.path, "r+") as d:
+            chm = d.read(1)
+            chm[80, 80] = 12.0                    # one noise pixel on low canopy
+            d.write(chm, 1)
+        plain = Scene(self.path, resolution=0.1, minHeight=1.0, verbose=False)
+        smooth = Scene(self.path, resolution=0.1, minHeight=1.0, verbose=False,
+                       smoothM=0.2)
+        self.assertAlmostEqual(float(plain.chm[80, 80]), 12.0)
+        self.assertLess(float(smooth.chm[80, 80]), 3.0)   # the spike is gone
+        self.assertGreater(float(smooth.chm[50, 30]), 9.5)  # T still stands
 
     def testAProminentNeighbourStaysApart(self):
         from tt.detector import ConCompDetector

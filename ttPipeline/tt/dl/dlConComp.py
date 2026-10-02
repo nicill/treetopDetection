@@ -61,6 +61,8 @@ GRID_CASTS = {"lowerPercentile": int, "erosionIterations": int}
 # (--minHeights, --minTreeAreas); then they are tuned like the rest. The crowns
 # scored never depend on them: only the detector's input does.
 SCENE_KEY = "minHeight"
+SMOOTH_KEY = "smoothM"      # Gaussian smoothing of the CHM (m); tuned when
+                            # --smooths lists values, else none
 TREE_AREA_KEY = "minTreeAreaM2"
 # the merge rule: "saddle" (straight-line drop) or "prominence" (elder rule in
 # the descent); a grid dimension when --mergeMetrics lists both
@@ -126,11 +128,12 @@ class ConCompCrossValidation(object):
 
     # ------------------------------------------------------------------ #
 
-    def _loadScene(self, minHeight=None):
-        """The scene at one minimum height, built once and kept."""
+    def _loadScene(self, minHeight=None, smoothM=0.0):
+        """The scene at one minimum height and smoothing, built once, kept."""
         minHeight = self.minHeight if minHeight is None else minHeight
-        if minHeight in self.scenes:
-            return self.scenes[minHeight]
+        key = (minHeight, smoothM)
+        if key in self.scenes:
+            return self.scenes[key]
         chmPath = next((c["path"] for c in self.meta["channels"]
                         if c["kind"] == "chm"), None)
         if chmPath is None:
@@ -139,12 +142,13 @@ class ConCompCrossValidation(object):
         scene = Scene(chmPath, crownsPath=self.meta["crownsPath"],
                       boundaryPath=self.meta["boundaryPath"],
                       resolution=self.resolution, minHeight=minHeight,
-                      verbose=False)
-        self.scenes[minHeight] = scene
+                      verbose=False, smoothM=smoothM)
+        self.scenes[key] = scene
         return scene
 
     def sceneFor(self, setting):
-        return self._loadScene(setting.get(SCENE_KEY, self.minHeight))
+        return self._loadScene(setting.get(SCENE_KEY, self.minHeight),
+                               setting.get(SMOOTH_KEY, 0.0))
 
     def _expandGrid(self):
         keys = list(self.grid)
@@ -272,7 +276,8 @@ class ConCompCrossValidation(object):
         pooled["tuningOptimism"] = float(np.mean(
             [f["tuningScore"] - dc.objectiveOf(f) for f in folds]))
         pooled["wholeAreaBest"] = self.wholeAreaBest()
-        pooled["byMergeMetric"] = self.byMergeMetric()
+        pooled["byMergeMetric"] = self.byDimension(MERGE_KEY, "saddle")
+        pooled["bySmoothing"] = self.byDimension(SMOOTH_KEY, 0.0)
         return folds, pooled
 
     def restrictedCv(self, indices):
@@ -287,18 +292,19 @@ class ConCompCrossValidation(object):
             folds.append(result)
         return dc.averageFolds(folds)
 
-    def byMergeMetric(self):
+    def byDimension(self, key, default):
         """
-        {merge rule: pooled cross-validated score with only that rule}, when
-        the grid holds more than one: the comparison of the rules, each tuned
+        {value: pooled cross-validated score choosing only among settings
+        with that value}, when the grid holds more than one value of key: the
+        comparison of e.g. the merge rules or smoothing levels, each tuned
         exactly as the whole grid is.
         """
-        metrics = sorted({s.get(MERGE_KEY, "saddle") for s in self.settings})
-        if len(metrics) < 2:
+        values = sorted({s.get(key, default) for s in self.settings})
+        if len(values) < 2:
             return {}
-        return {m: self.restrictedCv([i for i, s in enumerate(self.settings)
-                                      if s.get(MERGE_KEY, "saddle") == m])
-                for m in metrics}
+        return {str(v): self.restrictedCv(
+                    [i for i, s in enumerate(self.settings)
+                     if s.get(key, default) == v]) for v in values}
 
     def wholeAreaBest(self):
         """
@@ -315,7 +321,8 @@ class ConCompCrossValidation(object):
         s = fold["settings"]
         extra = "".join(", %s %s" % (k, s[k]) for k in (SCENE_KEY,
                                                          TREE_AREA_KEY,
-                                                         MERGE_KEY)
+                                                         MERGE_KEY,
+                                                         SMOOTH_KEY)
                         if k in s)
         print("  fold %s: tuned F1 %.3f -> held-out R %.3f P %.3f F1 %.3f  "
               "(%dth, minTop %.2f, step %.2f, erode %d, drop %.2f%s)"
@@ -341,6 +348,9 @@ def gridFromArguments(args):
                         (TREE_AREA_KEY, getattr(args, "minTreeAreas", None))):
         if option:
             grid[key] = [float(v) for v in option.split(",") if v.strip()]
+    smooths = getattr(args, "smooths", None)
+    if smooths:
+        grid[SMOOTH_KEY] = [float(v) for v in smooths.split(",") if v.strip()]
     metrics = getattr(args, "mergeMetrics", None)
     if metrics:
         grid[MERGE_KEY] = [v.strip() for v in metrics.split(",") if v.strip()]
@@ -375,6 +385,9 @@ def crossValidate(args):
     for metric, p in pooled["byMergeMetric"].items():
         print("[concomp] %-10s only: R %.3f  P %.3f  F1 %.3f"
               % (metric, p["recall"], p["precision"], p["f1"]))
+    for smooth, p in pooled["bySmoothing"].items():
+        print("[concomp] smoothing %s m only: R %.3f  P %.3f  F1 %.3f"
+              % (smooth, p["recall"], p["precision"], p["f1"]))
     ceiling = pooled["wholeAreaBest"]
     print("[concomp] whole-area best (optimistic ceiling): R %.3f  P %.3f  "
           "F1 %.3f at %s" % (ceiling["recall"], ceiling["precision"],
@@ -418,6 +431,9 @@ def parseArguments(argv=None):
                              "--minTreeArea is fixed)")
     parser.add_argument("--jobs", type=int, default=1,
                         help="Settings detected at once, in parallel")
+    parser.add_argument("--smooths", default=None,
+                        help="Gaussian smoothing of the CHM (sigma, m) to "
+                             "tune over, e.g. 0,0.1,0.2 (default: none)")
     parser.add_argument("--mergeMetrics", default=None,
                         help="Merge rules to tune over: saddle,prominence "
                              "(default: saddle only)")
