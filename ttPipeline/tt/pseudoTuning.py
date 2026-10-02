@@ -46,6 +46,9 @@ from .dl.dlConComp import (ConCompCrossValidation, gridFromArguments,
                            loadDetections, saveDetections)
 
 ZONE_LEVELS = (0.5, 0.7, 0.9)
+# the scorer whose choices become a run of their own (runs/ccAuto<height>),
+# fixed before any result: plain F1 (or the tuning objective) against the boxes
+AUTO_SCORER = "pseudoF1"
 GRID_OPTIONS = ("percentiles", "minTopAreas", "topSteps", "erosions",
                 "saddleDrops", "minHeights", "minTreeAreas", "mergeMetrics")
 
@@ -199,8 +202,39 @@ def main(argv=None):
             row["settings"] = validation.settings[row["chosen"]]
     dc.saveJson({"blocks": perBlock, "pooled": table, "target": target},
                 os.path.join(args.output, "pseudoTuning.json"))
+    writeAutoRun(args.ccRun, perBlock, found, table[AUTO_SCORER])
     printTable(table, target)
     return 0
+
+
+def autoRunDir(ccRun):
+    """runs/ccLidar -> runs/ccAutoLidar (beside the run it was tuned from)."""
+    name = os.path.basename(os.path.normpath(ccRun))
+    auto = "ccAuto" + name[2:] if name.startswith("cc") else name + "Auto"
+    return os.path.join(os.path.dirname(os.path.normpath(ccRun)), auto)
+
+
+def writeAutoRun(ccRun, perBlock, found, pooled):
+    """
+    The AUTO_SCORER's chosen setting per block, as a run like any other: per
+    block the whole-area detections of that setting (as connected-component
+    runs store them), and the pooled results. The report then combines it
+    with the RGB networks like any height method.
+    """
+    directory = autoRunDir(ccRun)
+    os.makedirs(directory, exist_ok=True)
+    folds = []
+    for block, rows in sorted(perBlock.items()):
+        row = rows[AUTO_SCORER]
+        dc.saveJson({"block": block, "predictions": found[row["chosen"]]},
+                    os.path.join(directory, "predictions_%s.json" % block))
+        folds.append(dict(row, block=block))
+    dc.saveJson({"method": "connected components tuned on the RGB Mask "
+                           "R-CNN's held-out boxes (%s)" % AUTO_SCORER,
+                 "folds": folds, "pooled": pooled},
+                os.path.join(directory, "results.json"))
+    print("[pseudo] wrote the automatic run %s" % directory)
+    return directory
 
 
 if __name__ == "__main__":

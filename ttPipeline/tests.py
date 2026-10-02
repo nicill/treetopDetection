@@ -588,15 +588,26 @@ class TestCalibration(Fixture):
         self.assertEqual(len(zones), 9)
 
     def testProposalIsWithinItsBounds(self):
-        from tt.calibration import ParameterProposal, EROSION_MAX
+        from tt.calibration import (ParameterProposal, EROSION_MAX,
+                                    TOP_STEP_CAP_M)
         _, zones = self.zones()
-        settings = ParameterProposal(zones).settings()
-        self.assertTrue(1 <= settings["lowerPercentile"] <= 50)
-        self.assertTrue(0 <= settings["erosionIterations"] <= EROSION_MAX)
-        self.assertGreater(settings["minTopAreaM2"], 0)
-        self.assertAlmostEqual(settings["topStepM"],
+        original = ParameterProposal(zones, "original").settings()
+        self.assertTrue(1 <= original["lowerPercentile"] <= 50)
+        self.assertTrue(0 <= original["erosionIterations"] <= EROSION_MAX)
+        self.assertGreater(original["minTopAreaM2"], 0)
+        self.assertAlmostEqual(original["topStepM"],
                                min(0.5, max(0.05,
-                                            settings["saddleDropM"] / 2)))
+                                            original["saddleDropM"] / 2)))
+        corrected = ParameterProposal(zones, "corrected").settings()
+        self.assertTrue(0 <= corrected["lowerPercentile"] <= 50)
+        self.assertLessEqual(corrected["topStepM"], TOP_STEP_CAP_M + 1e-9)
+
+    def testCrownBaseCutIsNeverAboveTheApexCut(self):
+        from tt.calibration import ParameterProposal
+        _, zones = self.zones()
+        self.assertLessEqual(
+            ParameterProposal(zones, "corrected").lowerPercentile(),
+            ParameterProposal(zones, "original").lowerPercentile())
 
     def testMinTreeAreaReachesTheDetector(self):
         from tt.calibration import CalibratedDetector, buildDetector
@@ -1583,6 +1594,19 @@ class TestProminence(unittest.TestCase):
         row, column = tops[0]
         self.assertLess(np.hypot(row - 50, column - 30), 8)   # on T's crown
 
+    def testCalibrationDipIsTheMergeLevel(self):
+        """Apex T and branch tip P2: the straight line crosses the ground
+        (dip 7.4 m); through the branch they join at 9.0 m (dip 0.4 m)."""
+        from tt.calibration import ConfidentZones
+        from tt.scene import Scene
+        scene = Scene(self.path, resolution=0.1, minHeight=1.0, verbose=False)
+        zones = ConfidentZones.__new__(ConfidentZones)
+        zones.scene = scene
+        zones.boxes = np.array([[2.2, 4.2, 3.8, 5.8],    # around T (x, y in m)
+                                [5.7, 7.7, 6.3, 8.3]])  # around P2
+        zones.apexes = [zones._apex(b) for b in zones.boxes]
+        self.assertAlmostEqual(zones._mergeDip(0, 1), 0.4, delta=0.05)
+
     def testAProminentNeighbourStaysApart(self):
         from tt.detector import ConCompDetector
         from tt.merging import TopMerger
@@ -1625,6 +1649,14 @@ class TestPseudoTuning(unittest.TestCase):
         self.assertAlmostEqual(rows["zones@0.9"]["f1"], 0.9)
         self.assertAlmostEqual(rows["zones@0.9"]["spearman"], 1.0)
         self.assertAlmostEqual(rows["pseudoF1"]["spearman"], 0.5)
+
+    def testTheAutomaticRunSitsBesideItsSource(self):
+        from tt.pseudoTuning import autoRunDir
+        self.assertEqual(autoRunDir("/s/runs/ccLidar"), "/s/runs/ccAutoLidar")
+        self.assertEqual(autoRunDir("/s/runs/ccP1/"), "/s/runs/ccAutoP1")
+        from tt.reportText import HEIGHT_SOURCE
+        self.assertEqual(HEIGHT_SOURCE["ccAutoLidar"], "lidar")
+        self.assertEqual(HEIGHT_SOURCE["ccAutoP1"], "p1")
 
     def testDetectionsRoundTrip(self):
         from tt.dl.dlConComp import loadDetections, saveDetections

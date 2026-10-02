@@ -27,6 +27,7 @@ import json
 import os
 import sys
 
+import cv2
 import numpy as np
 from scipy.spatial import cKDTree
 from scipy.stats import wilcoxon
@@ -51,6 +52,21 @@ NEIGHBOUR_DIP_CAP_QUANTILE = 25  # an adjusted dip stays below 75% of them
 WITHIN_DIP_QUANTILE = 90   # adjusted dip covers 90% of within-zone dips
 SAME_TREE_OVERLAP = 0.25   # zones overlapping more than this are one tree
 DIP_FLOOR_M = 0.1          # CHM noise: no dip below this counts as a valley
+# --- the corrected rules (--rules corrected, the default) ------------------ #
+# The original cut kept each box's apex above it; a crown needs more than its
+# apex above the cut to survive erosion and the minimum areas, and confident
+# boxes are mostly tall trees, so the cut came out high (often the cap, 50).
+# The corrected cut keeps each box's crown base: a low quantile of the canopy
+# heights inside the box. The original drop came from straight-line dips
+# between any two boxes within 8 m, which run over the ground between trees
+# that do not touch; the corrected drop uses only boxes that touch, and the
+# true merge level between their apexes (as prominence does). The step is no
+# longer half the drop, only capped by the detector's default.
+RULES = ("original", "corrected")
+CROWN_BASE_QUANTILE = 25   # a box's crown base: this percentile of its heights
+TOUCH_GAP_M = 0.5          # boxes this close or closer touch
+DIP_LEVEL_STEP_M = 0.02    # the merge level is found to this precision
+TOP_STEP_CAP_M = 0.12      # the corrected step: drop / 2, at most this
 COVERAGE_REQUIRED = 0.95
 MULTIPLICITY_ALLOWED = 0.10
 
@@ -127,36 +143,100 @@ class ConfidentZones(object):
             dips.append(saddleDrop(self.scene.chm, a[0], a[1], b[0], b[1]))
         return np.array(dips)
 
-    def apexRanks(self):
-        """Each apex's percentile rank among its detector window's heights."""
+    def _windowValues(self, row, column):
+        """The canopy heights of the detector window holding a pixel."""
         size = self.scene.metresToPixels(WINDOW_M, 8)
         step = max(1, int(size * (1.0 - WINDOW_OVERLAP)))
         rows, columns = self.scene.chm.shape
+        r0 = int(np.clip((row // step) * step, 0, max(0, rows - size)))
+        c0 = int(np.clip((column // step) * step, 0, max(0, columns - size)))
+        window = self.scene.chm[r0:r0 + size, c0:c0 + size]
+        return window[window > 0]
+
+    def _rank(self, row, column, height):
+        values = self._windowValues(row, column)
+        return 100.0 * np.mean(values <= height) if values.size else 100.0
+
+    def apexRanks(self):
+        """Each apex's percentile rank among its detector window's heights."""
+        return np.array([self._rank(r, c, h) for r, c, h in self.apexes])
+
+    def crownBaseRanks(self):
+        """
+        Each box's crown base (CROWN_BASE_QUANTILE of the canopy heights
+        inside it) as a percentile rank among its window's heights: what
+        the cut must stay below for the crown, not only its apex, to remain.
+        """
         ranks = []
-        for row, column, height in self.apexes:
-            r0 = int(np.clip((row // step) * step, 0, max(0, rows - size)))
-            c0 = int(np.clip((column // step) * step, 0,
-                             max(0, columns - size)))
-            window = self.scene.chm[r0:r0 + size, c0:c0 + size]
-            values = window[window > 0]
-            ranks.append(100.0 * np.mean(values <= height)
-                         if values.size else 100.0)
+        for box, (row, column, _) in zip(self.boxes, self.apexes):
+            r0, c0, r1, c1 = self._pixelBox(box)
+            heights = self.scene.chm[r0:r1 + 1, c0:c1 + 1]
+            heights = heights[heights > 0]
+            base = np.percentile(heights, CROWN_BASE_QUANTILE) \
+                if heights.size else 0.0
+            ranks.append(self._rank(row, column, base))
         return np.array(ranks)
+
+    def touchingDips(self):
+        """
+        Dips between the apexes of boxes that touch (gap at most
+        TOUCH_GAP_M), as the lower apex minus the true merge level: the
+        highest level at which the two apexes are connected through the
+        canopy inside the rectangle covering both boxes.
+        """
+        dips = []
+        for i in range(len(self)):
+            for j in range(i + 1, len(self)):
+                a, b = self.boxes[i], self.boxes[j]
+                gap = max(a[0] - b[2], b[0] - a[2], a[1] - b[3], b[1] - a[3])
+                if gap > TOUCH_GAP_M:
+                    continue
+                if overlapOverSmaller(a, self.boxes[j:j + 1])[0] \
+                        > SAME_TREE_OVERLAP:
+                    continue
+                dips.append(self._mergeDip(i, j))
+        return np.array(dips)
+
+    def _mergeDip(self, i, j):
+        r0a, c0a, r1a, c1a = self._pixelBox(self.boxes[i])
+        r0b, c0b, r1b, c1b = self._pixelBox(self.boxes[j])
+        r0, c0 = min(r0a, r0b), min(c0a, c0b)
+        r1, c1 = max(r1a, r1b), max(c1a, c1b)
+        crop = self.scene.chm[r0:r1 + 1, c0:c1 + 1]
+        (ra, ca, ha), (rb, cb, hb) = self.apexes[i], self.apexes[j]
+        a, b = (ra - r0, ca - c0), (rb - r0, cb - c0)
+        lower = min(ha, hb)
+        level = lower
+        while level > 0:
+            _, labels = cv2.connectedComponents(
+                (crop >= level).astype(np.uint8), connectivity=8)
+            if labels[a] and labels[a] == labels[b]:
+                return float(lower - level)
+            level -= DIP_LEVEL_STEP_M
+        return float(lower)
 
 
 class ParameterProposal(object):
     """Connected-component parameters proposed from the zones."""
 
-    def __init__(self, zones):
+    def __init__(self, zones, rules="corrected"):
+        if rules not in RULES:
+            raise ValueError("rules must be one of %s" % (RULES,))
         self.zones = zones
-        self.ranks = zones.apexRanks()
-        self.betweenDips = zones.neighbourDips()
+        self.rules = rules
+        if rules == "original":
+            self.ranks = zones.apexRanks()
+            self.betweenDips = zones.neighbourDips()
+        else:
+            self.ranks = zones.crownBaseRanks()
+            self.betweenDips = zones.touchingDips()
 
     def lowerPercentile(self, cover=APEX_COVER):
         if not self.ranks.size:
             return 20
         cut = np.percentile(self.ranks, 100.0 * (1.0 - cover))
-        return int(np.clip(np.floor(cut), 1, 50))
+        floor = 1 if self.rules == "original" else 0
+        return int(np.clip(np.floor(cut), floor, 50))
 
     def erosionIterations(self):
         if not len(self.zones):
@@ -186,10 +266,12 @@ class ParameterProposal(object):
 
     def settings(self):
         drop = self.saddleDropM()
+        step = topStep(drop) if self.rules == "original" else \
+            float(np.clip(drop / 2.0, 0.05, TOP_STEP_CAP_M))
         return {"lowerPercentile": self.lowerPercentile(),
                 "erosionIterations": self.erosionIterations(),
                 "minTopAreaM2": self.minTopAreaM2(),
-                "saddleDropM": drop, "topStepM": topStep(drop)}
+                "saddleDropM": drop, "topStepM": step}
 
 
 def topStep(drop):
@@ -197,14 +279,15 @@ def topStep(drop):
     return float(np.clip(drop / 2.0, 0.05, 0.5))
 
 
-def buildDetector(settings, minTreeAreaM2=MIN_TREE_AREA_M2):
+def buildDetector(settings, minTreeAreaM2=MIN_TREE_AREA_M2,
+                  mergeMetric="saddle"):
     return ConCompDetector(
         windowSizeM=WINDOW_M, windowOverlap=WINDOW_OVERLAP,
         minTreeAreaM2=minTreeAreaM2,
         lowerPercentile=settings["lowerPercentile"],
         minTopAreaM2=settings["minTopAreaM2"], topStepM=settings["topStepM"],
         erosionIterations=settings["erosionIterations"],
-        merger=TopMerger("saddle", epsM=MERGE_RADIUS_M,
+        merger=TopMerger(mergeMetric, epsM=MERGE_RADIUS_M,
                          saddleDropM=settings["saddleDropM"]),
         verbose=False)
 
@@ -292,15 +375,18 @@ class ZoneCheck(object):
 class CalibratedDetector(object):
     """Steps 2 to 5 for one set of zones."""
 
-    def __init__(self, scene, zones, minTreeAreaM2=MIN_TREE_AREA_M2):
+    def __init__(self, scene, zones, minTreeAreaM2=MIN_TREE_AREA_M2,
+                 rules="corrected", mergeMetric="saddle"):
         self.scene = scene
         self.zones = zones
         self.minTreeAreaM2 = minTreeAreaM2
-        self.proposal = ParameterProposal(zones)
+        self.proposal = ParameterProposal(zones, rules)
+        self.mergeMetric = mergeMetric
         self.log = {}
 
     def detect(self, settings):
-        tops = buildDetector(settings, self.minTreeAreaM2).detect(self.scene)
+        tops = buildDetector(settings, self.minTreeAreaM2,
+                             self.mergeMetric).detect(self.scene)
         return asPredictions(tops, self.scene)
 
     def adjust(self, settings, check):
@@ -371,7 +457,8 @@ class CalibrationExperiment(object):
     """
 
     def __init__(self, scene, blocks, rgbRun, ccRun,
-                 levels=CONFIDENCE_LEVELS, minTreeAreaM2=MIN_TREE_AREA_M2):
+                 levels=CONFIDENCE_LEVELS, minTreeAreaM2=MIN_TREE_AREA_M2,
+                 rules="corrected", mergeMetric="saddle"):
         self.scene = scene
         self.blocks = dict(blocks)
         self.rgbRun = rgbRun
@@ -379,6 +466,8 @@ class CalibrationExperiment(object):
         self.blocks = sharedBlocks(self.blocks, (rgbRun, ccRun))
         self.levels = levels
         self.minTreeAreaM2 = minTreeAreaM2
+        self.rules = rules
+        self.mergeMetric = mergeMetric
 
     def _score(self, predictions, block):
         return dc.evaluateDetections(predictions, self.scene.crowns,
@@ -397,7 +486,8 @@ class CalibrationExperiment(object):
         for level in self.levels:
             zones = ConfidentZones(rgb, self.scene, level, region)
             calibrated = CalibratedDetector(self.scene, zones,
-                                            self.minTreeAreaM2)
+                                            self.minTreeAreaM2, self.rules,
+                                            self.mergeMetric)
             result = self._score(calibrated.run(), block)
             result.update(calibrated.log)
             rows[level] = dict(self.baselines(block, zones),
@@ -493,6 +583,13 @@ def parseArguments(argv=None):
                         help="CHM resolution the detector works at")
     parser.add_argument("--minHeight", type=float, default=2.0)
     parser.add_argument("--minTreeArea", type=float, default=MIN_TREE_AREA_M2)
+    parser.add_argument("--rules", choices=RULES, default="corrected",
+                        help="original: the first rules (apex cut, straight-"
+                             "line dips between any boxes within 8 m); "
+                             "corrected: crown-base cut, merge-level dips "
+                             "between touching boxes")
+    parser.add_argument("--mergeMetric", choices=("saddle", "prominence"),
+                        default="prominence")
     return parser.parse_args(argv)
 
 
@@ -505,7 +602,8 @@ def main(argv=None):
     experiment = CalibrationExperiment(
         scene, blocks, MethodRun("rgb", args.rgbRun, blocks),
         MethodRun("cc", args.ccRun, blocks),
-        minTreeAreaM2=args.minTreeArea)
+        minTreeAreaM2=args.minTreeArea, rules=args.rules,
+        mergeMetric=args.mergeMetric)
     results = experiment.run()
     table = summarise(results, experiment.levels)
     printSummary(table)
@@ -514,7 +612,8 @@ def main(argv=None):
     with open(path, "w") as handle:
         json.dump({"blocks": {b: {str(k): v for k, v in rows.items()}
                               for b, rows in results.items()},
-                   "summary": {str(k): v for k, v in table.items()}},
+                   "summary": {str(k): v for k, v in table.items()},
+                   "rules": args.rules, "mergeMetric": args.mergeMetric},
                   handle, indent=1, default=float)
     print("\nwrote %s" % path)
     return 0

@@ -25,11 +25,16 @@ LABELS = {
     "fasterrcnnRgb": ("Faster R-CNN, RGB mosaic", "FRCNN RGB"),
     "retinanetRgb": ("RetinaNet, RGB mosaic", "RetinaNet RGB"),
     "fcosRgb": ("FCOS, RGB mosaic", "FCOS RGB"),
+    "ccAutoLidar": ("Connected components, LiDAR CHM, tuned on the RGB "
+                    "Mask R-CNN's boxes", "CC LiDAR auto"),
+    "ccAutoP1": ("Connected components, P1 CHM, tuned on the RGB Mask "
+                 "R-CNN's boxes", "CC P1 auto"),
     "ccLidarOld": ("Connected components, LiDAR, earlier protocol",
                    "CC LiDAR (old)"),
     "ccP1Old": ("Connected components, P1, earlier protocol", "CC P1 (old)"),
 }
-CURRENT = ("ccLidar", "ccP1", "mrcnnLidar", "mrcnnP1", "mrcnnRgb",
+CURRENT = ("ccLidar", "ccP1", "ccAutoLidar", "ccAutoP1", "mrcnnLidar",
+           "mrcnnP1", "mrcnnRgb",
            "mrcnnRgbLidar", "yoloLidar", "yoloP1", "yoloRgb", "fasterrcnnRgb",
            "retinanetRgb", "fcosRgb")
 
@@ -44,8 +49,12 @@ def label(name, short=False):
 # there is not.
 RGB_BOX_METHODS = ("mrcnnRgb", "yoloRgb", "fasterrcnnRgb", "retinanetRgb",
                    "fcosRgb")
+# ccAuto*: connected components tuned on the RGB Mask R-CNN's held-out boxes
+# (tt.pseudoTuning), combined with that network: the fully automatic hybrid
 HEIGHT_SOURCE = {"ccLidar": "lidar", "mrcnnLidar": "lidar", "yoloLidar": "lidar",
-                 "ccP1": "p1", "mrcnnP1": "p1", "yoloP1": "p1"}
+                 "ccAutoLidar": "lidar",
+                 "ccP1": "p1", "mrcnnP1": "p1", "yoloP1": "p1",
+                 "ccAutoP1": "p1"}
 HEIGHT_METHODS = tuple(HEIGHT_SOURCE)
 # The saddle strategies' dip, per height model: the value connected components'
 # own cross-validation chose most often there (0.3 m in 5 of 8 LiDAR folds,
