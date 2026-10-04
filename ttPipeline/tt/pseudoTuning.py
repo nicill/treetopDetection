@@ -31,6 +31,7 @@ grid the run recorded and cached in --output.
 """
 
 import argparse
+import multiprocessing
 import os
 import sys
 
@@ -92,13 +93,28 @@ def exactlyOneShare(points, boxes):
     return float((inside.sum(axis=1) == 1).mean())
 
 
+_BLOCK = None      # the block being scored, shared with forked workers
+
+
+def _scoreReal(index):
+    return dc.evaluateDetections(_BLOCK.inBlock[index], _BLOCK.crowns,
+                                 _BLOCK.region)
+
+
+def _scorePseudo(index):
+    return dc.objectiveOf(dc.evaluateDetections(_BLOCK.inBlock[index],
+                                                _BLOCK.pseudo, _BLOCK.region))
+
+
 class BlockScores(object):
     """One held-out block: every setting under every scorer."""
 
-    def __init__(self, block, region, crowns, rgbRecord, allDetections):
+    def __init__(self, block, region, crowns, rgbRecord, allDetections,
+                 jobs=1):
         self.block = block
         self.region = region
         self.crowns = crowns
+        self.jobs = max(1, int(jobs))
         self.inBlock = [dc.predictionsInRegion(d, region) for d in allDetections]
         held = dc.predictionsInRegion(rgbRecord["predictions"], region)
         threshold = rgbRecord.get("threshold", -np.inf)
@@ -107,19 +123,30 @@ class BlockScores(object):
         self.zones = {c: np.array([p["box"] for p in held if p["score"] >= c],
                                   float).reshape(-1, 4) for c in ZONE_LEVELS}
 
+    def _map(self, function):
+        """function(i) for every setting, --jobs at a time; same results."""
+        global _BLOCK
+        _BLOCK = self
+        try:
+            indices = range(len(self.inBlock))
+            if self.jobs == 1:
+                return [function(i) for i in indices]
+            with multiprocessing.get_context("fork").Pool(self.jobs) as pool:
+                return pool.map(function, indices, chunksize=max(
+                    1, len(self.inBlock) // (self.jobs * 8)))
+        finally:
+            _BLOCK = None
+
     def realScores(self):
         if not hasattr(self, "_real"):
-            self._real = [dc.evaluateDetections(d, self.crowns, self.region)
-                          for d in self.inBlock]
+            self._real = self._map(_scoreReal)
         return self._real
 
     def scorers(self):
         """{scorer: score per setting}, none of them using the crowns."""
         points = [np.array([[p["centreX"], p["centreY"]] for p in d],
                            float).reshape(-1, 2) for d in self.inBlock]
-        out = {"pseudoF1": [dc.objectiveOf(dc.evaluateDetections(
-                                d, self.pseudo, self.region))
-                            for d in self.inBlock]}
+        out = {"pseudoF1": self._map(_scorePseudo)}
         for c, boxes in self.zones.items():
             out["zones@%.1f" % c] = [exactlyOneShare(p, boxes) for p in points]
         return out
@@ -217,7 +244,7 @@ def main(argv=None):
     perBlock = {}
     for name, region in sorted(sharedBlocks(blocks, (rgb,)).items()):
         rows = tuneBlock(BlockScores(name, region, validation.scene.crowns,
-                                     rgb.record(name), found))
+                                     rgb.record(name), found, args.jobs))
         if rows is not None:
             perBlock[name] = rows
     names = list(next(iter(perBlock.values())))
