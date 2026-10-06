@@ -293,6 +293,9 @@ class MaskRcnnCrossValidation(object):
                                              name, self.args.buffer)
         if not trainTiles or not testTiles:
             return None
+        # the learning curve's annotated subset; all of them by default
+        trainTiles = dc.drawTiles(trainTiles, self.args.trainFraction,
+                                  self.args.subsetSeed, name)
         validationBlock = dc.chooseValidationBlock(trainTiles, name)
         valTiles = [t for t in trainTiles if t["block"] == validationBlock]
         fitTiles = [t for t in trainTiles if t["block"] != validationBlock]
@@ -300,19 +303,31 @@ class MaskRcnnCrossValidation(object):
             fitTiles, valTiles = trainTiles, trainTiles[:1]
         return fitTiles, valTiles, validationBlock, testTiles
 
-    def predict(self, model, tiles):
-        raw = predictTiles(model, tiles, self.meta["root"], self.device,
-                           self.meta["transformObject"],
+    def predict(self, model, tiles, meta=None):
+        meta = meta or self.meta
+        raw = predictTiles(model, tiles, meta["root"], self.device,
+                           meta["transformObject"],
                            batchSize=self.args.inferenceBatch)
         return raw, dc.nonMaximumSuppression(raw, self.args.nmsIou)
 
-    def chooseThreshold(self, model, valTiles, validationBlock):
+    def validationRegion(self, validationBlock, valTiles):
+        """
+        Where the operating point is chosen: the validation block, or with an
+        annotated subset only the part of it its drawn tiles cover.
+        """
+        geometry = dict(self.blocks)[validationBlock]
+        if self.args.trainFraction >= 1:
+            return geometry
+        return geometry.intersection(dc.tileRegion(valTiles))
+
+    def chooseThreshold(self, model, valTiles, region, crowns=None,
+                        meta=None):
         """The operating point, and the validation predictions it came from."""
-        _, merged = self.predict(model, valTiles)
+        _, merged = self.predict(model, valTiles, meta)
         if self.args.fixedThreshold:
             return self.args.scoreThreshold, merged
-        threshold, _ = dc.selectThreshold(merged, self.crowns,
-                                          dict(self.blocks)[validationBlock])
+        threshold, _ = dc.selectThreshold(
+            merged, self.crowns if crowns is None else crowns, region)
         return threshold, merged
 
     def runFold(self, name, geometry):
@@ -336,14 +351,17 @@ class MaskRcnnCrossValidation(object):
                   withMasks=dm.needsMasks(args.modelType),
                   optimiser=args.optimiser)
 
-        threshold, validation = self.chooseThreshold(model, valTiles,
-                                                     validationBlock)
+        threshold, validation = self.chooseThreshold(
+            model, valTiles, self.validationRegion(validationBlock, valTiles))
         raw, merged = self.predict(model, testTiles)
         result = dc.evaluateDetections(
             [p for p in merged if p["score"] >= threshold], self.crowns,
             geometry, verbose=True)
         result.update(block=name, validationBlock=validationBlock,
-                      threshold=threshold, rawPredictions=len(raw))
+                      threshold=threshold, rawPredictions=len(raw),
+                      fitTiles=len(fitTiles), validationTiles=len(valTiles),
+                      trainFraction=self.args.trainFraction,
+                      subsetSeed=self.args.subsetSeed)
 
         self.savePredictions(name, merged, threshold, validationBlock,
                              validation)
@@ -388,11 +406,73 @@ class MaskRcnnCrossValidation(object):
         return folds, dc.averageFolds(folds)
 
 
+class TransferRun(MaskRcnnCrossValidation):
+    """
+    The learning curve's point with no annotation of this site: one network
+    trained on every block of another site (one of its blocks set aside to
+    choose the operating point there), applied unchanged to every block here.
+    """
+
+    def trainOnSource(self):
+        """The source site's network and the operating point chosen there."""
+        source = dp.loadDataset(self.args.transferFrom)
+        if source["channelCount"] != self.meta["channelCount"]:
+            raise ValueError("the source dataset has %d channels, this one %d"
+                             % (source["channelCount"],
+                                self.meta["channelCount"]))
+        crowns, _ = readCrowns(source["crownsPath"], source["crs"])
+        tiles = [t for t in source["tiles"] if t["block"]]
+        validationBlock = dc.chooseValidationBlock(tiles, "")
+        fitTiles = [t for t in tiles if t["block"] != validationBlock]
+        valTiles = [t for t in tiles if t["block"] == validationBlock]
+        print("  source %s: fit %d tiles, validate on %s (%d)"
+              % (source["name"], len(fitTiles), validationBlock, len(valTiles)))
+        args = self.args
+        model = buildModel(source["channelCount"], modelType=args.modelType,
+                           pretrained=args.pretrained,
+                           imageSize=args.imageSize or source["tileSize"])
+        trainFold(model, fitTiles, source["root"], self.device, args.epochs,
+                  args.batchSize, args.learningRate, workers=args.workers,
+                  withMasks=dm.needsMasks(args.modelType),
+                  optimiser=args.optimiser)
+        region = dict(source["blockGeometries"])[validationBlock]
+        threshold, _ = self.chooseThreshold(model, valTiles, region, crowns,
+                                            source)
+        return model, threshold, source["name"]
+
+    def testBlock(self, model, threshold, sourceName, name, geometry):
+        tiles = [t for t in self.meta["tiles"] if t["block"] == name]
+        if not tiles:
+            return None
+        raw, merged = self.predict(model, tiles)
+        result = dc.evaluateDetections(
+            [p for p in merged if p["score"] >= threshold], self.crowns,
+            geometry, verbose=True)
+        result.update(block=name, threshold=threshold, rawPredictions=len(raw),
+                      transferredFrom=sourceName)
+        dc.saveJson({"block": name, "threshold": threshold,
+                     "scoreFloor": SCORE_FLOOR, "predictions": merged,
+                     "transferredFrom": sourceName},
+                    os.path.join(self.args.output, "predictions_%s.json" % name))
+        return result
+
+    def run(self):
+        model, threshold, sourceName = self.trainOnSource()
+        print("[torchvision] trained on %s, threshold %.2f, applied to %s"
+              % (sourceName, threshold, self.meta["name"]))
+        folds = [r for r in (self.testBlock(model, threshold, sourceName,
+                                            name, geometry)
+                             for name, geometry in self.blocks)
+                 if r is not None]
+        return folds, dc.averageFolds(folds)
+
+
 def crossValidate(args):
     os.makedirs(args.output, exist_ok=True)
     dc.startLogging(args.log or os.path.join(args.output, "run.log"))
 
-    validation = MaskRcnnCrossValidation(args)
+    validation = (TransferRun if args.transferFrom
+                  else MaskRcnnCrossValidation)(args)
     folds, pooled = validation.run()
 
     print("\n[torchvision] pooled over %d folds: R %.3f  P %.3f  F1 %.3f "
@@ -454,6 +534,17 @@ def parseArguments(argv=None):
     parser.add_argument("--noPretrained", dest="pretrained",
                         action="store_false")
     parser.add_argument("--saveModels", action="store_true")
+    parser.add_argument("--trainFraction", type=float, default=1.0,
+                        help="learning curve: train (and choose the "
+                             "operating point) on this fraction of each "
+                             "training block's tiles, whole tiles drawn at "
+                             "random (dlCommon.drawTiles); 1 = all")
+    parser.add_argument("--subsetSeed", type=int, default=1,
+                        help="which random draw of --trainFraction")
+    parser.add_argument("--transferFrom", default=None,
+                        help="learning curve, no annotation here: train one "
+                             "network on every block of this other dataset "
+                             "and apply it to every block of --dataset")
     parser.add_argument("--imageSize", type=int, default=0,
                         help="Pixels the model runs at. Default 0 means the "
                              "tile size, i.e. native resolution. Pass 800 to "

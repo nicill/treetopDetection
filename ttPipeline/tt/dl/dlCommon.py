@@ -36,8 +36,10 @@ tiles scaled differently from the tiles it trained on.
 
 import datetime
 import json
+import math
 import os
 import sys
+import zlib
 
 from affine import Affine
 import numpy as np
@@ -46,6 +48,7 @@ import rasterio
 from rasterio.enums import Resampling
 from rasterio.windows import from_bounds
 from shapely.geometry import Point, box
+from shapely.ops import unary_union
 
 from ..evaluation import assignToCrowns
 
@@ -264,6 +267,46 @@ def assignTilesToBlocks(tiles, blocks):
     return tiles
 
 
+def blockSuffix(name):
+    """rgb_b03 -> _b03: the part of a block name every dataset shares."""
+    return name[name.rindex("_b"):] if "_b" in name else name
+
+
+def tileExtent(tile):
+    return box(min(tile["west"], tile["east"]), min(tile["north"], tile["south"]),
+               max(tile["west"], tile["east"]), max(tile["north"], tile["south"]))
+
+
+def drawTiles(tiles, fraction, seed, heldOut):
+    """
+    A fold's annotated subset for the learning curve: from each training block
+    the same fraction of its tiles (at least one), drawn at random. Whole
+    tiles, so every tree in a drawn tile is annotated: a learned model treats
+    an unannotated tree in a training tile as background.
+
+    Deterministic in (seed, held-out block suffix, tile positions), so the RGB
+    and CHM datasets of a site, whose tiles coincide, draw the same tiles, and
+    connected components and Mask R-CNN are given the same annotation.
+    """
+    if fraction >= 1:
+        return list(tiles)
+    rng = np.random.default_rng([int(seed),
+                                 zlib.crc32(blockSuffix(heldOut).encode())])
+    chosen = []
+    for block in sorted({t["block"] for t in tiles}, key=blockSuffix):
+        members = sorted((t for t in tiles if t["block"] == block),
+                         key=lambda t: (t["r0"], t["c0"]))
+        count = max(1, int(math.ceil(fraction * len(members))))
+        picks = rng.choice(len(members), size=count, replace=False)
+        chosen.extend(members[i] for i in sorted(picks))
+    return chosen
+
+
+def tileRegion(tiles):
+    """The ground the tiles cover: where their annotation is known."""
+    return unary_union([tileExtent(t) for t in tiles])
+
+
 def foldSplit(tiles, blocks, heldOut, bufferM):
     """
     Training tiles for a fold: those whose tile extent stays at least `bufferM`
@@ -279,11 +322,7 @@ def foldSplit(tiles, blocks, heldOut, bufferM):
         if tile["block"] == heldOut:
             test.append(tile)
             continue
-        extent = box(min(tile["west"], tile["east"]),
-                     min(tile["north"], tile["south"]),
-                     max(tile["west"], tile["east"]),
-                     max(tile["north"], tile["south"]))
-        if not extent.intersects(guard):
+        if not tileExtent(tile).intersects(guard):
             train.append(tile)
     return train, test
 

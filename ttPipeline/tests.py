@@ -13,11 +13,13 @@ still come out, which is what actually catches a refactor having changed
 something subtle.
 """
 
+import argparse
 import os
 import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -1712,6 +1714,185 @@ class TestPseudoTuning(unittest.TestCase):
         self.assertEqual(len(back), 2)
         self.assertEqual((back[0][0]["centreX"], back[0][0]["score"]), (1.0, 3.0))
         self.assertEqual(back[1], [])
+
+
+class CurveSite(unittest.TestCase):
+    """A synthetic site with CHM and RGB datasets and a CC run on it."""
+
+    @classmethod
+    def setUpClass(cls):
+        import rasterio
+        from tt.dl.dlConComp import crossValidate, parseArguments
+        from tt.dl.dlPrepare import main as prepare
+        cls.directory = tempfile.mkdtemp(prefix="ttCurve")
+        d = cls.directory
+        trees = [(20 + 25 * (i % 9), 20 + 25 * (i // 9), 1.6 + 0.1 * (i % 3),
+                  8.0 + 0.4 * (i % 7)) for i in range(81)]
+        chm, crowns, area = buildFixture(d, trees)
+        with rasterio.open(chm) as source:
+            heights, profile = source.read(1), source.profile
+        profile.update(count=3, dtype="uint8", nodata=None)
+        with rasterio.open(os.path.join(d, "rgb.tif"), "w", **profile) as out:
+            out.write(np.stack([np.clip(np.maximum(heights, 0) * 20, 0, 255)]
+                               * 3).astype(np.uint8))
+        for kind, path in (("chm", chm), ("rgb", os.path.join(d, "rgb.tif"))):
+            prepare(["--source", "%s:%s" % (kind, path), "--crowns", crowns,
+                     "--boundary", area, "--output", os.path.join(d, kind),
+                     "--name", "synth", "--resolution", "0.25",
+                     "--minHeight", "1", "--blockCols", "2", "--blockRows",
+                     "2", "--tileSize", "64"])
+        cls.ccRun = os.path.join(d, "ccP1")
+        crossValidate(parseArguments([
+            "--dataset", os.path.join(d, "chm"), "--output", cls.ccRun,
+            "--resolution", "0.25", "--minHeight", "1", "--percentiles",
+            "0,10", "--saddleDrops", "0.3,0.5", "--erosions", "0",
+            "--minTopAreas", "0.06", "--topSteps", "0.25", "--saveDetections"]))
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.directory, ignore_errors=True)
+
+    def path(self, *parts):
+        return os.path.join(self.directory, *parts)
+
+
+class TestLearningCurve(CurveSite):
+    """
+    The learning curve and the DeepForest chain; DeepForest itself replaced
+    by a stand-in.
+    """
+
+    def testDrawIsStratifiedAndShared(self):
+        from tt.dl import dlCommon as dc
+        from tt.dl import dlPrepare as dp
+        draws = []
+        for kind in ("rgb", "chm"):
+            meta = dp.loadDataset(self.path(kind))
+            held = meta["blocks"][0]["name"]
+            train, _ = dc.foldSplit(meta["tiles"], meta["blockGeometries"],
+                                    held, 2.0)
+            drawn = dc.drawTiles(train, 0.25, 3, held)
+            self.assertEqual({t["block"] for t in drawn},
+                             {t["block"] for t in train})
+            self.assertEqual(dc.drawTiles(train, 1.0, 3, held), train)
+            draws.append(sorted((t["r0"], t["c0"]) for t in drawn))
+        self.assertEqual(draws[0], draws[1])
+
+    def testCcCurveAndTransfer(self):
+        from tt.learningCurve import main
+        output = self.path("curve", "synth", "ccCurve_ccP1.json")
+        self.assertEqual(main(["cc", "--ccRun", self.ccRun, "--dataset",
+                               self.path("chm"), "--tiles", self.path("rgb"),
+                               "--fractions", "0.25,1", "--seeds", "1,2",
+                               "--buffer", "2", "--transferFrom", self.ccRun,
+                               "--jobs", "2", "--output", output]), 0)
+        from tt.dl import dlCommon as dc
+        record = dc.loadJson(output)
+        self.assertEqual([(p["fraction"], p["seed"]) for p in
+                          record["points"]], [(0.25, 1), (0.25, 2), (1.0, 1)])
+        used = [p["pooled"]["crownsUsedPerFold"] for p in record["points"]]
+        self.assertLess(used[0], used[2])
+        self.assertGreater(record["transfer"]["pooled"]["recall"], 0.9)
+        self.assertEqual(main(["summary", "--root", self.path("curve")]), 0)
+
+    def testDeepForestChain(self):
+        import types
+        import pandas as pd
+        from scipy.ndimage import maximum_filter
+
+        class StandIn(object):
+            def __init__(self, config_args=None):
+                pass
+
+            def predict_tile(self, image=None):
+                band = image[..., 0]
+                rows, cols = np.nonzero((band == maximum_filter(band, 9)) &
+                                        (band > 100))
+                return pd.DataFrame({"xmin": cols - 6, "ymin": rows - 6,
+                                     "xmax": cols + 6, "ymax": rows + 6,
+                                     "score": np.full(len(rows), 0.8)})
+
+        from unittest import mock
+        module = types.ModuleType("deepforest")
+        module.main = types.SimpleNamespace(deepforest=StandIn)
+        with mock.patch.dict(sys.modules, {"deepforest": module}):
+            from tt import deepForestCompare, deepForestDetect, pseudoTuning
+        # the stand-in even where the real DeepForest is installed
+        deepForestDetect.dfMain = module.main
+        boxes = self.path("df", "deepforestRgb")
+        auto = self.path("df", "ccAutoDf")
+        deepForestDetect.main(["--dataset", self.path("rgb"),
+                               "--output", boxes])
+        pseudoTuning.main(["--ccRun", self.ccRun, "--rgbRun", boxes,
+                           "--dataset", self.path("chm"), "--jobs", "1",
+                           "--output", self.path("df", "pseudo"),
+                           "--autoRun", auto])
+        self.assertFalse(os.path.exists(self.path("ccAutoP1")))
+        rows, tests = deepForestCompare.compare(argparse.Namespace(
+            dataset=self.path("chm"), deepforest=boxes, ccAuto=auto,
+            reference=["ccP1=" + self.ccRun]))
+        byName = {r["name"]: r for r in rows}
+        self.assertGreater(byName["deepforest"]["recall"], 0.8)
+        self.assertGreaterEqual(byName["union"]["recall"],
+                                byName["deepforest"]["recall"])
+        self.assertEqual(set(tests), {"deepforest", "ccOnDeepforest", "ccP1"})
+
+
+class TestNetworkSubsets(CurveSite):
+    """Mask R-CNN's annotated subset and transfer, without training (torch)."""
+
+    def setUp(self):
+        try:
+            from tt.dl import dlMaskRcnn
+        except ImportError:
+            self.skipTest("torch not installed")
+        self.mr = dlMaskRcnn
+
+        def boxesOnTiles(model, tiles, root, device, transform, **keywords):
+            return [{"box": [t["west"], t["south"], t["east"], t["north"]],
+                     "centreX": t["centreX"], "centreY": t["centreY"],
+                     "score": 0.9} for t in tiles]
+        self.patches = [mock.patch.object(dlMaskRcnn, name, value)
+                        for name, value in (
+                            ("predictTiles", boxesOnTiles),
+                            ("buildModel", lambda *a, **k: object()),
+                            ("trainFold", lambda *a, **k: None))]
+        for p in self.patches:
+            p.start()
+
+    def tearDown(self):
+        for p in getattr(self, "patches", []):
+            p.stop()
+
+    def testSubsetFoldUsesTheDrawnTiles(self):
+        from tt.dl import dlCommon as dc
+        args = self.mr.parseArguments([
+            "--dataset", self.path("rgb"), "--output", self.path("mr"),
+            "--trainFraction", "0.25", "--subsetSeed", "2", "--buffer", "2",
+            "--device", "cpu"])
+        os.makedirs(args.output, exist_ok=True)
+        run = self.mr.MaskRcnnCrossValidation(args)
+        name, geometry = run.blocks[0]
+        fit, val, validationBlock, _ = run.splitFold(name)
+        train, _ = dc.foldSplit(run.meta["tiles"], run.blocks, name, 2.0)
+        drawn = dc.drawTiles(train, 0.25, 2, name)
+        self.assertEqual(sorted(t["stem"] for t in fit + val),
+                         sorted(t["stem"] for t in drawn))
+        region = run.validationRegion(validationBlock, val)
+        self.assertLess(region.area, dict(run.blocks)[validationBlock].area)
+        result = run.runFold(name, geometry)
+        self.assertEqual((result["fitTiles"], result["trainFraction"]),
+                         (len(fit), 0.25))
+
+    def testTransferScoresEveryBlock(self):
+        args = self.mr.parseArguments([
+            "--dataset", self.path("rgb"), "--output", self.path("mrT"),
+            "--transferFrom", self.path("rgb"), "--device", "cpu"])
+        os.makedirs(args.output, exist_ok=True)
+        folds, _ = self.mr.TransferRun(args).run()
+        self.assertEqual(len(folds), 4)
+        self.assertTrue(os.path.exists(os.path.join(
+            args.output, "predictions_%s.json" % folds[0]["block"])))
 
 
 class TestCommandLine(Fixture):

@@ -202,6 +202,9 @@ def parseArguments(argv=None):
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--jobs", type=int, default=8)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--autoRun", default=None,
+                        help="where the automatic run goes (default: beside "
+                             "--ccRun, as runs/ccAuto<height>)")
     return parser.parse_args(argv)
 
 
@@ -222,15 +225,16 @@ def autoFromSaved(args):
     record = dc.loadJson(saved)
     found = loadDetections(paths[0])
     writeAutoRun(args.ccRun, record["blocks"], found,
-                 record["pooled"][AUTO_SCORER])
+                 record["pooled"][AUTO_SCORER], args.autoRun)
     return True
 
 
 def main(argv=None):
     args = parseArguments(argv)
     os.makedirs(args.output, exist_ok=True)
-    if not os.path.exists(os.path.join(autoRunDir(args.ccRun),
-                                       "results.json")) and autoFromSaved(args):
+    autoRun = args.autoRun or autoRunDir(args.ccRun)
+    if not os.path.exists(os.path.join(autoRun, "results.json")) \
+            and autoFromSaved(args):
         print("[pseudo] automatic run written from the saved pseudo-tuning")
         return 0
     grid, fixed = runGrid(args.ccRun)
@@ -255,7 +259,7 @@ def main(argv=None):
             row["settings"] = validation.settings[row["chosen"]]
     dc.saveJson({"blocks": perBlock, "pooled": table, "target": target},
                 os.path.join(args.output, "pseudoTuning.json"))
-    writeAutoRun(args.ccRun, perBlock, found, table[AUTO_SCORER])
+    writeAutoRun(args.ccRun, perBlock, found, table[AUTO_SCORER], args.autoRun)
     printTable(table, target)
     return 0
 
@@ -267,14 +271,14 @@ def autoRunDir(ccRun):
     return os.path.join(os.path.dirname(os.path.normpath(ccRun)), auto)
 
 
-def writeAutoRun(ccRun, perBlock, found, pooled):
+def writeAutoRun(ccRun, perBlock, found, pooled, directory=None):
     """
     The AUTO_SCORER's chosen setting per block, as a run like any other: per
     block the whole-area detections of that setting (as connected-component
     runs store them), and the pooled results. The report then combines it
     with the RGB networks like any height method.
     """
-    directory = autoRunDir(ccRun)
+    directory = directory or autoRunDir(ccRun)
     os.makedirs(directory, exist_ok=True)
     folds = []
     for block, rows in sorted(perBlock.items()):

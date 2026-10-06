@@ -151,9 +151,7 @@ class ConCompCrossValidation(object):
                                setting.get(SMOOTH_KEY, 0.0))
 
     def _expandGrid(self):
-        keys = list(self.grid)
-        return [dict(zip(keys, values))
-                for values in itertools.product(*[self.grid[k] for k in keys])]
+        return expandGrid(self.grid)
 
     def _detector(self, setting):
         return ConCompDetector(
@@ -333,6 +331,13 @@ class ConCompCrossValidation(object):
 
 
 # ---------------------------------------------------------------------- #
+
+def expandGrid(grid):
+    """Every setting of the grid, in the order runs index them."""
+    keys = list(grid)
+    return [dict(zip(keys, values))
+            for values in itertools.product(*[grid[k] for k in keys])]
+
 
 def gridFromArguments(args):
     grid = dict(DEFAULT_GRID)
