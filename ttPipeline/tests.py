@@ -371,10 +371,12 @@ class TestInvariants(Fixture):
         region = shapelyBox(*scene.boundary.bounds)
         curve = dict(dc.thresholdCurve(predictions, scene.crowns,
                                        dc.THRESHOLD_CANDIDATES))
-        for threshold, f1 in curve.items():
+        # the curve holds the tuning objective (TT_OBJECTIVE), F1 by default
+        for threshold, value in curve.items():
             kept = [p for p in predictions if p["score"] >= threshold]
             self.assertAlmostEqual(
-                f1, dc.evaluateDetections(kept, scene.crowns, region)["f1"],
+                value, dc.objectiveOf(dc.evaluateDetections(kept, scene.crowns,
+                                                            region)),
                 places=12)
 
     def testOneScorerEverywhere(self):
