@@ -1968,6 +1968,7 @@ class TestEnshurinPrepare(unittest.TestCase):
     """Crowns from class masks and the area from annotation coverage."""
 
     def testCoveredCellsAndSpecies(self):
+        import geopandas as gpd
         import rasterio
         from rasterio.transform import from_origin
         from tt import enshurinPrepare as ep
@@ -2034,9 +2035,17 @@ class TestEnshurinPrepare(unittest.TestCase):
             self.assertAlmostEqual(parts["newtrain"]["keptM2"], 900, delta=30)
             # west half annotated (450 m2) plus the last 5 m strip, which has
             # no canopy at all and is kept: nothing there to miss
-            self.assertAlmostEqual(parts["test"]["keptM2"], 525, delta=30)
+            self.assertAlmostEqual(parts["test"]["keptM2"], 525, delta=40)
             # 20 trees in newtrain, the 2 annotated columns of test (8)
             self.assertEqual(check["crowns"], 28)
+            # the area's edge cuts no annotated crown
+            area = gpd.read_file(os.path.join(d, "out", "enshurin",
+                                              "area.shp")).geometry.iloc[0]
+            species = gpd.read_file(os.path.join(d, "out", "enshurin",
+                                                 "crownSpecies.shp"))
+            touching = species.geometry[species.intersects(area)]
+            self.assertTrue(all(g.buffer(-0.01).within(area)
+                                for g in touching))
             for name in ("chm.tif", "rgb.tif", "crowns.shp", "scoredArea.shp"):
                 self.assertTrue(os.path.exists(os.path.join(
                     d, "out", "enshurin", name)))

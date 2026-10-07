@@ -21,7 +21,9 @@ What differs from the other sites, and what this does about it:
            least --annotatedShare of the canopy (CHM >= --canopyCellM) is
            annotated, the annotation grown by --coverMarginM first (outlines
            are drawn tighter than the crown's rim in the CHM): there a
-           detection in no crown is a real mistake.
+           detection in no crown is a real mistake. Every annotated crown
+           that reaches into those cells is then added whole, so the area's
+           edge never cuts a crown.
            Cells with no canopy are kept (nothing there to miss). Both
            thresholds are fixed before any detection is scored.
            Within that area, the usual don't-care cut-outs apply
@@ -179,6 +181,18 @@ def coveredCells(chm, transform, annotated, inMosaic, args):
     return keep
 
 
+def withWholeCrowns(cells, crowns):
+    """
+    The cells plus the whole outline of every crown that reaches into them,
+    so the area's edge never cuts an annotated crown (a crown cut in two
+    would be scored with its top possibly outside the area).
+    """
+    if cells.is_empty or not len(crowns):
+        return cells
+    touching = crowns.geometry[crowns.intersects(cells)]
+    return unary_union([cells] + list(touching))
+
+
 def rasterMask(geometry, chmShape, transform):
     return ~geometry_mask([geometry], chmShape, transform)
 
@@ -200,13 +214,16 @@ def buildArea(parts, chmPath, args):
                           args.coverMarginM, abs(transform.a))
         inMosaic = rasterMask(foot, chm.shape, transform)
         partCells = coveredCells(chm, transform, annotated, inMosaic, args)
-        cells += [c.intersection(foot) for c in partCells]
+        kept = withWholeCrowns(unary_union(partCells), partCrowns) \
+            .intersection(foot)
+        cells.append(kept)
         crowns.append(partCrowns)
         notes[part] = {"crowns": int(len(partCrowns)),
                        "fragmentsDropped": dropped, "species": names,
                        "mosaicM2": float(foot.area),
-                       "keptM2": float(sum(c.intersection(foot).area
-                                           for c in partCells))}
+                       "cellsM2": float(unary_union(partCells)
+                                        .intersection(foot).area),
+                       "keptM2": float(kept.area)}
     crs = crowns[0].crs
     area = unary_union(cells)
     return (gpd.GeoDataFrame({"name": ["area"]}, geometry=[area], crs=crs),
@@ -281,9 +298,9 @@ def report(check):
              check["scoredAreaM2"]))
     for part, n in check["parts"].items():
         print("[enshurin]   %-9s %4d crowns (%d fragments dropped), species %s, "
-              "kept %.0f of %.0f m2 of mosaic"
+              "kept %.0f of %.0f m2 of mosaic (cells %.0f, whole crowns added)"
               % (part, n["crowns"], n["fragmentsDropped"], n["species"],
-                 n["keptM2"], n["mosaicM2"]))
+                 n["keptM2"], n["mosaicM2"], n["cellsM2"]))
     if check["crownTopM"]:
         print("[enshurin] crown tops above ground, percentiles %s: %s m"
               % ("/".join(check["crownTopM"]),
