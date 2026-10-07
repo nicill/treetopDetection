@@ -138,7 +138,8 @@ SHORT = {"lowerPercentile": "pct", "minTopAreaM2": "minTop",
          "topStepM": "step", "erosionIterations": "erode",
          "saddleDropM": "drop", "heightWeight": "w", "epsM": "eps",
          "metric": "metric", "windowSizeM": "window",
-         "minTreeAreaM2": "minTree"}
+         "minTreeAreaM2": "minTree", "minTopAreaSlope": "minTopSlope",
+         "saddleDropSlope": "dropSlope"}
 
 
 def _short(key):
@@ -149,7 +150,9 @@ def _label(detectorKeywords, mergerKeywords):
     parts = []
     for source in (detectorKeywords, mergerKeywords or {}):
         for key, value in sorted(source.items()):
-            short = key.replace("lowerPercentile", "pct") \
+            short = key.replace("minTopAreaSlope", "minTopSlope") \
+                       .replace("saddleDropSlope", "dropSlope") \
+                       .replace("lowerPercentile", "pct") \
                        .replace("minTopAreaM2", "minTop") \
                        .replace("topStepM", "step") \
                        .replace("erosionIterations", "erode") \

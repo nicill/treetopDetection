@@ -1604,7 +1604,7 @@ class TestProminence(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.directory, ignore_errors=True)
 
-    def tops(self, metric):
+    def tops(self, metric, **mergerKeywords):
         from tt.detector import ConCompDetector
         from tt.merging import TopMerger
         from tt.scene import Scene
@@ -1612,7 +1612,8 @@ class TestProminence(unittest.TestCase):
         detector = ConCompDetector(
             windowSizeM=40.0, lowerPercentile=0, erosionIterations=0,
             minTreeAreaM2=0.05, minTopAreaM2=0.01, topStepM=0.1,
-            merger=TopMerger(metric, epsM=8.0, saddleDropM=0.6),
+            merger=TopMerger(metric, epsM=8.0, saddleDropM=0.6,
+                             **mergerKeywords),
             verbose=False)
         return sorted((y, x) for x, y, _ in detector.detect(scene))
 
@@ -1667,6 +1668,62 @@ class TestProminence(unittest.TestCase):
                 < 2.5] = 11.0                                 # P2 now a tree
             d.write(chm, 1)
         self.assertEqual(len(self.tops("prominence")), 2)
+
+    def testDropSlopeMergesAtTheTopsHeight(self):
+        """P2 raised to 11 m becomes the elder; T (10 m) dies where the
+        branches join at 9 m, prominence 1 m. A fixed 0.6 m drop keeps T;
+        0.6 + 0.05 * 10 = 1.1 m at T's height removes it."""
+        import rasterio
+        with rasterio.open(self.path, "r+") as d:
+            chm = d.read(1)
+            chm[np.hypot(*np.mgrid[0:100, 0:100] - np.array([[[20]], [[60]]]))
+                < 2.5] = 11.0
+            d.write(chm, 1)
+        self.assertEqual(len(self.tops("prominence")), 2)
+        self.assertEqual(len(self.tops("prominence", saddleDropSlope=0.05)), 1)
+
+
+class TestHeightSlopes(unittest.TestCase):
+    """Parameters that grow with tree height; a slope of 0 is the old
+    fixed parameter."""
+
+    def testDropGrowsWithHeight(self):
+        from tt import TopMerger
+        merger = TopMerger("prominence", saddleDropM=0.5, saddleDropSlope=0.05)
+        self.assertAlmostEqual(merger.dropAt(0.0), 0.5)
+        self.assertAlmostEqual(merger.dropAt(20.0), 1.5)
+        self.assertAlmostEqual(TopMerger(saddleDropM=0.5).dropAt(20.0), 0.5)
+
+    def testSaddleDropIsTakenAtTheLowerTop(self):
+        """The same 1 m dip separates two 5 m trees but not two branch tops
+        of a 20 m tree."""
+        from tt import TopMerger
+        merger = TopMerger("saddle", epsM=100.0, saddleDropM=0.5,
+                           saddleDropSlope=0.05)
+        for height, same in ((20.0, True), (5.0, False)):
+            surface = np.full((10, 40), height, np.float32)
+            surface[5, 18:22] = height - 1.0
+            self.assertEqual(merger.areSame(7.5, 0.0, surface=surface,
+                                            a=(5, 5), b=(5, 35)), same)
+
+    def testMinimumTopAreaGrowsWithHeight(self):
+        from tt.detector import ConCompDetector
+        geometry = {"minPixTop": 2, "pixelArea": 0.0625}
+        fixed = ConCompDetector(minTopAreaM2=0.12, verbose=False)
+        self.assertEqual(fixed._minPixTop(geometry, 20.0), 2)
+        sloped = ConCompDetector(minTopAreaM2=0.12, minTopAreaSlope=0.02,
+                                 verbose=False)
+        self.assertEqual(sloped._minPixTop(geometry, 20.0), 8)  # 0.52 m2
+        with self.assertRaises(ValueError):
+            ConCompDetector(minTopAreaSlope=-0.01, verbose=False)
+
+    def testZeroSlopeLeavesTheSweepGridAlone(self):
+        from tt.cli import _addSlopes
+        grid = {}
+        _addSlopes(grid, "saddleDropSlope", "0")
+        self.assertEqual(grid, {})
+        _addSlopes(grid, "saddleDropSlope", "0,0.05")
+        self.assertEqual(grid, {"saddleDropSlope": [0.0, 0.05]})
 
 
 class TestPseudoTuning(unittest.TestCase):

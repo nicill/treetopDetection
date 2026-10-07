@@ -45,6 +45,9 @@ def addDetectorArguments(parser):
     parser.add_argument("--lowerPercentile", type=int, default=10)
     parser.add_argument("--minTreeArea", type=float, default=0.5)
     parser.add_argument("--minTopArea", type=float, default=0.12)
+    parser.add_argument("--minTopAreaSlope", type=float, default=0.0,
+                        help="m2 added to --minTopArea per metre of tree "
+                             "height; 0 keeps it fixed")
     parser.add_argument("--topStep", type=float, default=0.12)
     parser.add_argument("--erosionIterations", type=int, default=1)
     parser.add_argument("--erosionKernel", type=int, default=3)
@@ -57,6 +60,9 @@ def addMergerArguments(parser):
                              "one, 5 to 12; the others want under 2")
     parser.add_argument("--heightWeight", type=float, default=0.7)
     parser.add_argument("--saddleDrop", type=float, default=0.5)
+    parser.add_argument("--saddleDropSlope", type=float, default=0.0,
+                        help="metres added to --saddleDrop per metre of tree "
+                             "height; 0 keeps it fixed")
 
 
 def checkPaths(args):
@@ -92,6 +98,7 @@ def buildDetector(args):
         windowSizeM=args.windowSize, windowOverlap=args.windowOverlap,
         lowerPercentile=args.lowerPercentile, minTreeAreaM2=args.minTreeArea,
         minTopAreaM2=args.minTopArea, topStepM=args.topStep,
+        minTopAreaSlope=args.minTopAreaSlope,
         erosionIterations=args.erosionIterations,
         erosionKernelSize=args.erosionKernel, merger=buildMerger(args))
 
@@ -99,7 +106,8 @@ def buildDetector(args):
 def buildMerger(args):
     return TopMerger(metric=args.metric, epsM=args.eps,
                      heightWeight=args.heightWeight,
-                     saddleDropM=args.saddleDrop)
+                     saddleDropM=args.saddleDrop,
+                     saddleDropSlope=args.saddleDropSlope)
 
 
 # ---------------------------------------------------------------------- #
@@ -149,15 +157,18 @@ def commandSweep(args):
                   "epsM": [args.eps]}
     if args.metric == "saddle":
         mergerGrid["saddleDropM"] = _numbers(args.saddleDrops, float)
+        _addSlopes(mergerGrid, "saddleDropSlope", args.saddleDropSlopes)
     elif args.metric == "composite":
         mergerGrid["heightWeight"] = [args.heightWeight]
 
-    sweep.run({
+    grid = {
         "lowerPercentile": _numbers(args.percentiles, int),
         "minTopAreaM2": _numbers(args.minTopAreas, float),
         "topStepM": _numbers(args.topSteps, float),
         "erosionIterations": _numbers(args.erosions, int),
-    }, mergerGrid=mergerGrid)
+    }
+    _addSlopes(grid, "minTopAreaSlope", args.minTopAreaSlopes)
+    sweep.run(grid, mergerGrid=mergerGrid)
     sweep.table(sortBy=args.sortBy, limit=args.limit)
     best = sweep.best(minimumRecall=args.minRecall)
     if best:
@@ -181,6 +192,7 @@ def commandMerge(args):
             "epsM": _numbers(args.epsilons, float)}
     if "saddle" in grid["metric"]:
         grid["saddleDropM"] = _numbers(args.saddleDrops, float)
+        _addSlopes(grid, "saddleDropSlope", args.saddleDropSlopes)
     if "composite" in grid["metric"]:
         grid["heightWeight"] = _numbers(args.weights, float)
     sweep.run({}, mergerGrid=grid)
@@ -246,6 +258,16 @@ def _numbers(text, cast):
     return [cast(v) for v in str(text).split(",") if str(v).strip()]
 
 
+def _addSlopes(grid, key, text):
+    """
+    Sweep a height slope only when asked: a slope of 0 alone is the fixed
+    parameter, and leaving the key out keeps the labels of existing results.
+    """
+    values = _numbers(text, float)
+    if values and values != [0.0]:
+        grid[key] = values
+
+
 # ---------------------------------------------------------------------- #
 
 def addDetectCommand(subparsers):
@@ -276,6 +298,8 @@ def addSweepCommand(subparsers):
     sweep.add_argument("--minTreeArea", type=float, default=0.5)
     sweep.add_argument("--percentiles", default="10,20,30")
     sweep.add_argument("--minTopAreas", default="0.25,0.12,0.06")
+    sweep.add_argument("--minTopAreaSlopes", default="0",
+                       help="m2 per metre of tree height, e.g. 0,0.02,0.05")
     sweep.add_argument("--topSteps", default="0.25,0.12")
     sweep.add_argument("--erosions", default="1,2")
     sweep.add_argument("--metric", default="saddle", choices=METRICS)
@@ -284,6 +308,9 @@ def addSweepCommand(subparsers):
     sweep.add_argument("--saddleDrops", default="0.2,0.3,0.5",
                        help="Merge thresholds swept alongside the detector "
                             "parameters, since the two interact")
+    sweep.add_argument("--saddleDropSlopes", default="0",
+                       help="metres per metre of tree height, "
+                            "e.g. 0,0.02,0.05")
     sweep.add_argument("--limit", type=int, default=20)
     sweep.add_argument("--sortBy", default="f1", choices=["f1", "recall",
                                                           "precision"])
@@ -299,6 +326,7 @@ def addMergeCommand(subparsers):
     merge.add_argument("--metrics", default="saddle")
     merge.add_argument("--epsilons", default="5,8,12")
     merge.add_argument("--saddleDrops", default="0.25,0.5,0.75,1.0")
+    merge.add_argument("--saddleDropSlopes", default="0")
     merge.add_argument("--weights", default="0.3,0.5,0.7")
     merge.add_argument("--sortBy", default="f1", choices=["f1", "recall",
                                                           "precision"])

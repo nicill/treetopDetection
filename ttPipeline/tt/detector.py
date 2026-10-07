@@ -40,6 +40,7 @@ class ConCompDetector(object):
                  lowerPercentile=20, upperPercentile=99,
                  erosionKernelSize=3, erosionIterations=1,
                  minTreeAreaM2=0.5, minTopAreaM2=0.25, topStepM=0.25,
+                 minTopAreaSlope=0.0,
                  merger=None, refine=True, verbose=True):
         self.windowSizeM = float(windowSizeM)
         self.windowOverlap = float(windowOverlap)
@@ -50,6 +51,13 @@ class ConCompDetector(object):
         self.minTreeAreaM2 = float(minTreeAreaM2)
         self.minTopAreaM2 = float(minTopAreaM2)
         self.topStepM = float(topStepM)
+        # m2 of minimum top area per metre of tree height: taller trees have
+        # larger crowns, so a sub-blob must be larger before it counts as one
+        # of them. 0 keeps the fixed minTopAreaM2. Negative is refused, since
+        # _freshPeaks uses the fixed area as a lower bound to skip blobs early.
+        if minTopAreaSlope < 0:
+            raise ValueError("minTopAreaSlope must be >= 0")
+        self.minTopAreaSlope = float(minTopAreaSlope)
         self.merger = merger or TopMerger()
         self.refine = bool(refine)
         self.verbose = verbose
@@ -57,9 +65,12 @@ class ConCompDetector(object):
                                 self.erosionKernelSize), np.uint8)
 
     def __repr__(self):
-        return ("ConCompDetector(pct=%d, minTop=%.2f, step=%.2f, erode=%d, %r)"
-                % (self.lowerPercentile, self.minTopAreaM2, self.topStepM,
-                   self.erosionIterations, self.merger))
+        slope = ("+%.3f/m" % self.minTopAreaSlope) if self.minTopAreaSlope \
+            else ""
+        return ("ConCompDetector(pct=%d, minTop=%.2f%s, step=%.2f, "
+                "erode=%d, %r)"
+                % (self.lowerPercentile, self.minTopAreaM2, slope,
+                   self.topStepM, self.erosionIterations, self.merger))
 
     # ------------------------------------------------------------------ #
 
@@ -95,7 +106,15 @@ class ConCompDetector(object):
             "window": scene.metresToPixels(self.windowSizeM, 8),
             "minPixTree": max(1, int(round(self.minTreeAreaM2 / area))),
             "minPixTop": max(1, int(round(self.minTopAreaM2 / area))),
+            "pixelArea": area,
         }
+
+    def _minPixTop(self, geometry, heightM):
+        """Minimum sub-blob size, in pixels, for a top at heightM metres."""
+        if not self.minTopAreaSlope:
+            return geometry["minPixTop"]
+        areaM2 = self.minTopAreaM2 + self.minTopAreaSlope * max(heightM, 0.0)
+        return max(1, int(round(areaM2 / geometry["pixelArea"])))
 
     def _windows(self, scene, geometry):
         size = geometry["window"]
@@ -159,11 +178,12 @@ class ConCompDetector(object):
 
     def _descend(self, scene, blob, heights, metresPerLevel, geometry):
         if self.merger.metric == "prominence":
-            return self._descendProminence(blob, metresPerLevel, geometry)
+            return self._descendProminence(blob, heights, metresPerLevel,
+                                           geometry)
         return self._descendSaddle(scene, blob, heights, metresPerLevel,
                                    geometry)
 
-    def _descendProminence(self, blob, metresPerLevel, geometry):
+    def _descendProminence(self, blob, heights, metresPerLevel, geometry):
         """
         The descent with the elder rule. Every surviving top belongs to a
         cluster whose representative is its highest top. When a level joins
@@ -177,6 +197,9 @@ class ConCompDetector(object):
 
         The join happened between the previous level and this one, so the
         prominence is measured at most one step high, never low.
+
+        `heights` is the real CHM over the same crop as `blob`; the drop and
+        the minimum top area are looked up at each top's height in metres.
         """
         values = blob[blob > 0]
         if values.size == 0:
@@ -185,7 +208,6 @@ class ConCompDetector(object):
         if highest <= lowest:
             return []
         step = max(1.0, self.topStepM / max(metresPerLevel, 1e-6))
-        threshold = self.merger.saddleDropM / max(metresPerLevel, 1e-6)
         above = np.empty(blob.shape, bool)
         tops = []          # [height, (row, column), cluster]
         clusters = 0
@@ -197,28 +219,41 @@ class ConCompDetector(object):
             byLabel = {}
             for top in tops:
                 byLabel.setdefault(int(labels[top[1]]), []).append(top)
-            removed = set()
-            for label, members in byLabel.items():
-                elder = max(members, key=lambda t: t[0])[2]
-                for cluster in {t[2] for t in members} - {elder}:
-                    inCluster = [t for t in members if t[2] == cluster]
-                    representative = max(inCluster, key=lambda t: t[0])
-                    if representative[0] - level < threshold:
-                        removed.add(id(representative))
-                    for t in inCluster:
-                        t[2] = elder
-                peak, position = self._peakIn(blob, labels, stats, label)
-                if peak > max(t[0] for t in members):
-                    tops.append([peak, position, elder])
+            removed = self._resolveJoins(byLabel, level, heights,
+                                         metresPerLevel, blob, labels, stats,
+                                         tops)
             tops = [t for t in tops if id(t) not in removed]
-            for label in range(1, count):
-                if label in byLabel or stats[label, AREA] <= geometry["minPixTop"]:
-                    continue
-                peak, position = self._peakIn(blob, labels, stats, label)
+            for peak, position in self._freshPeaks(blob, heights, labels,
+                                                   stats, count, byLabel,
+                                                   geometry):
                 tops.append([peak, position, clusters])
                 clusters += 1
             level -= step
         return [t[1] for t in tops]
+
+    def _resolveJoins(self, byLabel, level, heights, metresPerLevel, blob,
+                      labels, stats, tops):
+        """
+        Apply the elder rule at one level. Returns the ids of representatives
+        whose prominence fell below the drop at their height; appends any
+        sub-blob apex above every top it holds to `tops`.
+        """
+        removed = set()
+        for label, members in byLabel.items():
+            elder = max(members, key=lambda t: t[0])[2]
+            for cluster in {t[2] for t in members} - {elder}:
+                inCluster = [t for t in members if t[2] == cluster]
+                representative = max(inCluster, key=lambda t: t[0])
+                drop = self.merger.dropAt(float(heights[representative[1]]))
+                if representative[0] - level < drop / max(metresPerLevel,
+                                                          1e-6):
+                    removed.add(id(representative))
+                for t in inCluster:
+                    t[2] = elder
+            peak, position = self._peakIn(blob, labels, stats, label)
+            if peak > max(t[0] for t in members):
+                tops.append([peak, position, elder])
+        return removed
 
     def _descendSaddle(self, scene, blob, heights, metresPerLevel, geometry):
         """
@@ -250,8 +285,8 @@ class ConCompDetector(object):
                     grouped, scene, metresPerLevel, heights)
                 tops = [position for entries in grouped.values()
                         for _, position in entries]
-                tops.extend(self._newBlobs(blob, labels, stats, count,
-                                           grouped, geometry["minPixTop"]))
+                tops.extend(position for _, position in self._freshPeaks(
+                    blob, heights, labels, stats, count, grouped, geometry))
             level -= step
         return tops
 
@@ -293,10 +328,21 @@ class ConCompDetector(object):
             if peak > max(height for height, _ in grouped[label]):
                 grouped[label].append((peak, position))
 
-    def _newBlobs(self, blob, labels, stats, count, grouped, minPixTop):
+    def _freshPeaks(self, blob, heights, labels, stats, count, skip,
+                    geometry):
+        """
+        (peak, position) of every sub-blob not in `skip` that is large enough
+        to be a top at its own height. The fixed minimum is a lower bound for
+        every height (the slope is >= 0), so smaller blobs are dropped before
+        their peak is searched for.
+        """
         fresh = []
         for label in range(1, count):
-            if label in grouped or stats[label, AREA] <= minPixTop:
+            area = stats[label, AREA]
+            if label in skip or area <= geometry["minPixTop"]:
                 continue
-            fresh.append(self._peakIn(blob, labels, stats, label)[1])
+            peak, position = self._peakIn(blob, labels, stats, label)
+            if area <= self._minPixTop(geometry, float(heights[position])):
+                continue
+            fresh.append((peak, position))
         return fresh

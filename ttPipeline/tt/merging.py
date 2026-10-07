@@ -46,13 +46,17 @@ METRICS = ("2d", "3d", "composite", "saddle", "prominence")
 class TopMerger(object):
 
     def __init__(self, metric="2d", epsM=0.70, heightWeight=0.7,
-                 saddleDropM=0.5):
+                 saddleDropM=0.5, saddleDropSlope=0.0):
         if metric not in METRICS:
             raise ValueError("metric must be one of %s" % (METRICS,))
         self.metric = metric
         self.epsM = float(epsM)
         self.heightWeight = float(heightWeight)
         self.saddleDropM = float(saddleDropM)
+        # Metres of drop per metre of tree height: taller trees have bigger
+        # crowns with deeper dips between their own branch tops. 0 keeps the
+        # fixed saddleDropM.
+        self.saddleDropSlope = float(saddleDropSlope)
 
     def __repr__(self):
         detail = ""
@@ -60,6 +64,8 @@ class TopMerger(object):
             detail = ", w=%.2f" % self.heightWeight
         elif self.metric in ("saddle", "prominence"):
             detail = ", drop=%.2f" % self.saddleDropM
+            if self.saddleDropSlope:
+                detail += "+%.3f/m" % self.saddleDropSlope
         return "TopMerger(%s, eps=%.2f m%s)" % (self.metric, self.epsM, detail)
 
     @property
@@ -68,6 +74,10 @@ class TopMerger(object):
         if self.metric == "composite":
             return self.epsM / max(1e-6, 1.0 - self.heightWeight)
         return self.epsM
+
+    def dropAt(self, heightM):
+        """The saddle/prominence threshold for a top at heightM metres."""
+        return self.saddleDropM + self.saddleDropSlope * max(heightM, 0.0)
 
     # ------------------------------------------------------------------ #
 
@@ -90,9 +100,11 @@ class TopMerger(object):
         if self.metric in ("saddle", "prominence"):
             if surface is None:
                 return horizontalM < self.epsM
+            lower = min(float(surface[a[0], a[1]]),
+                        float(surface[b[0], b[1]]))
             return (horizontalM < self.epsM
                     and saddleDrop(surface, a[0], a[1], b[0], b[1])
-                    <= self.saddleDropM)
+                    <= self.dropAt(lower))
         return self.distance(horizontalM, heightDifferenceM) < self.epsM
 
     # ------------------------------------------------------------------ #
