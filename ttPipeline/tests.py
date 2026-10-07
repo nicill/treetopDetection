@@ -1897,6 +1897,73 @@ class TestNetworkSubsets(CurveSite):
             args.output, "predictions_%s.json" % folds[0]["block"])))
 
 
+class TestBaselines(unittest.TestCase):
+    """The classical CHM baselines' detectors, on hand-made height models."""
+
+    class Scene(object):
+        def __init__(self, chm, pixel=0.25):
+            self.chm, self.pixelSize = chm, pixel
+
+    @staticmethod
+    def bumps(centres, heights, size=60, sigma=4.0):
+        rows, cols = np.indices((size, size))
+        chm = np.zeros((size, size))
+        for (r, c), h in zip(centres, heights):
+            chm = np.maximum(chm, h * np.exp(-((rows - r) ** 2 + (cols - c) ** 2)
+                                             / (2 * sigma ** 2)))
+        chm[chm < 0.5] = 0
+        return chm
+
+    def testVariableWindowGrowsWithHeight(self):
+        from tt.dl.dlBaselines import LocalMaximaVariableWindow
+        # two tops 3 m apart: separate in a 1 m window; one when the window
+        # grows with height to 1 + 0.6 x 9 = 6.4 m (3.2 m either side)
+        chm = self.bumps([(30, 24), (30, 36)], [10.0, 9.0])
+        small = LocalMaximaVariableWindow(1.0, 0.0).detect(self.Scene(chm))
+        large = LocalMaximaVariableWindow(1.0, 0.6).detect(self.Scene(chm))
+        self.assertEqual(len(small.points), 2)
+        self.assertEqual(len(large.points), 1)
+        self.assertEqual((large.points[0][0], large.points[0][1]), (24, 30))
+
+    def testPlateauGivesOneTop(self):
+        from tt.dl.dlBaselines import LocalMaximaVariableWindow
+        chm = np.zeros((20, 20))
+        chm[8:12, 8:12] = 5.0
+        tops = LocalMaximaVariableWindow(0.5, 0.0).detect(self.Scene(chm))
+        self.assertEqual(len(tops.points), 1)
+
+    def testWatershedDropsSmallCrowns(self):
+        from tt.dl.dlBaselines import MarkerWatershed
+        chm = self.bumps([(20, 20), (45, 45)], [8.0, 6.0])
+        chm += self.bumps([(20, 45)], [3.0], sigma=1.0)       # a tiny one
+        both = MarkerWatershed(1.0, 0.0).detect(self.Scene(chm))
+        big = MarkerWatershed(1.0, 1.0).detect(self.Scene(chm))
+        self.assertEqual(len(both.points), 3)
+        self.assertEqual(sorted((x, y) for x, y, _ in big.points),
+                         [(20, 20), (45, 45)])
+
+    def testCrossValidationWritesARun(self):
+        from tt.dl.dlBaselines import crossValidate, parseArguments
+        site = CurveSite
+        site.setUpClass()
+        try:
+            output = os.path.join(site.directory, "lmvwP1")
+            pooled = crossValidate(parseArguments([
+                "--method", "lmvw", "--dataset", os.path.join(site.directory,
+                                                              "chm"),
+                "--output", output, "--resolution", "0.25", "--minHeight",
+                "1", "--minHeights", "0.5,1.0"]))
+            self.assertGreater(pooled["f1"], 0.9)
+            from tt.studySummary import singles
+            os.makedirs(os.path.join(site.directory, "runs"), exist_ok=True)
+            shutil.move(output, os.path.join(site.directory, "runs", "lmvwP1"))
+            methods, ceilings = singles(site.directory)
+            self.assertIn("lmvwP1", methods)
+            self.assertIn("lmvwP1 ceiling", ceilings)
+        finally:
+            site.tearDownClass()
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.

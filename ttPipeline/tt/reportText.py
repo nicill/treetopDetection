@@ -32,6 +32,11 @@ LABELS = {
     "ccLidarOld": ("Connected components, LiDAR, earlier protocol",
                    "CC LiDAR (old)"),
     "ccP1Old": ("Connected components, P1, earlier protocol", "CC P1 (old)"),
+    "lmvwLidar": ("Local maxima, variable window, LiDAR CHM", "LM-VW LiDAR"),
+    "lmvwP1": ("Local maxima, variable window, P1 CHM", "LM-VW P1"),
+    "watershedLidar": ("Marker-controlled watershed, LiDAR CHM",
+                       "Watershed LiDAR"),
+    "watershedP1": ("Marker-controlled watershed, P1 CHM", "Watershed P1"),
 }
 CURRENT = ("ccLidar", "ccP1", "ccAutoLidar", "ccAutoP1", "mrcnnLidar",
            "mrcnnP1", "mrcnnRgb",
