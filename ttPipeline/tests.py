@@ -1964,6 +1964,86 @@ class TestBaselines(unittest.TestCase):
             site.tearDownClass()
 
 
+class TestEnshurinPrepare(unittest.TestCase):
+    """Crowns from class masks and the area from annotation coverage."""
+
+    def testCoveredCellsAndSpecies(self):
+        import rasterio
+        from rasterio.transform import from_origin
+        from tt import enshurinPrepare as ep
+        d = tempfile.mkdtemp(prefix="ttEnshurin")
+        try:
+            crs, x0, y0 = "EPSG:32654", 401800.0, 4268500.0
+            rng = np.random.default_rng(0)
+            trees = [(x0 + cx, y0 - cy, 2.2, rng.uniform(8, 15),
+                      int(rng.integers(1, 5)))
+                     for cx in np.arange(4, 58, 6.0)
+                     for cy in np.arange(4, 28, 6.0)]
+            res = 0.25
+            W, H = int(60 / res), int(30 / res)
+            cols, rows = np.meshgrid(np.arange(W), np.arange(H))
+            X, Y = x0 + (cols + 0.5) * res, y0 - (rows + 0.5) * res
+            chm = np.zeros((H, W), np.float32)
+            for tx, ty, r, h, _ in trees:
+                dist = np.hypot(X - tx, Y - ty)
+                chm = np.maximum(chm, np.where(dist < r, h, 0))
+            with rasterio.open(os.path.join(d, "chm.tif"), "w", driver="GTiff",
+                               height=H, width=W, count=1, dtype="float32",
+                               crs=crs, transform=from_origin(x0, y0, res, res)
+                               ) as out:
+                out.write(chm, 1)
+            data = os.path.join(d, "data")
+            os.makedirs(os.path.join(data, "raw", "a", "per_class"))
+            pr = 0.05
+            for i, part in enumerate(("newtrain", "test")):
+                px0, w, h = x0 + 30 * i, int(30 / pr), int(30 / pr)
+                c, r = np.meshgrid(np.arange(w), np.arange(h))
+                PX, PY = px0 + (c + 0.5) * pr, y0 - (r + 0.5) * pr
+                mask = np.zeros((h, w), np.uint8)
+                rgb = np.full((3, h, w), 60, np.uint8)
+                for tx, ty, rad, _, cls in trees:
+                    dist = np.hypot(PX - tx, PY - ty)
+                    if part == "test" and tx > px0 + 15:
+                        continue             # unannotated: other species
+                    mask[dist < rad * 0.95] = cls
+                t = from_origin(px0, y0, pr, pr)
+                for name, array, count in (
+                        ("mask_4classes_%s.tif" % part, mask[None], 1),
+                        ("08_22_%s.tif" % part, rgb, 3)):
+                    with rasterio.open(os.path.join(data, name), "w",
+                                       driver="GTiff", height=h, width=w,
+                                       count=count, dtype="uint8", crs=crs,
+                                       transform=t) as out:
+                        out.write(array)
+                if part == "newtrain":
+                    for value, species in ((1, "beech"), (2, "larch")):
+                        with rasterio.open(os.path.join(
+                                data, "raw", "a", "per_class",
+                                "mask_%s_newtrain.tif" % species), "w",
+                                driver="GTiff", height=h, width=w, count=1,
+                                dtype="uint8", crs=crs, transform=t) as out:
+                            out.write((mask == value).astype(np.uint8)[None])
+            check = ep.prepare(ep.parseArguments([
+                "--data", data, "--chm", os.path.join(d, "chm.tif"),
+                "--output", os.path.join(d, "out"), "--parts", "newtrain",
+                "test", "--cellM", "5"]))
+            parts = check["parts"]
+            self.assertEqual(parts["newtrain"]["species"],
+                             {1: "beech", 2: "larch"})
+            self.assertEqual(parts["test"]["species"], {1: "beech", 2: "larch"})
+            self.assertAlmostEqual(parts["newtrain"]["keptM2"], 900, delta=30)
+            # west half annotated (450 m2) plus the last 5 m strip, which has
+            # no canopy at all and is kept: nothing there to miss
+            self.assertAlmostEqual(parts["test"]["keptM2"], 525, delta=30)
+            # 20 trees in newtrain, the 2 annotated columns of test (8)
+            self.assertEqual(check["crowns"], 28)
+            for name in ("chm.tif", "rgb.tif", "crowns.shp", "scoredArea.shp"):
+                self.assertTrue(os.path.exists(os.path.join(
+                    d, "out", "enshurin", name)))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
