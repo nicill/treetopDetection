@@ -1942,6 +1942,14 @@ class TestBaselines(unittest.TestCase):
         self.assertEqual(sorted((x, y) for x, y, _ in big.points),
                          [(20, 20), (45, 45)])
 
+    def testGridOverride(self):
+        from tt.dl.dlBaselines import gridFor, parseArguments
+        args = parseArguments(["--method", "watershed", "--dataset", "x",
+                               "--output", "y", "--markerWindows", "2,6,8"])
+        grid = gridFor(args)
+        self.assertEqual(grid["markerWindowM"], [2.0, 6.0, 8.0])
+        self.assertEqual(grid["minCrownAreaM2"], [0.0, 0.5, 1.0, 2.0])
+
     def testCrossValidationWritesARun(self):
         from tt.dl.dlBaselines import crossValidate, parseArguments
         site = CurveSite

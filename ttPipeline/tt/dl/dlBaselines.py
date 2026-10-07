@@ -141,8 +141,18 @@ class BaselineCrossValidation(ConCompCrossValidation):
                  fold["precision"], fold["f1"], fold["settings"]))
 
 
+OVERRIDES = {"windowBaseM": "windowBases", "windowSlope": "windowSlopes",
+             "markerWindowM": "markerWindows", "minCrownAreaM2": "minCrownAreas"}
+
+
 def gridFor(args):
+    """The method's grid, a dimension replaced when given on the command line
+    (a site whose trees are larger than the default grid allows for)."""
     grid = {k: list(v) for k, v in GRIDS[args.method].items()}
+    for key in grid:
+        given = getattr(args, OVERRIDES[key], None)
+        if given:
+            grid[key] = [float(v) for v in given.split(",")]
     if args.minHeights:
         grid[SCENE_KEY] = [float(v) for v in args.minHeights.split(",")]
     if args.smooths:
@@ -188,6 +198,14 @@ def parseArguments(argv=None):
                         help="minimum heights to tune over, as for CC")
     parser.add_argument("--smooths", default=None,
                         help="Gaussian smoothing (m) to tune over, as for CC")
+    parser.add_argument("--windowBases", default=None,
+                        help="lmvw: window side at height 0, m (comma list)")
+    parser.add_argument("--windowSlopes", default=None,
+                        help="lmvw: window growth per metre of height")
+    parser.add_argument("--markerWindows", default=None,
+                        help="watershed: marker window sides, m")
+    parser.add_argument("--minCrownAreas", default=None,
+                        help="watershed: minimum crown areas, m2")
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--saveDetections", action="store_true")
     return parser.parse_args(argv)
