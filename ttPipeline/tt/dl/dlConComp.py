@@ -67,6 +67,8 @@ TREE_AREA_KEY = "minTreeAreaM2"
 # the merge rule: "saddle" (straight-line drop) or "prominence" (elder rule in
 # the descent); a grid dimension when --mergeMetrics lists both
 MERGE_KEY = "mergeMetric"
+DROP_SLOPE_KEY = "saddleDropSlope"     # drop(h) = saddleDropM + slope * h
+TOP_SLOPE_KEY = "minTopAreaSlope"      # minTop(h) = minTopAreaM2 + slope * h
 
 _WORKER = None      # the cross-validation, shared with forked workers
 
@@ -159,11 +161,13 @@ class ConCompCrossValidation(object):
             minTreeAreaM2=setting.get(TREE_AREA_KEY, self.minTreeAreaM2),
             lowerPercentile=setting["lowerPercentile"],
             minTopAreaM2=setting["minTopAreaM2"],
+            minTopAreaSlope=setting.get(TOP_SLOPE_KEY, 0.0),
             topStepM=setting["topStepM"],
             erosionIterations=setting["erosionIterations"],
             merger=TopMerger(setting.get(MERGE_KEY, "saddle"),
                              epsM=self.saddleEpsM,
-                             saddleDropM=setting["saddleDropM"]),
+                             saddleDropM=setting["saddleDropM"],
+                             saddleDropSlope=setting.get(DROP_SLOPE_KEY, 0.0)),
             verbose=False)
 
     def _asPredictions(self, tops):
@@ -359,6 +363,12 @@ def gridFromArguments(args):
     metrics = getattr(args, "mergeMetrics", None)
     if metrics:
         grid[MERGE_KEY] = [v.strip() for v in metrics.split(",") if v.strip()]
+    # thresholds that grow with tree height; dimensions only when given, so
+    # runs without them keep their settings and labels unchanged
+    for key, option in ((DROP_SLOPE_KEY, getattr(args, "saddleDropSlopes", None)),
+                        (TOP_SLOPE_KEY, getattr(args, "minTopAreaSlopes", None))):
+        if option:
+            grid[key] = [float(v) for v in option.split(",") if v.strip()]
     return grid
 
 
@@ -442,6 +452,11 @@ def parseArguments(argv=None):
     parser.add_argument("--mergeMetrics", default=None,
                         help="Merge rules to tune over: saddle,prominence "
                              "(default: saddle only)")
+    parser.add_argument("--saddleDropSlopes", default=None,
+                        help="dip threshold growth per metre of tree height "
+                             "(grid dimension only when given)")
+    parser.add_argument("--minTopAreaSlopes", default=None,
+                        help="minimum top area growth, m2 per metre of height")
     parser.add_argument("--saveDetections", action="store_true",
                         help="Keep every setting's detections in "
                              "detections.npz (for tt.pseudoTuning)")

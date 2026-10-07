@@ -2118,6 +2118,37 @@ class TestEnshurinPrepare(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestConCompSlopes(unittest.TestCase):
+    """Height slopes reach the detector as grid dimensions, only when given."""
+
+    def testSlopesAreGridDimensionsOnlyWhenGiven(self):
+        from tt.dl import dlConComp as cc
+        base = ["--dataset", "x", "--output", "y"]
+        plain = cc.gridFromArguments(cc.parseArguments(base))
+        self.assertNotIn(cc.DROP_SLOPE_KEY, plain)
+        self.assertNotIn(cc.TOP_SLOPE_KEY, plain)
+        grid = cc.gridFromArguments(cc.parseArguments(
+            base + ["--saddleDropSlopes", "0,0.05", "--minTopAreaSlopes", "0.02"]))
+        self.assertEqual(grid[cc.DROP_SLOPE_KEY], [0.0, 0.05])
+        self.assertEqual(grid[cc.TOP_SLOPE_KEY], [0.02])
+
+    def testDetectorReceivesTheSlopes(self):
+        from tt.dl import dlConComp as cc
+        validation = object.__new__(cc.ConCompCrossValidation)
+        validation.windowSizeM, validation.saddleEpsM = 40.0, 8.0
+        validation.minTreeAreaM2 = 0.5
+        setting = {"lowerPercentile": 0, "minTopAreaM2": 0.1, "topStepM": 0.1,
+                   "erosionIterations": 0, "saddleDropM": 0.3,
+                   cc.DROP_SLOPE_KEY: 0.05, cc.TOP_SLOPE_KEY: 0.02}
+        detector = validation._detector(setting)
+        self.assertEqual(detector.merger.saddleDropSlope, 0.05)
+        self.assertEqual(detector.minTopAreaSlope, 0.02)
+        del setting[cc.DROP_SLOPE_KEY], setting[cc.TOP_SLOPE_KEY]
+        detector = validation._detector(setting)
+        self.assertEqual(detector.merger.saddleDropSlope, 0.0)
+        self.assertEqual(detector.minTopAreaSlope, 0.0)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
