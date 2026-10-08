@@ -2149,6 +2149,33 @@ class TestConCompSlopes(unittest.TestCase):
         self.assertEqual(detector.minTopAreaSlope, 0.0)
 
 
+class TestCrownEdges(unittest.TestCase):
+    """Thin canopy edges outside a crown go to it; anything thicker does not."""
+
+    def testRimsAddedNeighboursSplitUnannotatedTreeLeft(self):
+        from tt.crownEdges import findEdges
+        pixel, size = 0.05, 400
+        rows, cols = np.indices((size, size)) * pixel
+        chm = np.zeros((size, size), np.float32)
+        ids = np.zeros((size, size), np.int32)
+        trees = [(5, 5, 2.0, 1), (5, 8.7, 1.7, 2), (14, 14, 2.0, 0)]
+        for cy, cx, r, crown in trees:            # crown 0: not annotated
+            d = np.hypot(rows - cy, cols - cx)
+            chm = np.maximum(chm, np.where(d < r, 3.0, 0))
+            if crown:
+                ids[d < 0.85 * r] = crown          # outline 15% short of the tree
+        added, rejected = findEdges(chm, ids, pixel, 0.5, 0.5)
+        for cy, cx, r, crown in trees[:2]:
+            d = np.hypot(rows - cy, cols - cx)
+            rim = (d < r) & (ids == 0)
+            # every rim pixel went to a crown, and mostly to its own
+            self.assertTrue(np.all(added[rim] > 0))
+            self.assertGreater(np.mean(added[rim] == crown), 0.9)
+        d = np.hypot(rows - 14, cols - 14)
+        self.assertTrue(np.all(added[d < 2.0] == 0))
+        self.assertTrue(np.all(rejected[d < 1.9]))
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
