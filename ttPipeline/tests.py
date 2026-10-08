@@ -2203,6 +2203,35 @@ class TestEnshurinShift(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestConCompProgress(Fixture):
+    """Progress lines and the settings table never change a result."""
+
+    dataset = TestConCompGrid.dataset
+
+    def testProgressSameResultsAndTables(self):
+        import json
+        from tt.dl import dlConComp as cc
+        grid = ["--resolution", "0.25", "--minHeight", "1", "--percentiles", "0,10",
+                "--saddleDrops", "0.3,0.5", "--erosions", "0", "--minTopAreas",
+                "0.06", "--topSteps", "0.25"]
+        runs = {}
+        for name, extra in (("plain", []), ("progress", ["--progress", "--jobs", "2"])):
+            output = os.path.join(self.directory, "cc_" + name)
+            cc.crossValidate(cc.parseArguments(
+                ["--dataset", self.dataset(), "--output", output] + grid + extra))
+            runs[name] = output
+        a, b = (json.load(open(os.path.join(runs[n], "results.json")))
+                for n in ("plain", "progress"))
+        self.assertEqual([(f["hits"], f["predictions"], f["settings"]) for f in a["folds"]],
+                         [(f["hits"], f["predictions"], f["settings"]) for f in b["folds"]])
+        for name in runs:
+            rows = open(os.path.join(runs[name], "settings.tsv")).read().splitlines()
+            self.assertEqual(len(rows), 1 + 4)
+        progress = open(os.path.join(runs["progress"], "progress.tsv")).read().splitlines()
+        self.assertEqual(len(progress), 1 + 4)
+        self.assertFalse(os.path.exists(os.path.join(runs["plain"], "progress.tsv")))
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.

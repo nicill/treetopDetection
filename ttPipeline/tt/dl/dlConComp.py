@@ -77,6 +77,13 @@ def _detectInWorker(index):
     return _WORKER.detectOne(index)
 
 
+def _detectAndScoreInWorker(index):
+    """A setting's detections and their score on the whole area (progress)."""
+    detections = _WORKER.detectOne(index)
+    return index, detections, dc.evaluateDetections(
+        detections, _WORKER.scene.crowns, _WORKER.wholeArea)
+
+
 def _scoreInWorker(task):
     region, setting = task
     return dc.evaluateDetections(_WORKER.detections[setting],
@@ -120,6 +127,7 @@ class ConCompCrossValidation(object):
         self.windowSizeM = windowSizeM
         self.saddleEpsM = saddleEpsM
         self.verbose = verbose
+        self.progress = False      # a line per setting as it is detected
         self.jobs = max(1, int(jobs))
 
         self.scenes = {}
@@ -198,7 +206,9 @@ class ConCompCrossValidation(object):
         for setting in self.settings:
             self.sceneFor(setting)
         indices = range(len(self.settings))
-        if self.jobs == 1:
+        if self.progress:
+            self.detections = self._detectWithProgress(indices)
+        elif self.jobs == 1:
             self.detections = [self.detectOne(i) for i in indices]
         else:
             _WORKER = self
@@ -211,6 +221,69 @@ class ConCompCrossValidation(object):
             print("  detected %d settings, %d jobs" % (len(self.settings),
                                                      self.jobs))
         return self.detections
+
+    def _detectWithProgress(self, indices):
+        """
+        detectAll, with each setting's recall and precision on the whole area
+        printed and appended to progress.tsv as soon as it is detected (an
+        extra scoring of the whole area per setting). The detections are kept
+        by setting, the same as without progress.
+        """
+        global _WORKER
+        _WORKER = self
+        self.wholeArea = unary_union([g for _, g in self.blocks])
+        keys = list(self.settings[0])
+        path = os.path.join(self.output, "progress.tsv") if self.output else None
+        if path:
+            with open(path, "w") as handle:
+                handle.write("\t".join(["done", "setting"] + keys + [
+                    "tops", "recall", "precision", "f1", "weighted"]) + "\n")
+        detections = [None] * len(indices)
+        if self.jobs == 1:
+            stream = (_detectAndScoreInWorker(i) for i in indices)
+            pool = None
+        else:
+            pool = multiprocessing.get_context("fork").Pool(self.jobs)
+            stream = pool.imap_unordered(_detectAndScoreInWorker, indices)
+        try:
+            for done, (index, found, score) in enumerate(stream, 1):
+                detections[index] = found
+                setting = self.settings[index]
+                cells = [str(setting[k]) for k in keys]
+                row = [str(done), str(index)] + cells + [
+                    str(len(found))] + ["%.3f" % score[k] for k in
+                                        ("recall", "precision", "f1", "weighted")]
+                if path:
+                    with open(path, "a") as handle:
+                        handle.write("\t".join(row) + "\n")
+                print("  [%d/%d] setting %d: R %.3f P %.3f F1 %.3f W %.3f  %s"
+                      % (done, len(indices), index, score["recall"],
+                         score["precision"], score["f1"], score["weighted"],
+                         " ".join("%s=%s" % (k, setting[k]) for k in keys)),
+                      flush=True)
+        finally:
+            if pool is not None:
+                pool.close()
+                pool.join()
+            _WORKER = None
+        return detections
+
+    def writeSettingsTable(self):
+        """Every setting's score on the whole area, to settings.tsv."""
+        if not self.output:
+            return
+        whole = len(self.regions) - 1
+        keys = list(self.settings[0])
+        with open(os.path.join(self.output, "settings.tsv"), "w") as handle:
+            handle.write("\t".join(["setting"] + keys + [
+                "tops", "recall", "precision", "f1", "weighted"]) + "\n")
+            for i, setting in enumerate(self.settings):
+                score = self.scores[whole][i]
+                handle.write("\t".join([str(i)] + [str(setting[k]) for k in keys]
+                                       + [str(len(self.detections[i]))]
+                                       + ["%.3f" % score[k] for k in (
+                                           "recall", "precision", "f1",
+                                           "weighted")]) + "\n")
 
     def scoreAll(self):
         """
@@ -269,6 +342,7 @@ class ConCompCrossValidation(object):
                   % (self.meta["name"], len(self.blocks), len(self.settings)))
         self.detectAll()
         self.scoreAll()
+        self.writeSettingsTable()
         folds = [self.foldResult(name, geometry)
                  for name, geometry in self.blocks]
         if self.verbose:
@@ -380,6 +454,7 @@ def crossValidate(args):
         args.dataset, grid=gridFromArguments(args),
         resolution=args.resolution, minHeight=args.minHeight,
         minTreeAreaM2=args.minTreeArea, output=args.output, jobs=args.jobs)
+    validation.progress = bool(getattr(args, "progress", False))
     folds, pooled = validation.run()
     if args.saveDetections:
         saveDetections(os.path.join(args.output, "detections.npz"),
@@ -457,6 +532,9 @@ def parseArguments(argv=None):
                              "(grid dimension only when given)")
     parser.add_argument("--minTopAreaSlopes", default=None,
                         help="minimum top area growth, m2 per metre of height")
+    parser.add_argument("--progress", action="store_true",
+                        help="print each setting's whole-area recall and "
+                             "precision as it is detected (progress.tsv)")
     parser.add_argument("--saveDetections", action="store_true",
                         help="Keep every setting's detections in "
                              "detections.npz (for tt.pseudoTuning)")
