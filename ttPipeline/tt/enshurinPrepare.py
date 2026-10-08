@@ -33,6 +33,9 @@ What differs from the other sites, and what this does about it:
            cropped to the area's grid, 0 outside the area.
   RGB      the three part mosaics of the same date, merged at
            --rgbResolution.
+  shift    a part whose mosaic (and the mask drawn on it) is offset from the
+           surface model can be moved onto it with --shift PART=DX,DY: a VRT
+           with the georeferencing moved, the pixels untouched.
 
 Writes, in <output>/<site>/: area.shp, scoredArea.shp, crowns.shp,
 crownSpecies.shp, ignored.shp, uncovered.shp, chm.tif, rgb.tif,
@@ -73,6 +76,36 @@ def partFiles(data, part, date):
     perClass = sorted(glob.glob(os.path.join(data, "raw", "*", "per_class",
                                              "mask_*_%s.tif" % part)))
     return mosaic, masks[0], perClass
+
+
+def shiftedSource(path, dx, dy, folder):
+    """
+    A VRT of path with its georeferencing moved by (dx, dy) m: the pixels are
+    the original file's, untouched and not resampled.
+    """
+    os.makedirs(folder, exist_ok=True)
+    with rasterio.open(path) as src:
+        t = src.transform
+        bands = "".join(
+            '<VRTRasterBand dataType="%s" band="%d"><SimpleSource>'
+            '<SourceFilename relativeToVRT="0">%s</SourceFilename>'
+            '<SourceBand>%d</SourceBand>'
+            '<SrcRect xOff="0" yOff="0" xSize="%d" ySize="%d"/>'
+            '<DstRect xOff="0" yOff="0" xSize="%d" ySize="%d"/>'
+            '</SimpleSource></VRTRasterBand>' % (
+                {"uint8": "Byte", "uint16": "UInt16", "int16": "Int16",
+                 "float32": "Float32"}.get(src.dtypes[b - 1], "Byte"), b,
+                os.path.abspath(path), b, src.width, src.height, src.width,
+                src.height)
+            for b in range(1, src.count + 1))
+        xml = ('<VRTDataset rasterXSize="%d" rasterYSize="%d"><SRS>%s</SRS>'
+               '<GeoTransform>%r, %r, %r, %r, %r, %r</GeoTransform>%s</VRTDataset>'
+               % (src.width, src.height, src.crs.to_wkt().replace("<", "&lt;"),
+                  t.c + dx, t.a, t.b, t.f + dy, t.d, t.e, bands))
+    out = os.path.join(folder, os.path.basename(path) + ".vrt")
+    with open(out, "w") as handle:
+        handle.write(xml)
+    return out
 
 
 def speciesNames(mask, perClass):
@@ -269,7 +302,7 @@ def finish(site, outDir, crowns, area, chmPath, rgbPath, notes, args):
                             "ignored": ignored, "scoredArea": region})
     qp.quicklook(rgbPath, scored, area, ignored,
                  os.path.join(outDir, "quicklook.png"))
-    check = {"site": site, "parts": notes,
+    check = {"site": site, "parts": notes, "shifts": parseShifts(args.shift),
              "annotatedCrowns": int(len(crowns)),
              "crownsInArea": int(len(inArea)), "crowns": int(len(scored)),
              "invisibleCrowns": counts["invisible"],
@@ -311,6 +344,14 @@ def prepare(args):
     outDir = os.path.join(args.output, args.site)
     os.makedirs(outDir, exist_ok=True)
     parts = {p: partFiles(args.data, p, args.date) for p in args.parts}
+    shifts = parseShifts(args.shift)
+    for part, (dx, dy) in shifts.items():
+        mosaic, mask, perClass = parts[part]
+        folder = os.path.join(outDir, "shifted")
+        parts[part] = (shiftedSource(mosaic, dx, dy, folder),
+                       shiftedSource(mask, dx, dy, folder), perClass)
+        print("[enshurin] %s: mosaic and mask moved %+.2f m east, %+.2f m north"
+              % (part, dx, dy))
     area, crowns, notes = buildArea(parts, args.chm, args)
     area.to_file(os.path.join(outDir, "area.shp"))
     chmPath, rgbPath = (os.path.join(outDir, n) for n in ("chm.tif", "rgb.tif"))
@@ -323,6 +364,16 @@ def prepare(args):
     return check
 
 
+def parseShifts(given):
+    """{part: (dx, dy)} from ['newtrain=-1.37,-0.43', ...]."""
+    shifts = {}
+    for item in given or []:
+        part, values = item.split("=")
+        dx, dy = (float(v) for v in values.split(","))
+        shifts[part] = (dx, dy)
+    return shifts
+
+
 def parseArguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--data", required=True,
@@ -332,6 +383,11 @@ def parseArguments(argv=None):
     parser.add_argument("--output", default="Data/enshurinOut")
     parser.add_argument("--site", default="enshurin")
     parser.add_argument("--date", default="08_22")
+    parser.add_argument("--shift", action="append", default=None,
+                        metavar="PART=DX,DY",
+                        help="move a part's mosaic and mask by DX m east, DY m "
+                             "north onto the surface model (repeatable); the "
+                             "CHM is the reference and is not moved")
     parser.add_argument("--parts", nargs="+", default=list(PARTS))
     parser.add_argument("--cellM", type=float, default=10.0)
     parser.add_argument("--annotatedShare", type=float, default=0.9)

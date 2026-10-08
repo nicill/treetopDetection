@@ -2176,6 +2176,33 @@ class TestCrownEdges(unittest.TestCase):
         self.assertTrue(np.all(rejected[d < 1.9]))
 
 
+class TestEnshurinShift(unittest.TestCase):
+    """A shifted source moves only the georeferencing, never the pixels."""
+
+    def testShiftedSourceMovesBoundsKeepsPixels(self):
+        import rasterio
+        from rasterio.transform import from_origin
+        from tt.enshurinPrepare import parseShifts, shiftedSource
+        d = tempfile.mkdtemp(prefix="ttShift")
+        try:
+            path = os.path.join(d, "m.tif")
+            data = np.arange(3 * 20 * 30, dtype=np.uint8).reshape(3, 20, 30)
+            with rasterio.open(path, "w", driver="GTiff", height=20, width=30,
+                               count=3, dtype="uint8", crs="EPSG:32654",
+                               transform=from_origin(1000, 2000, 0.5, 0.5)) as out:
+                out.write(data)
+            vrt = shiftedSource(path, -1.37, -0.43, os.path.join(d, "shifted"))
+            with rasterio.open(path) as a, rasterio.open(vrt) as b:
+                self.assertTrue(np.array_equal(a.read(), b.read()))
+                self.assertAlmostEqual(b.bounds.left, a.bounds.left - 1.37)
+                self.assertAlmostEqual(b.bounds.top, a.bounds.top - 0.43)
+                self.assertEqual(a.crs, b.crs)
+            self.assertEqual(parseShifts(["newtrain=-1.37,-0.43", "val=0,1"]),
+                             {"newtrain": (-1.37, -0.43), "val": (0.0, 1.0)})
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
