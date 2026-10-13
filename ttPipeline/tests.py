@@ -2285,6 +2285,93 @@ class TestHeightSmoothingRun(Fixture):
         self.assertEqual(len(out["grown"]["folds"]), len(out["plain"]["folds"]))
 
 
+class TestHeightFilter(unittest.TestCase):
+    """RGB boxes over low vegetation are removed using the height model."""
+
+    def setUp(self):
+        from affine import Affine
+        from tt.fusion import SaddleSurface
+        rows, columns = np.mgrid[0:60, 0:60]
+        chm = np.zeros((60, 60), np.float32)
+        # four trees of 8 m, and four bushes of 0.8 m, on a 1 m grid
+        self.trees = [(10, 10), (10, 40), (40, 10), (40, 40)]
+        self.bushes = [(25, 10), (25, 40), (10, 25), (40, 25)]
+        for (r, c), h in [(t, 8.0) for t in self.trees] + [(b, 0.8) for b in self.bushes]:
+            chm = np.maximum(chm, h * np.clip(1 - np.hypot(rows - r, columns - c) / 4.0, 0, 1))
+        self.surface = SaddleSurface(chm, Affine(1, 0, 0, 0, -1, 60), 1.0, dropM=0.5)
+
+    @staticmethod
+    def box(r, c, score=0.9):
+        x, y = c + 0.5, 60 - r - 0.5
+        return {"box": [x - 3, y - 3, x + 3, y + 3], "score": score,
+                "centreX": x, "centreY": y}
+
+    def testLowBoxesRemovedTallKept(self):
+        from tt.fusion import tallEnough
+        boxes = [self.box(*t) for t in self.trees] + [self.box(*b) for b in self.bushes]
+        self.assertEqual(len(tallEnough(boxes, self.surface, 0.0)), 8)
+        kept = tallEnough(boxes, self.surface, 1.0)
+        self.assertEqual(sorted((round(b["centreX"]), round(b["centreY"])) for b in kept),
+                         sorted((c, 60 - r) for r, c in self.trees))
+
+    def testOwnCacheNotAnotherSurfacesApex(self):
+        from tt.fusion import tallEnough
+        bush = self.box(*self.bushes[0])
+        bush["apex"] = (10, 10)          # another surface's apex: a tree top
+        self.assertEqual(tallEnough([bush], self.surface, 1.0), [])
+
+    def testUnionHighDropsBushBoxesKeepsPoints(self):
+        from tt.fusion import unionHigh
+        boxes = [self.box(*t) for t in self.trees] + [self.box(*b) for b in self.bushes]
+        point = {"centreX": 55.5, "centreY": 4.5, "score": 10.0, "box": [55.5, 4.5, 55.5, 4.5]}
+        out = unionHigh(boxes, [point], threshold=0.5, boxMinHeightM=1.0,
+                        surface=self.surface)
+        self.assertEqual(len(out), 5)                  # four trees and the point
+
+    def testCrossValidationTunesTheFilterOnBushes(self):
+        import geopandas as gpd
+        from shapely.geometry import Point, box as shapeBox
+        from tt.fusion import FusionCrossValidation
+
+        class Run(object):
+            def __init__(self, name, predictions, threshold):
+                self.name, self.predictions, self.t = name, predictions, threshold
+            def has(self, block):
+                return True
+            def record(self, block):
+                return {"predictions": [dict(p) for p in self.predictions],
+                        "threshold": self.t}
+            def validation(self, block):
+                other = "s_b01" if block == "s_b00" else "s_b00"
+                return other, [dict(p) for p in self.predictions]
+            def threshold(self, block):
+                return self.t
+
+        boxes = [self.box(*t) for t in self.trees] + [self.box(*b) for b in self.bushes]
+        crowns = gpd.GeoDataFrame({"class_code": ["tree"] * 4},
+                                  geometry=[Point(c + 0.5, 60 - r - 0.5).buffer(3)
+                                            for r, c in self.trees])
+        blocks = {"s_b00": shapeBox(0, 0, 60, 60), "s_b01": shapeBox(0, 0, 60, 60)}
+        validation = FusionCrossValidation(
+            crowns, blocks, Run("rgb", boxes, 0.5), Run("cc", [], -np.inf),
+            strategies=["boxes", "boxesHigh", "unionHigh"], verbose=False,
+            heightSurface=self.surface)
+        summary = validation.run()
+        self.assertAlmostEqual(summary["boxes"]["pooled"]["precision"], 0.5)
+        self.assertAlmostEqual(summary["boxesHigh"]["pooled"]["precision"], 1.0)
+        self.assertAlmostEqual(summary["boxesHigh"]["pooled"]["recall"], 1.0)
+        self.assertTrue(all(f["setting"]["boxMinHeightM"] >= 1.0
+                            for f in summary["boxesHigh"]["folds"]))
+        # boxesHigh keeps the model's own score threshold
+        self.assertTrue(all(f["setting"]["threshold"] == 0.5
+                            for f in summary["boxesHigh"]["folds"]))
+
+    def testReportsUnchangedWithoutTheHeightSurface(self):
+        # the reports' strategies never include the height filter
+        from tt.fusion import HEIGHT_STRATEGIES, STRATEGIES
+        self.assertFalse(set(HEIGHT_STRATEGIES) & set(STRATEGIES))
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.

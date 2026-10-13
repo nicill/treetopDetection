@@ -52,6 +52,8 @@ from .dl import dlCommon as dc
 from .merging import saddleDrop
 
 THRESHOLDS = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+# minimum CHM height under an RGB box (m), tuned per fold; 0 = no filter
+BOX_MIN_HEIGHTS = [0.0, 0.5, 1.0, 1.5, 2.0, 3.0]
 POINT_SCORE = 0.0  # a top brought in by union never outranks a box in a crown
 WEAK_OVERLAP = 0.25  # fixed in advance, not tuned
 SADDLE_RADIUS_M = 8.0  # the detector's own merge radius
@@ -103,6 +105,17 @@ class SaddleSurface(object):
         rows, columns = self.chm.shape
         return (int(np.clip(row, 0, rows - 1)),
                 int(np.clip(column, 0, columns - 1)))
+
+    def heightAt(self, prediction):
+        """
+        The CHM at the prediction's apex, cached on it apart from "apex": the
+        height filter reads a surface of its own (no minimum height applied),
+        so its apex must not be taken from another surface's cache.
+        """
+        if "topHeight" not in prediction:
+            row, column = self._findApex(prediction)
+            prediction["topHeight"] = float(self.chm[row, column])
+        return prediction["topHeight"]
 
     def apex(self, prediction):
         """(row, column) of the prediction's highest point, cached on it."""
@@ -292,7 +305,34 @@ def unionSaddlePool(boxes, points, threshold, surface):
     return [p for p, gone in zip(pool, removed) if not gone]
 
 
+def tallEnough(boxes, surface, minHeightM):
+    """The boxes whose apex stands at least minHeightM above the ground:
+    an RGB detection over low vegetation (bushes, grass) is no tree."""
+    if minHeightM <= 0 or surface is None:
+        return list(boxes)
+    return [b for b in boxes if surface.heightAt(b) >= minHeightM]
+
+
+def boxesHigh(boxes, points, threshold, boxMinHeightM, surface):
+    """The box model alone, its boxes over low vegetation removed."""
+    return boxesAlone(tallEnough(boxes, surface, boxMinHeightM), points,
+                      threshold)
+
+
+def unionHigh(boxes, points, threshold, boxMinHeightM, surface):
+    """The union, its boxes over low vegetation removed first."""
+    return union(tallEnough(boxes, surface, boxMinHeightM), points, threshold)
+
+
 SURFACE_STRATEGIES = {"unionSaddleCross", "unionSaddlePool"}
+# strategies that read the height model to filter the RGB boxes; they need
+# FusionCrossValidation's heightSurface (a CHM with no minimum height)
+HEIGHT_STRATEGIES = {
+    "boxesHigh": (boxesHigh, {"threshold": THRESHOLDS,
+                              "boxMinHeightM": BOX_MIN_HEIGHTS}),
+    "unionHigh": (unionHigh, {"threshold": THRESHOLDS,
+                              "boxMinHeightM": BOX_MIN_HEIGHTS}),
+}
 
 STRATEGIES = {
     "boxes": (boxesAlone, {"threshold": THRESHOLDS}),
@@ -331,19 +371,25 @@ class FusionCrossValidation(object):
     """
 
     def __init__(self, crowns, blocks, boxRun, pointRun, surface=None,
-                 strategies=None, verbose=True):
+                 strategies=None, verbose=True, heightSurface=None):
         self.crowns = crowns
         self.allBlocks = dict(blocks)
         self.boxRun = boxRun
         self.pointRun = pointRun
         self.blocks = sharedBlocks(blocks, (boxRun, pointRun), verbose)
         self.surface = surface
+        self.heightSurface = heightSurface
         available = [n for n in STRATEGIES
                      if surface is not None or n not in SURFACE_STRATEGIES]
+        if heightSurface is not None:
+            available += list(HEIGHT_STRATEGIES)
         self.strategies = strategies or available
         self.verbose = verbose
 
     def apply(self, name, boxes, points, setting):
+        if name in HEIGHT_STRATEGIES:
+            return HEIGHT_STRATEGIES[name][0](
+                boxes, points, surface=self.heightSurface, **setting)
         extra = {"surface": self.surface} if name in SURFACE_STRATEGIES \
             else {}
         return STRATEGIES[name][0](boxes, points, **dict(setting, **extra))
@@ -383,10 +429,14 @@ class FusionCrossValidation(object):
 
     def tune(self, name, inputs):
         """The strategy's setting that scores best on the validation block."""
-        parameters = STRATEGIES[name][1]
+        parameters = (STRATEGIES.get(name) or HEIGHT_STRATEGIES[name])[1]
         if name == "boxes":
             # the box model alone, at the threshold it chose for itself
             return {"threshold": inputs["boxThreshold"]}, None
+        if name == "boxesHigh":
+            # the same threshold: only the height filter is tuned
+            parameters = {"threshold": [inputs["boxThreshold"]],
+                          "boxMinHeightM": BOX_MIN_HEIGHTS}
         boxes, points = inputs["validation"]
         best, bestF1 = {}, -1.0
         for setting in _grid(parameters):
