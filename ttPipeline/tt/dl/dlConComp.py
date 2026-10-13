@@ -42,7 +42,7 @@ from shapely.ops import unary_union
 
 from ..detector import ConCompDetector
 from ..merging import TopMerger
-from ..scene import Scene
+from ..scene import LOCAL_HEIGHT_M, Scene
 from . import dlCommon as dc
 from . import dlPrepare as dp
 
@@ -62,6 +62,7 @@ GRID_CASTS = {"lowerPercentile": int, "erosionIterations": int}
 # scored never depend on them: only the detector's input does.
 SCENE_KEY = "minHeight"
 SMOOTH_SLOPE_KEY = "smoothSlope"   # smoothing grows with tree height (m/m)
+SMOOTH_WINDOW_KEY = "smoothWindowM"   # tree height: tallest canopy within this
 SMOOTH_KEY = "smoothM"      # Gaussian smoothing of the CHM (m); tuned when
                             # --smooths lists values, else none
 TREE_AREA_KEY = "minTreeAreaM2"
@@ -139,10 +140,13 @@ class ConCompCrossValidation(object):
 
     # ------------------------------------------------------------------ #
 
-    def _loadScene(self, minHeight=None, smoothM=0.0, smoothSlope=0.0):
+    def _loadScene(self, minHeight=None, smoothM=0.0, smoothSlope=0.0,
+                   smoothWindowM=None):
         """The scene at one minimum height and smoothing, built once, kept."""
         minHeight = self.minHeight if minHeight is None else minHeight
-        key = (minHeight, smoothM, smoothSlope)
+        if smoothWindowM is None:
+            smoothWindowM = LOCAL_HEIGHT_M
+        key = (minHeight, smoothM, smoothSlope, smoothWindowM)
         if key in self.scenes:
             return self.scenes[key]
         chmPath = next((c["path"] for c in self.meta["channels"]
@@ -154,14 +158,15 @@ class ConCompCrossValidation(object):
                       boundaryPath=self.meta["boundaryPath"],
                       resolution=self.resolution, minHeight=minHeight,
                       verbose=False, smoothM=smoothM,
-                      smoothSlope=smoothSlope)
+                      smoothSlope=smoothSlope, smoothWindowM=smoothWindowM)
         self.scenes[key] = scene
         return scene
 
     def sceneFor(self, setting):
         return self._loadScene(setting.get(SCENE_KEY, self.minHeight),
                                setting.get(SMOOTH_KEY, 0.0),
-                               setting.get(SMOOTH_SLOPE_KEY, 0.0))
+                               setting.get(SMOOTH_SLOPE_KEY, 0.0),
+                               setting.get(SMOOTH_WINDOW_KEY))
 
     def _expandGrid(self):
         return expandGrid(self.grid)
@@ -444,7 +449,8 @@ def gridFromArguments(args):
     # runs without them keep their settings and labels unchanged
     for key, option in ((DROP_SLOPE_KEY, getattr(args, "saddleDropSlopes", None)),
                         (TOP_SLOPE_KEY, getattr(args, "minTopAreaSlopes", None)),
-                        (SMOOTH_SLOPE_KEY, getattr(args, "smoothSlopes", None))):
+                        (SMOOTH_SLOPE_KEY, getattr(args, "smoothSlopes", None)),
+                        (SMOOTH_WINDOW_KEY, getattr(args, "smoothWindows", None))):
         if option:
             grid[key] = [float(v) for v in option.split(",") if v.strip()]
     return grid
@@ -534,6 +540,9 @@ def parseArguments(argv=None):
     parser.add_argument("--saddleDropSlopes", default=None,
                         help="dip threshold growth per metre of tree height "
                              "(grid dimension only when given)")
+    parser.add_argument("--smoothWindows", default=None,
+                        help="window (m) in which a pixel's tree height is the "
+                             "tallest canopy, for --smoothSlopes (default 2)")
     parser.add_argument("--smoothSlopes", default=None,
                         help="smoothing growth per metre of tree height, m/m "
                              "(grid dimension only when given)")

@@ -2254,6 +2254,34 @@ class TestHeightSmoothing(unittest.TestCase):
         self.assertAlmostEqual(rough(grown, small), rough(constant, small),
                                delta=0.35 * rough(constant, small))
 
+    def testNarrowWindowSparesASmallTreeBesideATallOne(self):
+        from tt.scene import heightSmoothed
+        rows, columns = np.mgrid[0:80, 0:80].astype(float)
+        chm = np.zeros((80, 80), np.float32)
+        # a 20 m crown, and 2 m to its side a 3 m tree with a sharp top
+        chm = np.maximum(chm, 20 * np.clip(1 - np.hypot(rows - 40, columns - 30) / 12, 0, 1))
+        chm = np.maximum(chm, 3 * np.clip(1 - np.hypot(rows - 40, columns - 50) / 4, 0, 1))
+        pixel = 0.25
+        top = lambda a: float(a[40, 50])
+        wide = heightSmoothed(chm, 0.0, 0.05, pixel, windowM=12.0)
+        narrow = heightSmoothed(chm, 0.0, 0.05, pixel, windowM=0.25)
+        # the narrow window smooths the small tree by its own height: its top
+        # survives better than when it borrows its tall neighbour's height
+        self.assertGreater(top(narrow), top(wide))
+
+    def testDefaultWindowUnchanged(self):
+        from tt.dl import dlConComp as cc
+        from tt.scene import LOCAL_HEIGHT_M, heightSmoothed
+        rng = np.random.default_rng(1)
+        chm = (5 + rng.normal(0, 1, (60, 60))).astype(np.float32)
+        self.assertTrue(np.array_equal(
+            heightSmoothed(chm, 0.25, 0.02, 0.25),
+            heightSmoothed(chm, 0.25, 0.02, 0.25, windowM=LOCAL_HEIGHT_M)))
+        base = ["--dataset", "x", "--output", "y"]
+        self.assertNotIn(cc.SMOOTH_WINDOW_KEY, cc.gridFromArguments(cc.parseArguments(base)))
+        grid = cc.gridFromArguments(cc.parseArguments(base + ["--smoothWindows", "0.25,1,2"]))
+        self.assertEqual(grid[cc.SMOOTH_WINDOW_KEY], [0.25, 1.0, 2.0])
+
     def testSlopeZeroIsTheConstantSmoothing(self):
         from tt.dl import dlConComp as cc
         base = ["--dataset", "x", "--output", "y"]
