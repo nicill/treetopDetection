@@ -61,6 +61,7 @@ GRID_CASTS = {"lowerPercentile": int, "erosionIterations": int}
 # (--minHeights, --minTreeAreas); then they are tuned like the rest. The crowns
 # scored never depend on them: only the detector's input does.
 SCENE_KEY = "minHeight"
+SMOOTH_SLOPE_KEY = "smoothSlope"   # smoothing grows with tree height (m/m)
 SMOOTH_KEY = "smoothM"      # Gaussian smoothing of the CHM (m); tuned when
                             # --smooths lists values, else none
 TREE_AREA_KEY = "minTreeAreaM2"
@@ -138,10 +139,10 @@ class ConCompCrossValidation(object):
 
     # ------------------------------------------------------------------ #
 
-    def _loadScene(self, minHeight=None, smoothM=0.0):
+    def _loadScene(self, minHeight=None, smoothM=0.0, smoothSlope=0.0):
         """The scene at one minimum height and smoothing, built once, kept."""
         minHeight = self.minHeight if minHeight is None else minHeight
-        key = (minHeight, smoothM)
+        key = (minHeight, smoothM, smoothSlope)
         if key in self.scenes:
             return self.scenes[key]
         chmPath = next((c["path"] for c in self.meta["channels"]
@@ -152,13 +153,15 @@ class ConCompCrossValidation(object):
         scene = Scene(chmPath, crownsPath=self.meta["crownsPath"],
                       boundaryPath=self.meta["boundaryPath"],
                       resolution=self.resolution, minHeight=minHeight,
-                      verbose=False, smoothM=smoothM)
+                      verbose=False, smoothM=smoothM,
+                      smoothSlope=smoothSlope)
         self.scenes[key] = scene
         return scene
 
     def sceneFor(self, setting):
         return self._loadScene(setting.get(SCENE_KEY, self.minHeight),
-                               setting.get(SMOOTH_KEY, 0.0))
+                               setting.get(SMOOTH_KEY, 0.0),
+                               setting.get(SMOOTH_SLOPE_KEY, 0.0))
 
     def _expandGrid(self):
         return expandGrid(self.grid)
@@ -440,7 +443,8 @@ def gridFromArguments(args):
     # thresholds that grow with tree height; dimensions only when given, so
     # runs without them keep their settings and labels unchanged
     for key, option in ((DROP_SLOPE_KEY, getattr(args, "saddleDropSlopes", None)),
-                        (TOP_SLOPE_KEY, getattr(args, "minTopAreaSlopes", None))):
+                        (TOP_SLOPE_KEY, getattr(args, "minTopAreaSlopes", None)),
+                        (SMOOTH_SLOPE_KEY, getattr(args, "smoothSlopes", None))):
         if option:
             grid[key] = [float(v) for v in option.split(",") if v.strip()]
     return grid
@@ -529,6 +533,9 @@ def parseArguments(argv=None):
                              "(default: saddle only)")
     parser.add_argument("--saddleDropSlopes", default=None,
                         help="dip threshold growth per metre of tree height "
+                             "(grid dimension only when given)")
+    parser.add_argument("--smoothSlopes", default=None,
+                        help="smoothing growth per metre of tree height, m/m "
                              "(grid dimension only when given)")
     parser.add_argument("--minTopAreaSlopes", default=None,
                         help="minimum top area growth, m2 per metre of height")

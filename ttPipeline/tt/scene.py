@@ -13,13 +13,40 @@ import os
 
 import geopandas as gpd
 import numpy as np
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, maximum_filter
 import rasterio
 from rasterio.enums import Resampling
 from rasterio.features import geometry_mask
 from rasterio.features import rasterize
 from shapely import affinity
 from shapely import make_valid
+
+
+LOCAL_HEIGHT_M = 2.0       # tree height: the tallest canopy within this window
+SMOOTH_STEP_PX = 0.5       # the standard deviations used, in steps of this
+
+
+def heightSmoothed(chm, smoothM, slope, pixel):
+    """
+    The CHM smoothed by a Gaussian whose standard deviation grows with tree
+    height: smoothM + slope x h metres, h the tallest canopy within
+    LOCAL_HEIGHT_M (the height of the tree a pixel belongs to, not of the
+    pixel, so a crown's rim is smoothed like its top). Large crowns, whose
+    branches give several peaks, are smoothed more; small trees beside them
+    less. The deviations are rounded to steps of SMOOTH_STEP_PX pixels and
+    each pixel takes the CHM smoothed at its own step.
+    """
+    size = max(1, int(round(LOCAL_HEIGHT_M / pixel)))
+    height = maximum_filter(chm, size=size)
+    sigma = (smoothM + slope * height) / pixel
+    steps = np.round(sigma / SMOOTH_STEP_PX) * SMOOTH_STEP_PX
+    out = chm.copy()
+    for step in np.unique(steps):
+        where = steps == step
+        if step <= 0:
+            continue
+        out[where] = gaussian_filter(chm, sigma=float(step))[where]
+    return out
 
 
 RESAMPLING = {
@@ -72,10 +99,13 @@ class Scene(object):
                  resolution=0.25, minHeight=2.0, resampling="average",
                  crownShiftEast=0.0, crownShiftSouth=0.0,
                  classField="tree_class", restrict=True, verbose=True,
-                 smoothM=0.0):
+                 smoothM=0.0, smoothSlope=0.0):
         # smoothM: a Gaussian of this standard deviation (m) over the CHM
-        # before the minimum height is applied; 0 leaves it as read
+        # before the minimum height is applied; 0 leaves it as read.
+        # smoothSlope: the standard deviation grows with the local tree
+        # height, smoothM + smoothSlope x h (see heightSmoothed); 0 = constant
         self.smoothM = float(smoothM)
+        self.smoothSlope = float(smoothSlope)
         self.chmPath = chmPath
         self.crownsPath = crownsPath
         self.boundaryPath = boundaryPath
@@ -147,7 +177,10 @@ class Scene(object):
         chm[~np.isfinite(chm)] = 0.0
         chm[chm < 0.0] = 0.0
         chm[chm > 100.0] = 0.0
-        if self.smoothM > 0:
+        if self.smoothSlope > 0:
+            chm = heightSmoothed(chm, self.smoothM, self.smoothSlope,
+                                 self.pixelSize)
+        elif self.smoothM > 0:
             chm = gaussian_filter(chm, sigma=self.smoothM / self.pixelSize)
         chm[chm < self.minHeight] = 0.0
         self.chm = chm

@@ -2232,6 +2232,59 @@ class TestConCompProgress(Fixture):
         self.assertFalse(os.path.exists(os.path.join(runs["plain"], "progress.tsv")))
 
 
+class TestHeightSmoothing(unittest.TestCase):
+    """Smoothing that grows with tree height: none for slope 0, more on tall trees."""
+
+    def testTallCrownsSmoothedMoreSmallLess(self):
+        from scipy.ndimage import gaussian_filter
+        from tt.scene import heightSmoothed
+        rng = np.random.default_rng(0)
+        chm = np.zeros((120, 240), np.float32)
+        bumps = rng.normal(0, 0.5, chm.shape).astype(np.float32)
+        chm[:, :120] = 20 + bumps[:, :120]           # tall canopy, branchy
+        chm[:, 120:] = 3 + bumps[:, 120:]            # small trees
+        pixel, base = 0.25, 0.25
+        constant = gaussian_filter(chm, base / pixel)
+        grown = heightSmoothed(chm, base, 0.03, pixel)
+        rough = lambda a, cols: float(np.std(a[10:-10, cols]))
+        tall, small = slice(10, 110), slice(130, 230)
+        # tall canopy: smoother than with the constant sigma
+        self.assertLess(rough(grown, tall), 0.7 * rough(constant, tall))
+        # small trees: about as before (sigma 0.25 + 0.03 x 3 m, one step)
+        self.assertAlmostEqual(rough(grown, small), rough(constant, small),
+                               delta=0.35 * rough(constant, small))
+
+    def testSlopeZeroIsTheConstantSmoothing(self):
+        from tt.dl import dlConComp as cc
+        base = ["--dataset", "x", "--output", "y"]
+        self.assertNotIn(cc.SMOOTH_SLOPE_KEY, cc.gridFromArguments(cc.parseArguments(base)))
+        grid = cc.gridFromArguments(cc.parseArguments(base + ["--smoothSlopes", "0,0.02"]))
+        self.assertEqual(grid[cc.SMOOTH_SLOPE_KEY], [0.0, 0.02])
+
+
+class TestHeightSmoothingRun(Fixture):
+    """In CC's cross-validation, a slope of 0 reproduces the run without it."""
+
+    dataset = TestConCompGrid.dataset
+
+    def testZeroSlopeSameFolds(self):
+        import json
+        from tt.dl import dlConComp as cc
+        grid = ["--resolution", "0.25", "--minHeight", "1", "--percentiles", "0",
+                "--saddleDrops", "0.3,0.5", "--erosions", "0", "--minTopAreas",
+                "0.06", "--topSteps", "0.25", "--smooths", "0,0.25"]
+        out = {}
+        for name, extra in (("plain", []), ("zero", ["--smoothSlopes", "0"]),
+                            ("grown", ["--smoothSlopes", "0,0.03"])):
+            output = os.path.join(self.directory, "cs_" + name)
+            cc.crossValidate(cc.parseArguments(
+                ["--dataset", self.dataset(), "--output", output] + grid + extra))
+            out[name] = json.load(open(os.path.join(output, "results.json")))
+        key = lambda r: [(f["hits"], f["predictions"]) for f in r["folds"]]
+        self.assertEqual(key(out["plain"]), key(out["zero"]))
+        self.assertEqual(len(out["grown"]["folds"]), len(out["plain"]["folds"]))
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
