@@ -205,6 +205,10 @@ def parseArguments(argv=None):
     parser.add_argument("--autoRun", default=None,
                         help="where the automatic run goes (default: beside "
                              "--ccRun, as runs/ccAuto<height>)")
+    parser.add_argument("--autoScorer", default=AUTO_SCORER,
+                        help="the scorer whose choices make the automatic run "
+                             "(default %s; e.g. zones@0.7 scores the boxes "
+                             "zone by zone)" % AUTO_SCORER)
     return parser.parse_args(argv)
 
 
@@ -225,7 +229,8 @@ def autoFromSaved(args):
     record = dc.loadJson(saved)
     found = loadDetections(paths[0])
     writeAutoRun(args.ccRun, record["blocks"], found,
-                 record["pooled"][AUTO_SCORER], args.autoRun)
+                 record["pooled"][args.autoScorer], args.autoRun,
+                 args.autoScorer)
     return True
 
 
@@ -259,7 +264,8 @@ def main(argv=None):
             row["settings"] = validation.settings[row["chosen"]]
     dc.saveJson({"blocks": perBlock, "pooled": table, "target": target},
                 os.path.join(args.output, "pseudoTuning.json"))
-    writeAutoRun(args.ccRun, perBlock, found, table[AUTO_SCORER], args.autoRun)
+    writeAutoRun(args.ccRun, perBlock, found, table[args.autoScorer],
+                 args.autoRun, args.autoScorer)
     printTable(table, target)
     return 0
 
@@ -271,9 +277,10 @@ def autoRunDir(ccRun):
     return os.path.join(os.path.dirname(os.path.normpath(ccRun)), auto)
 
 
-def writeAutoRun(ccRun, perBlock, found, pooled, directory=None):
+def writeAutoRun(ccRun, perBlock, found, pooled, directory=None,
+                 scorer=AUTO_SCORER):
     """
-    The AUTO_SCORER's chosen setting per block, as a run like any other: per
+    The scorer's chosen setting per block, as a run like any other: per
     block the whole-area detections of that setting (as connected-component
     runs store them), and the pooled results. The report then combines it
     with the RGB networks like any height method.
@@ -282,12 +289,12 @@ def writeAutoRun(ccRun, perBlock, found, pooled, directory=None):
     os.makedirs(directory, exist_ok=True)
     folds = []
     for block, rows in sorted(perBlock.items()):
-        row = rows[AUTO_SCORER]
+        row = rows[scorer]
         dc.saveJson({"block": block, "predictions": found[row["chosen"]]},
                     os.path.join(directory, "predictions_%s.json" % block))
         folds.append(dict(row, block=block))
     dc.saveJson({"method": "connected components tuned on the RGB Mask "
-                           "R-CNN's held-out boxes (%s)" % AUTO_SCORER,
+                           "R-CNN's held-out boxes (%s)" % scorer,
                  "folds": folds, "pooled": pooled},
                 os.path.join(directory, "results.json"))
     print("[pseudo] wrote the automatic run %s" % directory)

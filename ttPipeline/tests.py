@@ -2400,6 +2400,31 @@ class TestHeightFilter(unittest.TestCase):
         self.assertFalse(set(HEIGHT_STRATEGIES) & set(STRATEGIES))
 
 
+class TestAutoScorer(unittest.TestCase):
+    """The automatic run follows the chosen scorer; the default is unchanged."""
+
+    def testEachScorerWritesItsOwnChoices(self):
+        import json
+        from tt.pseudoTuning import AUTO_SCORER, parseArguments, writeAutoRun
+        d = tempfile.mkdtemp(prefix="ttAuto")
+        try:
+            found = [[{"centreX": 1.0, "centreY": 1.0, "score": 1.0}],
+                     [{"centreX": 2.0, "centreY": 2.0, "score": 1.0}]]
+            row = lambda chosen: {"chosen": chosen, "recall": 1.0}
+            perBlock = {"s_b00": {AUTO_SCORER: row(0), "zones@0.7": row(1)}}
+            for scorer, expected in ((AUTO_SCORER, 1.0), ("zones@0.7", 2.0)):
+                out = os.path.join(d, scorer)
+                writeAutoRun(os.path.join(d, "ccP1"), perBlock, found, {},
+                             out, scorer)
+                saved = json.load(open(os.path.join(out, "predictions_s_b00.json")))
+                self.assertEqual(saved["predictions"][0]["centreX"], expected)
+            args = parseArguments(["--ccRun", "a", "--rgbRun", "b", "--dataset",
+                                   "c", "--output", "d"])
+            self.assertEqual(args.autoScorer, AUTO_SCORER)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
