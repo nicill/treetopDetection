@@ -157,12 +157,14 @@ def collate(batch):
 # ---------------------------------------------------------------------- #
 
 def buildModel(channelCount, modelType="maskrcnn", pretrained=True,
-               scoreThreshold=None, nmsThreshold=None, imageSize=None):
+               scoreThreshold=None, nmsThreshold=None, imageSize=None,
+               initWeights=None):
     """One detector from the zoo in dlModels, ready for this many channels."""
     return dm.buildDetector(modelType, channelCount, numClasses=2,
                             pretrained=pretrained,
                             scoreThreshold=scoreThreshold,
-                            nmsThreshold=nmsThreshold, imageSize=imageSize)
+                            nmsThreshold=nmsThreshold, imageSize=imageSize,
+                            initWeights=initWeights)
 
 
 def trainFold(model, tiles, root, device, epochs, batchSize, learningRate,
@@ -172,6 +174,8 @@ def trainFold(model, tiles, root, device, epochs, batchSize, learningRate,
                         batch_size=batchSize, shuffle=True,
                         num_workers=workers, collate_fn=collate)
     model.to(device).train()
+    if epochs <= 0:                 # the starting weights as they are
+        return model
     parameters = [p for p in model.parameters() if p.requires_grad]
     optim, scheduler, stepWhen = dm.buildOptimiser(
         model, optimiser, learningRate, epochs, len(loader))
@@ -344,7 +348,8 @@ class MaskRcnnCrossValidation(object):
         model = buildModel(self.meta["channelCount"],
                            modelType=args.modelType,
                            pretrained=args.pretrained,
-                           imageSize=args.imageSize or self.meta["tileSize"])
+                           imageSize=args.imageSize or self.meta["tileSize"],
+                           initWeights=args.initWeights)
         trainFold(model, fitTiles, self.meta["root"], self.device,
                   args.epochs, args.batchSize, args.learningRate,
                   workers=args.workers,
@@ -430,7 +435,8 @@ class TransferRun(MaskRcnnCrossValidation):
         args = self.args
         model = buildModel(source["channelCount"], modelType=args.modelType,
                            pretrained=args.pretrained,
-                           imageSize=args.imageSize or source["tileSize"])
+                           imageSize=args.imageSize or source["tileSize"],
+                           initWeights=args.initWeights)
         trainFold(model, fitTiles, source["root"], self.device, args.epochs,
                   args.batchSize, args.learningRate, workers=args.workers,
                   withMasks=dm.needsMasks(args.modelType),
@@ -545,6 +551,10 @@ def parseArguments(argv=None):
                         help="learning curve, no annotation here: train one "
                              "network on every block of this other dataset "
                              "and apply it to every block of --dataset")
+    parser.add_argument("--initWeights", default=None,
+                        help="start from these weights (a one-class RetinaNet "
+                             "state dict, e.g. DeepForest's tree model from "
+                             "exportDeepForest.py) with --modelType retinanetv1")
     parser.add_argument("--imageSize", type=int, default=0,
                         help="Pixels the model runs at. Default 0 means the "
                              "tile size, i.e. native resolution. Pass 800 to "

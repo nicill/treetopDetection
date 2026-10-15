@@ -2425,6 +2425,57 @@ class TestAutoScorer(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestTreeWeights(unittest.TestCase):
+    """DeepForest's one-class RetinaNet loads into ours without changing it."""
+
+    def setUp(self):
+        try:
+            import torch  # noqa: F401
+            import torchvision  # noqa: F401
+        except ImportError:
+            self.skipTest("torch not installed")
+
+    def testSameScoresAndBoxesAsTheTreeModel(self):
+        import torch
+        import torchvision
+        from torchvision.models.detection.retinanet import RetinaNet
+        from tt.dl import dlModels as dm
+        torch.manual_seed(0)
+        backbone = torchvision.models.detection.retinanet_resnet50_fpn(
+            weights=None, weights_backbone=None).backbone
+        tree = RetinaNet(backbone=backbone, num_classes=1).eval()
+        with torch.no_grad():
+            for p in tree.head.parameters():
+                p.add_(torch.randn_like(p) * 0.01)
+        d = tempfile.mkdtemp(prefix="ttTree")
+        try:
+            path = os.path.join(d, "tree.pt")
+            torch.save({"model." + k: v for k, v in tree.state_dict().items()}, path)
+            ours = dm.buildDetector("retinanetv1", 3, pretrained=False,
+                                    initWeights=path).eval()
+            x = torch.rand(1, 3, 256, 256)
+            with torch.no_grad():
+                a = list(tree.backbone(x).values())
+                b = list(ours.backbone(x).values())
+                ca = tree.head.classification_head(a)
+                cb = ours.head.classification_head(b)
+                self.assertTrue(torch.allclose(cb[..., 1], ca[..., 0], atol=1e-5))
+                self.assertLess(float(torch.sigmoid(cb[..., 0]).max()), 0.011)
+                self.assertTrue(torch.allclose(ours.head.regression_head(b),
+                                               tree.head.regression_head(a),
+                                               atol=1e-5))
+            wrong = torchvision.models.detection.retinanet_resnet50_fpn_v2(
+                weights=None, weights_backbone=None, num_classes=1)
+            bad = os.path.join(d, "v2.pt")
+            torch.save(wrong.state_dict(), bad)
+            with self.assertRaises(ValueError):
+                dm.buildDetector("retinanetv1", 3, pretrained=False, initWeights=bad)
+            with self.assertRaises(ValueError):
+                dm.buildDetector("maskrcnn", 3, pretrained=False, initWeights=path)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.

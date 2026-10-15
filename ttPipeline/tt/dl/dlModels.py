@@ -13,6 +13,9 @@ place.
                                                   train.py uses; much lighter
                                                   and a fair bit weaker
     retinanet     retinanet_resnet50_fpn_v2       boxes, one stage
+    retinanetv1   retinanet_resnet50_fpn          boxes, one stage; DeepForest's
+                                                  architecture, so its tree
+                                                  weights load (--initWeights)
     fcos          fcos_resnet50_fpn               boxes, anchor free
     ssd           ssd300_vgg16                    boxes, fixed 300 px input
 
@@ -41,8 +44,8 @@ from torchvision.models.detection.retinanet import RetinaNetClassificationHead
 from torchvision.models.detection.ssd import SSDClassificationHead
 
 
-MODEL_TYPES = ["maskrcnn", "fasterrcnn", "fasterrcnnmb", "retinanet", "fcos",
-               "ssd"]
+MODEL_TYPES = ["maskrcnn", "fasterrcnn", "fasterrcnnmb", "retinanet",
+               "retinanetv1", "fcos", "ssd"]
 
 MASK_MODELS = {"maskrcnn"}
 
@@ -161,6 +164,59 @@ def _retinanet(weights, numClasses):
     return model
 
 
+def _retinanetV1(weights, numClasses):
+    """torchvision's first RetinaNet (no norm in the head), the architecture of
+    DeepForest's tree model; `weights` "DEFAULT" is COCO."""
+    model = torchvision.models.detection.retinanet_resnet50_fpn(
+        weights=weights, weights_backbone=None)
+    head = model.head.classification_head
+    model.head.classification_head = RetinaNetClassificationHead(
+        in_channels=head.conv[0][0].in_channels, num_anchors=head.num_anchors,
+        num_classes=numClasses)
+    return model
+
+
+def loadTreeWeights(model, path, treeClass=1):
+    """
+    Weights of a one-class RetinaNet (DeepForest's tree model, exported as a
+    state dict) into this RetinaNet v1: every layer carries over, and the
+    classification layer's single class goes to `treeClass`; the other
+    classes start at the head's prior (never firing). Refuses a file that does
+    not fit, rather than training from partly random weights.
+    """
+    import math
+    import torch
+    state = torch.load(path, map_location="cpu")
+    if isinstance(state, dict) and "state_dict" in state:
+        state = state["state_dict"]
+    state = {k[len("model."):] if k.startswith("model.") else k: v
+             for k, v in state.items()}
+    own = model.state_dict()
+    logits = "head.classification_head.cls_logits."
+    missing = [k for k in own if not k.startswith(logits)
+               and (k not in state or state[k].shape != own[k].shape)]
+    if missing:
+        raise ValueError("%s does not fit a RetinaNet v1: %d layers missing or "
+                         "of another shape, e.g. %s" % (path, len(missing),
+                                                        missing[:3]))
+    anchors = model.head.classification_head.num_anchors
+    classes = model.head.classification_head.num_classes
+    weight, bias = state[logits + "weight"], state[logits + "bias"]
+    if weight.shape[0] != anchors:
+        raise ValueError("%s: classification layer has %d outputs, expected %d "
+                         "(one class x %d anchors)" % (path, weight.shape[0],
+                                                       anchors, anchors))
+    newWeight = torch.zeros_like(own[logits + "weight"])
+    newBias = torch.full_like(own[logits + "bias"], -math.log((1 - 0.01) / 0.01))
+    for a in range(anchors):                  # outputs are anchor-major
+        newWeight[a * classes + treeClass] = weight[a]
+        newBias[a * classes + treeClass] = bias[a]
+    merged = {k: (state[k] if not k.startswith(logits) else None) for k in own}
+    merged[logits + "weight"], merged[logits + "bias"] = newWeight, newBias
+    model.load_state_dict(merged)
+    return model
+
+
 def _fcos(weights, numClasses):
     model = torchvision.models.detection.fcos_resnet50_fpn(
         weights=weights, weights_backbone=weights)
@@ -186,11 +242,13 @@ def _ssd(weights, numClasses):
 
 BUILDERS = {"maskrcnn": _maskrcnn, "fasterrcnn": _fasterrcnn,
             "fasterrcnnmb": _fasterrcnnMobile, "retinanet": _retinanet,
+            "retinanetv1": _retinanetV1,
             "fcos": _fcos, "ssd": _ssd}
 
 
 def buildDetector(modelType, channelCount, numClasses=2, pretrained=True,
-                  scoreThreshold=None, nmsThreshold=None, imageSize=None):
+                  scoreThreshold=None, nmsThreshold=None, imageSize=None,
+                  initWeights=None):
     """
     One detector, head replaced for `numClasses` (background included), stem
     rebuilt for `channelCount`, and optionally pinned to `imageSize` pixels.
@@ -198,8 +256,15 @@ def buildDetector(modelType, channelCount, numClasses=2, pretrained=True,
     if modelType not in BUILDERS:
         raise ValueError("unknown modelType %r; expected one of %s"
                          % (modelType, MODEL_TYPES))
-    model = BUILDERS[modelType]("DEFAULT" if pretrained else None, numClasses)
+    # starting weights given: they replace every layer, so no COCO download
+    model = BUILDERS[modelType]("DEFAULT" if pretrained and not initWeights
+                                else None, numClasses)
     model = retargetChannels(model, channelCount)
+    if initWeights:
+        if modelType != "retinanetv1" or channelCount != 3:
+            raise ValueError("--initWeights loads a one-class RetinaNet v1 on "
+                             "RGB: use --modelType retinanetv1 on an RGB set")
+        loadTreeWeights(model, initWeights)
     if imageSize:
         setInputSize(model, imageSize)
     setThresholds(model, scoreThreshold, nmsThreshold)
