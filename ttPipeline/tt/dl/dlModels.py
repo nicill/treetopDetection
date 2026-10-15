@@ -165,10 +165,29 @@ def _retinanet(weights, numClasses):
 
 
 def _retinanetV1(weights, numClasses):
-    """torchvision's first RetinaNet (no norm in the head), the architecture of
-    DeepForest's tree model; `weights` "DEFAULT" is COCO."""
-    model = torchvision.models.detection.retinanet_resnet50_fpn(
-        weights=weights, weights_backbone=None)
+    """
+    torchvision's first RetinaNet, the architecture of DeepForest's tree model,
+    always built as torchvision builds the COCO-pretrained one (frozen batch
+    normalization with eps 0, the first two backbone stages frozen) and as
+    DeepForest builds its own: a COCO start and a tree-weight start
+    (--initWeights) then differ only in their weights. `weights` "DEFAULT"
+    loads COCO's.
+    """
+    from torchvision.models import resnet50
+    from torchvision.models.detection._utils import overwrite_eps
+    from torchvision.models.detection.backbone_utils import _resnet_fpn_extractor
+    from torchvision.models.detection.retinanet import (
+        RetinaNet, RetinaNet_ResNet50_FPN_Weights)
+    from torchvision.ops import misc as misc_nn_ops
+    from torchvision.ops.feature_pyramid_network import LastLevelP6P7
+    backbone = resnet50(weights=None, norm_layer=misc_nn_ops.FrozenBatchNorm2d)
+    backbone = _resnet_fpn_extractor(backbone, 3, returned_layers=[2, 3, 4],
+                                     extra_blocks=LastLevelP6P7(256, 256))
+    model = RetinaNet(backbone, num_classes=91)
+    if weights:
+        model.load_state_dict(RetinaNet_ResNet50_FPN_Weights.COCO_V1.get_state_dict(
+            progress=True, check_hash=True))
+    overwrite_eps(model, 0.0)
     head = model.head.classification_head
     model.head.classification_head = RetinaNetClassificationHead(
         in_channels=head.conv[0][0].in_channels, num_anchors=head.num_anchors,
@@ -194,6 +213,7 @@ def loadTreeWeights(model, path, treeClass=1):
     own = model.state_dict()
     logits = "head.classification_head.cls_logits."
     missing = [k for k in own if not k.startswith(logits)
+               and not k.endswith("num_batches_tracked")
                and (k not in state or state[k].shape != own[k].shape)]
     if missing:
         raise ValueError("%s does not fit a RetinaNet v1: %d layers missing or "
@@ -211,7 +231,8 @@ def loadTreeWeights(model, path, treeClass=1):
     for a in range(anchors):                  # outputs are anchor-major
         newWeight[a * classes + treeClass] = weight[a]
         newBias[a * classes + treeClass] = bias[a]
-    merged = {k: (state[k] if not k.startswith(logits) else None) for k in own}
+    merged = {k: (state[k] if k in state and not k.startswith(logits) else own[k])
+              for k in own}
     merged[logits + "weight"], merged[logits + "bias"] = newWeight, newBias
     model.load_state_dict(merged)
     return model

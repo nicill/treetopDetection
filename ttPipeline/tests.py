@@ -2435,18 +2435,35 @@ class TestTreeWeights(unittest.TestCase):
         except ImportError:
             self.skipTest("torch not installed")
 
-    def testSameScoresAndBoxesAsTheTreeModel(self):
+    @staticmethod
+    def treeModel():
+        """A stand-in for DeepForest's model, built as DeepForest builds it:
+        torchvision's COCO-configured RetinaNet (frozen batch normalization,
+        eps 0, so no num_batches_tracked buffers), one class."""
         import torch
-        import torchvision
+        from torchvision.models import resnet50
+        from torchvision.models.detection._utils import overwrite_eps
+        from torchvision.models.detection.backbone_utils import _resnet_fpn_extractor
         from torchvision.models.detection.retinanet import RetinaNet
-        from tt.dl import dlModels as dm
+        from torchvision.ops import misc as misc_nn_ops
+        from torchvision.ops.feature_pyramid_network import LastLevelP6P7
         torch.manual_seed(0)
-        backbone = torchvision.models.detection.retinanet_resnet50_fpn(
-            weights=None, weights_backbone=None).backbone
-        tree = RetinaNet(backbone=backbone, num_classes=1).eval()
+        backbone = _resnet_fpn_extractor(
+            resnet50(weights=None, norm_layer=misc_nn_ops.FrozenBatchNorm2d), 3,
+            returned_layers=[2, 3, 4], extra_blocks=LastLevelP6P7(256, 256))
+        tree = RetinaNet(backbone, num_classes=1).eval()
+        overwrite_eps(tree, 0.0)
         with torch.no_grad():
             for p in tree.head.parameters():
                 p.add_(torch.randn_like(p) * 0.01)
+        return tree
+
+    def testSameScoresAndBoxesAsTheTreeModel(self):
+        import torch
+        import torchvision
+        from tt.dl import dlModels as dm
+        tree = self.treeModel()
+        self.assertFalse(any(k.endswith("num_batches_tracked") for k in tree.state_dict()))
         d = tempfile.mkdtemp(prefix="ttTree")
         try:
             path = os.path.join(d, "tree.pt")
@@ -2457,6 +2474,7 @@ class TestTreeWeights(unittest.TestCase):
             with torch.no_grad():
                 a = list(tree.backbone(x).values())
                 b = list(ours.backbone(x).values())
+                self.assertTrue(all(torch.allclose(u, v, atol=1e-5) for u, v in zip(a, b)))
                 ca = tree.head.classification_head(a)
                 cb = ours.head.classification_head(b)
                 self.assertTrue(torch.allclose(cb[..., 1], ca[..., 0], atol=1e-5))
@@ -2474,6 +2492,20 @@ class TestTreeWeights(unittest.TestCase):
                 dm.buildDetector("maskrcnn", 3, pretrained=False, initWeights=path)
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+    def testBothStartsShareOneConfiguration(self):
+        """The COCO start and the tree start: frozen normalization with eps 0,
+        and the first two backbone stages frozen, as torchvision builds a
+        pretrained RetinaNet."""
+        from torchvision.ops import misc as misc_nn_ops
+        from tt.dl import dlModels as dm
+        model = dm._retinanetV1(None, 2)
+        norms = [m for m in model.modules() if isinstance(m, misc_nn_ops.FrozenBatchNorm2d)]
+        self.assertTrue(norms)
+        self.assertTrue(all(m.eps == 0.0 for m in norms))
+        frozen = {n.split(".")[2] for n, p in model.named_parameters()
+                  if n.startswith("backbone.body.") and not p.requires_grad}
+        self.assertEqual(frozen, {"conv1", "layer1"})
 
 
 class TestCommandLine(Fixture):
