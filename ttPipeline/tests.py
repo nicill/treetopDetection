@@ -2508,6 +2508,64 @@ class TestTreeWeights(unittest.TestCase):
         self.assertEqual(frozen, {"conv1", "layer1"})
 
 
+class TestTripleFusion(unittest.TestCase):
+    """RGB and CHM networks agreeing, CC voting, CC adding prominent tops."""
+
+    @staticmethod
+    def box(x, y, score, half=1.5):
+        return {"box": [x - half, y - half, x + half, y + half], "score": score,
+                "centreX": x, "centreY": y}
+
+    @staticmethod
+    def top(x, y, prominence):
+        return {"box": [x, y, x, y], "score": 1.0, "centreX": x, "centreY": y,
+                "prominence": prominence}
+
+    def testAgreementVoteAndAdditions(self):
+        from tt.tripleFusion import triple
+        rgb = [self.box(0, 0, 0.40), self.box(10, 0, 0.80), self.box(30, 0, 0.25)]
+        chm = [self.box(0.2, 0, 0.40), self.box(20, 0, 0.60), self.box(30.1, 0, 0.25),
+               self.box(40, 0, 0.05)]
+        cc = [self.top(20, 0.5, 1.0),                    # inside the lone CHM box at 20
+              self.top(50, 0, 3.0),                      # free, prominent
+              self.top(60, 0, 0.2),                      # free, not prominent
+              self.top(39.5, 0, 3.0), self.top(40.5, 0, 2.5)]   # two in one CHM box
+        off = float("inf")
+        # agreement only: the pair at 0 (both 0.40 >= low) and the confident RGB box
+        out = triple(rgb, chm, cc, high=0.7, low=0.3, vote=off, prominence=off)
+        self.assertEqual(sorted(round(p["centreX"]) for p in out), [0, 10])
+        # the pair at 30 is too weak for low=0.3
+        self.assertNotIn(30, [round(p["centreX"]) for p in out])
+        # CC's vote rescues the CHM box at 20 (0.60 >= vote) that holds a top
+        out = triple(rgb, chm, cc, high=0.7, low=0.3, vote=0.5, prominence=off)
+        self.assertEqual(sorted(round(p["centreX"]) for p in out), [0, 10, 20])
+        # prominent free tops are added; of the two in one CHM box, one only
+        out = triple(rgb, chm, cc, high=0.7, low=0.3, vote=off, prominence=2.0)
+        xs = sorted(round(p["centreX"], 1) for p in out)
+        self.assertEqual(xs, [0.0, 10.0, 39.5, 50.0])
+
+    def testOnePerPair(self):
+        from tt.tripleFusion import triple
+        rgb, chm = [self.box(0, 0, 0.9)], [self.box(0.3, 0.2, 0.95)]
+        out = triple(rgb, chm, [], high=0.5, low=0.3, vote=float("inf"),
+                     prominence=float("inf"))
+        self.assertEqual(len(out), 1)
+        self.assertAlmostEqual(out[0]["score"], 0.95)
+
+    def testProminence(self):
+        from affine import Affine
+        from tt.fusion import SaddleSurface
+        from tt.tripleFusion import prominenceAt
+        rows, columns = np.mgrid[0:80, 0:80].astype(float)
+        chm = np.maximum(5 * np.clip(1 - np.hypot(rows - 40, columns - 20) / 8, 0, 1),
+                         np.maximum(6 * np.clip(1 - np.hypot(rows - 40, columns - 50) / 8, 0, 1),
+                                    0.0)).astype(np.float32)
+        surface = SaddleSurface(chm, Affine(1, 0, 0, 0, -1, 80), 1.0, dropM=0.5)
+        x, y = 20.5, 80 - 40.5
+        self.assertAlmostEqual(prominenceAt(surface, x, y), 5.0, delta=0.15)
+        self.assertAlmostEqual(prominenceAt(surface, 50.5, 80 - 40.5), 6.0, delta=0.15)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
