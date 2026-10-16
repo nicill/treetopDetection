@@ -2610,6 +2610,39 @@ class TestReducedFusion(unittest.TestCase):
         self.assertEqual(xs, [0, 30, 50])
 
 
+class TestCurveRowsOfAnotherNetwork(unittest.TestCase):
+    """siteRows reads the CHM network's runs by prefix, the RGB network's by default."""
+
+    @staticmethod
+    def results(f1, blocks=("s_b00", "s_b01")):
+        folds = [{"block": b, "crowns": 100, "hits": int(100 * f1),
+                  "predictions": 100, "repeats": 0, "falsePositives": 0,
+                  "recall": f1, "precision": 1.0, "f1": 2 * f1 / (1 + f1),
+                  "weighted": 0.6 * f1 + 0.4} for b in blocks]
+        return {"folds": folds}
+
+    def testPrefixSelectsTheNetworkAndDefaultIsUnchanged(self):
+        import json
+        from tt.learningCurve import siteRows
+        d = tempfile.mkdtemp(prefix="ttRows")
+        try:
+            for name, f1 in (("mrcnn_f1_s1", 0.9), ("mrcnn_f0.5_s1", 0.8),
+                             ("mrcnnChm_f1_s1", 0.7), ("mrcnnChm_f0.5_s1", 0.6),
+                             ("mrcnnChm_f0.5_s2", 0.5), ("mrcnnChm_transfer", 0.2)):
+                os.makedirs(os.path.join(d, name))
+                json.dump(self.results(f1), open(os.path.join(d, name, "results.json"), "w"))
+            rgb = {r["point"]: r for r in siteRows(d)}
+            chm = {r["point"]: r for r in siteRows(d, prefix="mrcnnChm", name="mrcnnChm")}
+            self.assertEqual(set(rgb), {"50%", "100%"})              # the CHM runs ignored
+            self.assertEqual(set(chm), {"other site", "50%", "100%"})
+            self.assertTrue(all(r["method"] == "mrcnnChm" for r in chm.values()))
+            self.assertEqual(chm["50%"]["draws"], 2)                  # two draws, one row
+            self.assertAlmostEqual(chm["50%"]["recall"], 0.55)
+            self.assertAlmostEqual(rgb["50%"]["recall"], 0.8)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.

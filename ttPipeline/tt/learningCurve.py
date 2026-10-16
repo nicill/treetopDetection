@@ -175,7 +175,6 @@ def ccCommand(args):
 # summary
 # ---------------------------------------------------------------------- #
 
-NETWORK_RUN = re.compile(r"mrcnn_f([0-9.]+)_s(\d+)$")
 
 
 def suffixes(folds):
@@ -190,12 +189,14 @@ def repool(folds, keep):
                       for f in chosen])
 
 
-def networkPoints(siteDir):
-    """{(fraction, seed): folds} of the site's Mask R-CNN runs."""
+def networkPoints(siteDir, prefix="mrcnn"):
+    """{(fraction, seed): folds} of the site's Mask R-CNN runs (folders
+    <prefix>_f<fraction>_s<seed>; "mrcnnChm" for the CHM network's)."""
     points = {}
-    for path in glob.glob(os.path.join(siteDir, "mrcnn_f*_s*",
+    run = re.compile(r"^%s_f([0-9.]+)_s(\d+)$" % re.escape(prefix))
+    for path in glob.glob(os.path.join(siteDir, prefix + "_f*_s*",
                                        "results.json")):
-        match = NETWORK_RUN.search(os.path.basename(os.path.dirname(path)))
+        match = run.search(os.path.basename(os.path.dirname(path)))
         if match:
             points[(float(match.group(1)), int(match.group(2)))] = \
                 dc.loadJson(path)["folds"]
@@ -240,20 +241,22 @@ def summaryRow(method, point, pooled):
     return mean
 
 
-def siteRows(siteDir):
+def siteRows(siteDir, prefix="mrcnn", name="mrcnnRgb"):
+    """The site's curve rows; prefix and name select another network's runs
+    (the CHM network: "mrcnnChm", "mrcnnChm"), pooled over its own blocks."""
     curves = [dc.loadJson(p) for p in sorted(glob.glob(
         os.path.join(siteDir, "ccCurve_*.json")))]
-    networks = networkPoints(siteDir)
+    networks = networkPoints(siteDir, prefix)
     full = networks.get((1.0, 1))
     keep = suffixes(full) if full else None
     crowns = crownsByDraw(curves)
     rows = []
-    transfer = os.path.join(siteDir, "mrcnn_transfer", "results.json")
+    transfer = os.path.join(siteDir, prefix + "_transfer", "results.json")
     if os.path.exists(transfer):
-        rows.append(summaryRow("mrcnnRgb", "other site", [dict(
+        rows.append(summaryRow(name, "other site", [dict(
             repool(dc.loadJson(transfer)["folds"], keep),
             crownsUsedPerFold=0.0)]))
-    rows += rowsFor("mrcnnRgb", networks, keep, crowns)
+    rows += rowsFor(name, networks, keep, crowns)
     for record in curves:
         name = os.path.basename(os.path.normpath(record["ccRun"]))
         if "transfer" in record:
