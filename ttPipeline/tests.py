@@ -1953,6 +1953,47 @@ class TestNetworkSubsets(CurveSite):
         self.assertTrue(os.path.exists(os.path.join(
             args.output, "predictions_%s.json" % folds[0]["block"])))
 
+    def crossValidation(self, dataset, *extra):
+        args = self.mr.parseArguments(["--dataset", dataset, "--output",
+                                       self.path("out"), "--device", "cpu",
+                                       "--trainFraction", "0.5", "--subsetSeed", "2"]
+                                      + list(extra))
+        return self.mr.MaskRcnnCrossValidation(args)
+
+    @staticmethod
+    def keys(fold):
+        fit, val, _, _ = fold
+        return {(t["block"], t["r0"], t["c0"]) for t in fit + val}
+
+    def reducedDataset(self):
+        """The CHM dataset's list without the RGB list's busiest tile."""
+        import json
+        meta = json.load(open(self.path("rgb", "dataset.json")))
+        victim = max(meta["tiles"], key=lambda t: t["crownCount"])
+        meta["tiles"] = [t for t in meta["tiles"] if t is not victim]
+        folder = self.path("reduced")
+        os.makedirs(folder, exist_ok=True)
+        json.dump(meta, open(os.path.join(folder, "dataset.json"), "w"))
+        return folder, (victim["block"], victim["r0"], victim["c0"])
+
+    def testIdenticalDatasetsDrawAsBefore(self):
+        plain = self.crossValidation(self.path("chm"))
+        drawn = self.crossValidation(self.path("chm"), "--drawFrom", self.path("rgb"))
+        for block, _ in plain.blocks:
+            a, b = plain.splitFold(block), drawn.splitFold(block)
+            self.assertEqual(self.keys(a) if a else None, self.keys(b) if b else None)
+
+    def testAMissingTileLeavesTheRestOfTheDrawAlone(self):
+        folder, victim = self.reducedDataset()
+        reference = self.crossValidation(self.path("rgb"))
+        reduced = self.crossValidation(folder, "--drawFrom", self.path("rgb"))
+        for block, _ in reference.blocks:
+            want, got = reference.splitFold(block), reduced.splitFold(block)
+            if want is None or got is None:
+                continue
+            self.assertEqual(self.keys(got), self.keys(want) - {victim})
+
+
 
 class TestBaselines(unittest.TestCase):
     """The classical CHM baselines' detectors, on hand-made height models."""

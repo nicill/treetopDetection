@@ -298,14 +298,31 @@ class MaskRcnnCrossValidation(object):
         if not trainTiles or not testTiles:
             return None
         # the learning curve's annotated subset; all of them by default
-        trainTiles = dc.drawTiles(trainTiles, self.args.trainFraction,
-                                  self.args.subsetSeed, name)
+        trainTiles = self.drawSubset(trainTiles, name)
         validationBlock = dc.chooseValidationBlock(trainTiles, name)
         valTiles = [t for t in trainTiles if t["block"] == validationBlock]
         fitTiles = [t for t in trainTiles if t["block"] != validationBlock]
         if not valTiles or not fitTiles:
             fitTiles, valTiles = trainTiles, trainTiles[:1]
         return fitTiles, valTiles, validationBlock, testTiles
+
+    def drawSubset(self, trainTiles, name):
+        """
+        The fold's annotated subset of the training tiles. With --drawFrom the
+        draw is made on that dataset's tiles (the RGB dataset, whose list CC's
+        curve uses) and this dataset keeps the drawn tiles it has, so two
+        datasets of one site whose tile lists differ by a few tiles still get
+        the same annotation; without it, the draw is on this dataset's own.
+        """
+        args = self.args
+        if not args.drawFrom or args.trainFraction >= 1:
+            return dc.drawTiles(trainTiles, args.trainFraction, args.subsetSeed, name)
+        other = dp.loadDataset(args.drawFrom)
+        otherTrain, _ = dc.foldSplit(other["tiles"], other["blockGeometries"],
+                                     name, args.buffer)
+        drawn = {(t["block"], t["r0"], t["c0"]) for t in dc.drawTiles(
+            otherTrain, args.trainFraction, args.subsetSeed, name)}
+        return [t for t in trainTiles if (t["block"], t["r0"], t["c0"]) in drawn]
 
     def predict(self, model, tiles, meta=None):
         meta = meta or self.meta
@@ -545,6 +562,10 @@ def parseArguments(argv=None):
                              "operating point) on this fraction of each "
                              "training block's tiles, whole tiles drawn at "
                              "random (dlCommon.drawTiles); 1 = all")
+    parser.add_argument("--drawFrom", default=None,
+                        help="draw the --trainFraction subset on this dataset's "
+                             "tiles (e.g. the site's RGB dataset when training on "
+                             "its CHM) and keep those this dataset has")
     parser.add_argument("--subsetSeed", type=int, default=1,
                         help="which random draw of --trainFraction")
     parser.add_argument("--transferFrom", default=None,
