@@ -31,7 +31,8 @@ from scipy.ndimage import label
 
 from tt.comparison import MethodRun, sharedBlocks
 from tt.dl import dlCommon as dc
-from tt.fusion import _grid, containment, printSummary, slim
+from tt.fusion import (POINT_SCORE, THRESHOLDS, _grid, boxesAlone, containment,
+                       printSummary, slim, union)
 from tt.heightFilter import siteInputs
 from tt.report import saveFusedOutputs
 
@@ -222,6 +223,124 @@ class TripleFusion(object):
         return summary
 
 
+# --------------------------------------------------------------------- #
+# the reduced versions: the union plus one idea each, "off" = the union
+# --------------------------------------------------------------------- #
+
+CLEAN_AT = [np.inf, 0.7, 0.5, 0.3, 0.2, 0.1]     # no cleaning first: ties keep the union
+HALF = 0.5                                        # fixed, never tuned
+
+
+def cleanedTops(tops, chmBoxes, cleanAt):
+    """
+    CC tops sharing a CHM Mask R-CNN box (score >= cleanAt) collapse to the
+    most prominent of them; tops in no such box are kept. cleanAt infinite
+    leaves the tops as they are.
+    """
+    if not np.isfinite(cleanAt) or not tops:
+        return list(tops)
+    boxes = [b for b in chmBoxes if b["score"] >= cleanAt]
+    if not boxes:
+        return list(tops)
+    inside = containment(tops, boxes)
+    scores = np.array([b["score"] for b in boxes])
+    owner = np.where(inside.any(axis=1),
+                     np.argmax(np.where(inside, scores[None, :], -np.inf), axis=1), -1)
+    best = {}
+    for index, box in enumerate(owner):
+        if box >= 0 and (box not in best or tops[index].get("prominence", 0)
+                         > tops[best[box]].get("prominence", 0)):
+            best[box] = index
+    grouped = set(best.values())
+    return [t for index, t in enumerate(tops) if owner[index] < 0 or index in grouped]
+
+
+def addedTops(kept, cc):
+    """The CC tops the union adds: those inside no kept box, as union writes them."""
+    covered = containment(cc, kept).any(axis=1) if kept else np.zeros(len(cc), bool)
+    return [dict(p, score=POINT_SCORE) for p, c in zip(cc, covered) if not c]
+
+
+def unionClean(rgb, chm, cc, threshold, cleanAt):
+    """The union, its added CC tops cleaned by the CHM network's boxes."""
+    kept = boxesAlone(rgb, cc, threshold)
+    return kept + cleanedTops(addedTops(kept, cc), chm, cleanAt)
+
+
+def agreedBoxes(rgb, chm, rgbAt, chmAt):
+    """
+    Both networks' boxes, one detection per overlapping pair: kept when either
+    score reaches that network's own operating threshold, or both reach HALF
+    of theirs. Fixed rules, nothing tuned.
+    """
+    pairs, loneRgb, loneChm = pairBoxes(rgb, chm)
+    out = []
+    for i, j in pairs:
+        a, b = rgb[i], chm[j]
+        if (a["score"] >= rgbAt or b["score"] >= chmAt
+                or (a["score"] >= HALF * rgbAt and b["score"] >= HALF * chmAt)):
+            out.append(a if a["score"] >= b["score"] else b)
+    out += [rgb[i] for i in loneRgb if rgb[i]["score"] >= rgbAt]
+    out += [chm[j] for j in loneChm if chm[j]["score"] >= chmAt]
+    return out
+
+
+def agreeClean(rgb, chm, cc, rgbAt, chmAt, cleanAt):
+    """Agreed boxes, plus the CC tops they leave, cleaned by the CHM boxes."""
+    kept = agreedBoxes(rgb, chm, rgbAt, chmAt)
+    return kept + cleanedTops(addedTops(kept, cc), chm, cleanAt)
+
+
+class ReducedFusion(TripleFusion):
+    """union, unionClean and agreeClean under leave-one-block-out."""
+
+    NAMES = ("boxes", "union", "unionClean", "agreeClean")
+
+    def runFold(self, block):
+        vBlock, vRgb, vChm, vCc = self._split(block, "validation")
+        _, tRgb, tChm, tCc = self._split(block, "test")
+        rgbAt = self.runs[0].threshold(block)
+        chmAt = self.runs[1].threshold(block)
+        grids = {"union": _grid({"threshold": THRESHOLDS}),
+                 "unionClean": _grid({"threshold": THRESHOLDS, "cleanAt": CLEAN_AT}),
+                 "agreeClean": _grid({"cleanAt": CLEAN_AT})}
+        apply = {"union": lambda r, c, p, st: union(r, p, **st),
+                 "unionClean": lambda r, c, p, st: unionClean(r, c, p, **st),
+                 "agreeClean": lambda r, c, p, st: agreeClean(r, c, p, rgbAt, chmAt, **st)}
+        results = {}
+        for name in self.NAMES:
+            if name == "boxes":
+                setting = {"threshold": rgbAt}
+                output = [p for p in tRgb if p["score"] >= rgbAt]
+            else:
+                best, bestScore = None, -1.0
+                for setting in grids[name]:
+                    score = dc.objectiveOf(self._score(
+                        apply[name](vRgb, vChm, vCc, setting), vBlock))
+                    if score > bestScore:
+                        best, bestScore = setting, score
+                setting = best
+                output = apply[name](tRgb, tChm, tCc, setting)
+            result = self._score(output, block)
+            result.update(block=block, output=[slim(p) for p in output],
+                          setting={k: (None if not np.isfinite(v) else v)
+                                   for k, v in setting.items()})
+            results[name] = result
+        return results
+
+    def run(self):
+        perName = {n: [] for n in self.NAMES}
+        self.outputs = {n: {} for n in self.NAMES}
+        for block in sorted(self.blocks):
+            for name, result in self.runFold(block).items():
+                self.outputs[name][block] = result.pop("output")
+                perName[name].append(result)
+        summary = {n: {"folds": f, "pooled": dc.averageFolds(f)} for n, f in perName.items()}
+        if self.verbose:
+            printSummary(summary)
+        return summary
+
+
 def height(site):
     return "Lidar" if os.path.isdir(os.path.join(site, "runs", "ccLidar")) else "P1"
 
@@ -252,8 +371,40 @@ def fuseSite(site, ccName=None, verbose=True):
     return summary
 
 
+def fuseSiteReduced(site, ccName=None, verbose=True):
+    """The reduced versions at one site, into report/fused/mrcnnRgb_lite; the
+    union scored here must match the report's, so the rows compare like with like."""
+    h = height(site)
+    meta, scene, surface = siteInputs(site)
+    blocks = meta["blockGeometries"]
+    ccName = ccName or "cc" + h
+    runs = [MethodRun(n, os.path.join(site, "runs", n), blocks)
+            for n in ("mrcnnRgb", "mrcnn" + h, ccName)]
+    validation = ReducedFusion(scene.crowns, blocks, *runs, surface=surface,
+                               verbose=verbose)
+    summary = validation.run()
+    saved = os.path.join(site, "report", "fused", "mrcnnRgb_" + ccName, "summary.json")
+    if os.path.exists(saved):
+        reference = dc.loadJson(saved)
+        for name in ("boxes", "union"):
+            a, b = reference[name]["pooled"], summary[name]["pooled"]
+            if (a["hits"], a["predictions"]) != (b["hits"], b["predictions"]):
+                raise RuntimeError("%s: '%s' scores %d / %d here but %d / %d in the "
+                                   "report: not the same inputs"
+                                   % (site, name, b["hits"], b["predictions"],
+                                      a["hits"], a["predictions"]))
+    folder = os.path.join(site, "report", "fused", "mrcnnRgb_lite")
+    os.makedirs(folder, exist_ok=True)
+    dc.saveJson(summary, os.path.join(folder, "summary.json"))
+    saveFusedOutputs(folder, validation.outputs)
+    return summary
+
+
 def parseArguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--reduced", action="store_true",
+                        help="the reduced versions (union, unionClean, agreeClean) "
+                             "instead of the three-way rule")
     parser.add_argument("--site", action="append", required=True,
                         help="a site folder of the procedure (repeatable)")
     parser.add_argument("--cc", default=None,
@@ -266,7 +417,7 @@ def main(argv=None):
     args = parseArguments(argv)
     for site in args.site:
         print("[triple] %s" % os.path.basename(os.path.normpath(site)))
-        fuseSite(site, args.cc)
+        (fuseSiteReduced if args.reduced else fuseSite)(site, args.cc)
     return 0
 
 

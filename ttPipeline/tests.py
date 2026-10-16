@@ -2566,6 +2566,50 @@ class TestTripleFusion(unittest.TestCase):
         self.assertAlmostEqual(prominenceAt(surface, 50.5, 80 - 40.5), 6.0, delta=0.15)
 
 
+class TestReducedFusion(unittest.TestCase):
+    """The union plus one idea each: off = the union, cleaning keeps one top per CHM box."""
+
+    box = staticmethod(TestTripleFusion.box)
+    top = staticmethod(TestTripleFusion.top)
+
+    def testCleaningKeepsTheMostProminentTopPerChmBox(self):
+        from tt.tripleFusion import cleanedTops
+        chm = [self.box(0, 0, 0.8), self.box(20, 0, 0.15)]
+        tops = [self.top(-0.5, 0, 1.0), self.top(0.6, 0, 3.0), self.top(10, 10, 0.5),
+                self.top(19.5, 0, 2.0), self.top(20.5, 0, 1.0)]
+        xs = lambda out: sorted(round(t["centreX"], 1) for t in out)
+        # CHM box at 0 (score 0.8) groups the first two; the one at 20 needs cleanAt <= 0.15
+        self.assertEqual(xs(cleanedTops(tops, chm, 0.5)), [0.6, 10, 19.5, 20.5])
+        self.assertEqual(xs(cleanedTops(tops, chm, 0.1)), [0.6, 10, 19.5])
+        self.assertEqual(xs(cleanedTops(tops, chm, float("inf"))), xs(tops))
+
+    def testOffIsTheUnion(self):
+        from tt.fusion import union
+        from tt.tripleFusion import unionClean
+        rgb = [self.box(0, 0, 0.9), self.box(10, 0, 0.4), self.box(30, 0, 0.7)]
+        chm = [self.box(20, 0, 0.9)]
+        cc = [self.top(0.2, 0, 1.0), self.top(10, 0, 2.0), self.top(19.5, 0, 1.0),
+              self.top(20.5, 0, 3.0), self.top(50, 0, 1.0)]
+        for threshold in (0.3, 0.5, 0.8):
+            a = union(rgb, cc, threshold)
+            b = unionClean(rgb, chm, cc, threshold, float("inf"))
+            self.assertEqual([(p["centreX"], p["score"]) for p in a],
+                             [(p["centreX"], p["score"]) for p in b])
+        cleaned = unionClean(rgb, chm, cc, 0.5, 0.5)
+        self.assertEqual(len(cleaned), len(union(rgb, cc, 0.5)) - 1)   # 19.5 and 20.5 -> one
+
+    def testAgreedBoxesFixedRules(self):
+        from tt.tripleFusion import agreedBoxes
+        rgb = [self.box(0, 0, 0.30), self.box(10, 0, 0.10), self.box(30, 0, 0.60)]
+        chm = [self.box(0.1, 0, 0.30), self.box(10.1, 0, 0.40), self.box(50, 0, 0.55),
+               self.box(60, 0, 0.10)]
+        out = agreedBoxes(rgb, chm, rgbAt=0.5, chmAt=0.5)
+        xs = sorted(round(p["centreX"]) for p in out)
+        # pair at 0: both at 0.30 >= half of 0.5 -> kept; pair at 10: 0.10 < 0.25 and
+        # 0.40 < 0.5 -> dropped; lone RGB 30 (0.60) and lone CHM 50 (0.55) kept; lone 60 dropped
+        self.assertEqual(xs, [0, 30, 50])
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
