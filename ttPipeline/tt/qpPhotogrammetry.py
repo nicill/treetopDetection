@@ -16,6 +16,9 @@ alone, processed as the LiDAR was, so the two CHMs differ by their data and
 not by how they were made. (Ground from the surface model alone,
 tt.groundModel, put the floor between the trees 0.5-2 m above 0 here.)
 
+With --cloudDir the clouds are read from local copies (a Globus transfer of
+the same files) instead of the server; the CHM is the same.
+
 Finished tiles are kept per site (--workDir) until the site is done, so a
 stopped run loses only the tiles in progress; the same command reuses them.
 
@@ -80,6 +83,21 @@ def cloudUrl(site, reachable=None):
             return url
     raise OSError("no photogrammetric point cloud for %s; tried %s"
                   % (site, ", ".join(c.rsplit("/", 1)[1] for c in candidates)))
+
+
+def localCloud(site, folder):
+    """
+    The site's point cloud in a local folder (a Globus transfer of the file,
+    or of its whole <site>_p1 folder), under either of its names.
+    """
+    candidates = [os.path.join(d, name % site) for name in CLOUD_NAMES
+                  for d in (folder, os.path.join(folder, site + "_p1"))]
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    raise OSError("no local point cloud for %s in %s; looked for %s"
+                  % (site, folder, ", ".join(sorted({os.path.basename(c)
+                                                     for c in candidates}))))
 
 
 def urlExists(url, timeoutS=60):
@@ -300,6 +318,10 @@ def parseArguments(argv=None):
     parser.add_argument("--pdal", required=True, help="Path to the pdal program")
     parser.add_argument("--sites", nargs="*", default=list(SELECTED),
                         help="Default: the five selected sites")
+    parser.add_argument("--cloudDir", default=None,
+                        help="Read each site's point cloud from this local "
+                             "folder (downloaded with Globus) instead of the "
+                             "server: same file, same CHM, no network stalls")
     parser.add_argument("--tileM", type=float, default=50.0,
                         help="Tile size; smaller if PDAL runs out of memory "
                              "or time on the dense photogrammetric cloud")
@@ -318,6 +340,8 @@ def parseArguments(argv=None):
     if os.path.abspath(args.output) == os.path.abspath(args.prepared):
         parser.error("--output must differ from --prepared")
     args.cloudSource = cloudUrl
+    if args.cloudDir:
+        args.cloudSource = lambda site: localCloud(site, args.cloudDir)
     return args
 
 

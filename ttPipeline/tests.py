@@ -2796,6 +2796,23 @@ class TestQpPhotogrammetry(unittest.TestCase):
         with self.assertRaises(OSError):
             p1.cloudUrl("x", reachable=lambda url: False)
 
+    def testLocalCloudFoundInEitherLayout(self):
+        from tt import qpPhotogrammetry as p1
+        d = os.path.join(self.directory, "clouds")
+        os.makedirs(os.path.join(d, "20230608_cbbernard4_p1"))
+        flat = os.path.join(d, "20230606_cbblackburn6_p1_pg.copc.laz")
+        nested = os.path.join(d, "20230608_cbbernard4_p1",
+                              "20230608_cbbernard4_p1_pg.copc.laz")
+        for path in (flat, nested):
+            open(path, "w").close()
+        self.assertEqual(p1.localCloud("20230606_cbblackburn6", d), flat)
+        self.assertEqual(p1.localCloud("20230608_cbbernard4", d), nested)
+        with self.assertRaises(OSError):
+            p1.localCloud("20230712_afcahoule_itrf20", d)
+        args = p1.parseArguments(["--prepared", "a", "--output", "b", "--pdal",
+                                  "x", "--cloudDir", d])
+        self.assertEqual(args.cloudSource("20230606_cbblackburn6"), flat)
+
     def testOffGridChmIsRefused(self):
         import rasterio
         from affine import Affine
