@@ -2,29 +2,32 @@
 Quebec Plantations: a photogrammetric CHM for sites already prepared by
 tt.qpPrepare, so every method can run on photogrammetry instead of LiDAR.
 
-    python -m tt.qpPhotogrammetry --prepared "$QP" --output "$QP_P1"
+    python -m tt.qpPhotogrammetry --prepared "$QP" --output "$QP_P1" \\
+        --pdal ~/anaconda3/envs/pdal/bin/pdal
 
-Per site, the dataset's photogrammetric surface model
-(Photogrammetry_Products/<site>_p1/<site>_p1_dsm_highdis.cog.tif) is read from
-the FRDR server for the site's grid only, at the LiDAR CHM's resolution, from
-the overview closest to it. Ground comes from the surface model alone
-(tt.groundModel: low points through gaps in the canopy), so the CHM needs no
-LiDAR. The surface is read --marginM beyond the site, so the ground at the
-site's edge is estimated with a full window around it.
+Per site, the dataset's photogrammetric point cloud
+(Photogrammetry_Products/<site>_p1/<site>_p1_pg_highdis.copc.laz) goes through
+exactly the pipeline qpPrepare runs on the LiDAR: read from the FRDR server
+for the annotated area only, in tiles, statistical outlier removal, SMRF
+ground, height above the Delaunay ground, highest point per cell, empty cells
+from their nearest neighbour. Ground and heights come from the photographs
+alone, processed as the LiDAR was, so the two CHMs differ by their data and
+not by how they were made. (Ground from the surface model alone,
+tt.groundModel, put the floor between the trees 0.5-2 m above 0 here.)
 
-The new CHM is on exactly the LiDAR CHM's grid, 0 outside area.shp, cells
-without surface filled from their nearest neighbour (chmCellsFilled). Only the
-height model changes: crowns, the scored area and the don't-care areas are
-copied from the LiDAR site unchanged, so both CHMs are scored on the same
-trees. rgb.tif is linked (relative link, so it works in a synced folder on any
-computer).
+The new CHM is on the LiDAR CHM's grid (checked), 0 outside area.shp. Only
+the height model changes: crowns, the scored area and the don't-care areas
+are copied from the LiDAR site unchanged, so both CHMs are scored on the same
+trees. rgb.tif is linked (relative link, so it works in a synced folder on
+any computer).
 
 Per site, in <output>/<site>/: chm.tif, the copied layers, rgb.tif (link),
 quicklook.png (LiDAR and photogrammetric CHM with the crowns) and check.json:
 the CHM against the field heights (as qpPrepare reports for LiDAR, both given),
-crown tops against the LiDAR CHM's, and the scored crowns whose photogrammetric
-top is below the site's visibleM. check.json is written last: a site with one
-is prepared and is skipped.
+crown tops against the LiDAR CHM's, the scored crowns whose photogrammetric
+top is below the site's visibleM, and the floor: the photogrammetric CHM
+where the LiDAR CHM is 0. check.json is written last: a site with one is
+prepared and is skipped.
 """
 
 import argparse
@@ -32,6 +35,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 
 import geopandas as gpd
 import matplotlib
@@ -39,10 +43,8 @@ import numpy as np
 import rasterio
 from rasterio.enums import Resampling
 from rasterio.features import geometry_mask
-from rasterio.windows import from_bounds
 
 from tt import qpPrepare as qp
-from tt.groundModel import GroundModel
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402  (after the backend is chosen)
@@ -52,83 +54,28 @@ SELECTED = ("20230712_afcahoule_itrf20", "20230712_afcamoisan_itrf20",
             "20230608_cbbernard4")
 COPIED = ("area", "scoredArea", "crowns", "ignored", "uncovered", "trees")
 SHAPE_PARTS = (".shp", ".shx", ".dbf", ".prj", ".cpg")
-BAD_SURFACE_M = -1000.0      # below this a value is an undeclared nodata
+LIDAR_ZERO_M = 0.05          # LiDAR CHM below this: the floor between trees
 
 
-def dsmUrl(site):
-    return "%sPhotogrammetry_Products/%s_p1/%s_p1_dsm_highdis.cog.tif" % (
+def cloudUrl(site):
+    return "%sPhotogrammetry_Products/%s_p1/%s_p1_pg_highdis.copc.laz" % (
         qp.BASE, site, site)
 
 
-def chmGrid(path, marginM):
-    """The LiDAR CHM's grid, and the same grid grown by marginM per side."""
+def chmResolution(path):
     with rasterio.open(path) as src:
-        t, width, height, crs = src.transform, src.width, src.height, src.crs
-    resolution = t.a
-    cells = int(np.ceil(marginM / resolution))
-    grid = {"transform": t, "width": width, "height": height, "crs": crs,
-            "resolution": resolution, "margin": cells}
-    west, north = t.c - cells * resolution, t.f + cells * resolution
-    grid["bounds"] = (west, north - (height + 2 * cells) * resolution,
-                      west + (width + 2 * cells) * resolution, north)
-    return grid
+        return src.res[0]
 
 
-def readInside(src, bounds, resolution, out):
-    """Fill out (on the bounds' grid) where the source has surface."""
-    west, south, east, north = bounds
-    x0, y0 = max(west, src.bounds.left), max(south, src.bounds.bottom)
-    x1, y1 = min(east, src.bounds.right), min(north, src.bounds.top)
-    c0 = int(round((x0 - west) / resolution))
-    c1 = int(round((x1 - west) / resolution))
-    r0 = int(round((north - y1) / resolution))
-    r1 = int(round((north - y0) / resolution))
-    if c1 <= c0 or r1 <= r0:
-        return
-    window = from_bounds(west + c0 * resolution, north - r1 * resolution,
-                         west + c1 * resolution, north - r0 * resolution,
-                         src.transform)
-    data = src.read(1, window=window, out_shape=(r1 - r0, c1 - c0),
-                    resampling=Resampling.average, masked=True)
-    data = data.astype(np.float32).filled(np.nan)
-    data[data < BAD_SURFACE_M] = np.nan
-    out[r0:r1, c0:c1] = data
-
-
-def readSurface(source, grid):
-    """
-    The surface over the grown grid, NaN where there is none. Read from the
-    overview closest to the resolution, only where the image is (a boundless
-    read would fetch the full-resolution model over HTTPS).
-    """
-    west, south, east, north = grid["bounds"]
-    resolution = grid["resolution"]
-    shape = (int(round((north - south) / resolution)),
-             int(round((east - west) / resolution)))
-    surface = np.full(shape, np.nan, np.float32)
-    path = source if not source.startswith("http") else "/vsicurl/" + source
-    with rasterio.Env(**qp.GDAL_HTTP):
-        with rasterio.open(path) as src:
-            level, crs = qp.overviewLevel(src, resolution), src.crs
-        if crs != grid["crs"]:
-            raise ValueError("surface model in %s, CHM in %s: not the same "
-                             "coordinate system" % (crs, grid["crs"]))
-        options = {} if level is None else {"overview_level": level}
-        with rasterio.open(path, **options) as src:
-            readInside(src, grid["bounds"], resolution, surface)
-    return surface
-
-
-def photogrammetricChm(surface, grid, area):
-    """Height above the surface's own ground, on the CHM grid; share filled."""
-    height = GroundModel(surface, grid["resolution"]).heightAboveGround()
-    m = grid["margin"]
-    chm = height[m:m + grid["height"], m:m + grid["width"]].copy()
-    outside = geometry_mask(area.geometry, chm.shape, grid["transform"])
-    chm[~np.isfinite(chm)] = -1.0          # qp.fillEmpty's empty cells
-    filled = qp.fillEmpty(chm, outside)
-    chm[outside | (chm < 0)] = 0.0
-    return chm, filled
+def checkSameGrid(lidarPath, photoPath):
+    """The photogrammetric CHM must sit on the LiDAR CHM's grid exactly."""
+    with rasterio.open(lidarPath) as a, rasterio.open(photoPath) as b:
+        same = (a.shape == b.shape and
+                a.transform.almost_equals(b.transform, precision=1e-6))
+        grids = (a.shape, a.transform, b.shape, b.transform)
+    if not same:
+        raise ValueError("photogrammetric CHM not on the LiDAR grid: "
+                         "LiDAR %s %s, photogrammetry %s %s" % grids)
 
 
 def copySite(site, output):
@@ -162,6 +109,22 @@ def crownComparison(siteDir, chmPath, visibleM):
             if len(crowns) > 1 else float("nan"),
             "belowVisibleM": int((photo < visibleM).sum()),
             "visibleM": visibleM}
+
+
+def floorComparison(siteDir, chmPath):
+    """The photogrammetric CHM where the LiDAR CHM is 0 inside the area."""
+    area = gpd.read_file(os.path.join(siteDir, "area.shp"))
+    with rasterio.open(os.path.join(siteDir, "chm.tif")) as a, \
+            rasterio.open(chmPath) as b:
+        lidar, photo, transform = a.read(1), b.read(1), a.transform
+    inside = ~geometry_mask(area.geometry, lidar.shape, transform)
+    floor = photo[inside & (lidar < LIDAR_ZERO_M)]
+    if floor.size == 0:
+        return {"cells": 0}
+    return {"cells": int(floor.size),
+            "medianM": float(np.median(floor)),
+            "p90M": float(np.percentile(floor, 90)),
+            "shareAbove0p5M": float(np.mean(floor > 0.5))}
 
 
 def fieldComparison(siteDir, chmPath):
@@ -216,32 +179,32 @@ def prepareSite(site, args):
                                                         args.output))
     copySite(siteDir, outDir)
     area = gpd.read_file(os.path.join(siteDir, "area.shp"))
-    grid = chmGrid(os.path.join(siteDir, "chm.tif"), args.marginM)
-    source = args.dsmSource(site)
-    print("[qpP1] %s: reading the surface model, %.0f x %.0f m at %.2f m"
-          % (site, grid["bounds"][2] - grid["bounds"][0],
-             grid["bounds"][3] - grid["bounds"][1], grid["resolution"]),
-          flush=True)
-    chm, filled = photogrammetricChm(readSurface(source, grid), grid, area)
-    chmPath = os.path.join(outDir, "chm.tif")
-    qp.writeRaster(chmPath, chm[None], grid["transform"], grid["crs"],
-                   "float32")
-    return finishSite(site, siteDir, outDir, chmPath, source, filled, args)
+    lidarPath, chmPath = (os.path.join(d, "chm.tif") for d in (siteDir,
+                                                               outDir))
+    args.chmResolution = chmResolution(lidarPath)
+    source = args.cloudSource(site)
+    print("[qpP1] %s: photogrammetric point cloud, %.0f m2 at %.2f m"
+          % (site, area.area.iloc[0], args.chmResolution), flush=True)
+    with tempfile.TemporaryDirectory(dir=args.workDir) as tileDir:
+        filled = qp.buildChm(source, area, args, tileDir, chmPath)
+    checkSameGrid(lidarPath, chmPath)
+    return finishSite(site, siteDir, outDir, chmPath, source, filled)
 
 
-def finishSite(site, siteDir, outDir, chmPath, source, filled, args):
+def finishSite(site, siteDir, outDir, chmPath, source, filled):
     lidar = lidarCheck(siteDir)
     heights, noShoot = fieldComparison(siteDir, chmPath)
     quicklook(siteDir, chmPath, os.path.join(outDir, "quicklook.png"))
     check = {"site": site, "heightSource": "photogrammetry",
-             "ground": "from the surface model (tt.groundModel)",
-             "surfaceModel": source, "marginM": args.marginM,
-             "chmCellsFilled": filled,
+             "ground": "SMRF on the photogrammetric point cloud, as for LiDAR",
+             "pointCloud": source, "chmCellsFilled": filled,
              "crownTops": crownComparison(siteDir, chmPath,
                                           lidar.get("visibleM", 1.0)),
+             "floor": floorComparison(siteDir, chmPath),
              "heights": heights, "heightsNoShoot": noShoot,
              "lidarHeights": lidar.get("heights", {}),
-             "lidarHeightsNoShoot": lidar.get("heightsNoShoot", {})}
+             "lidarHeightsNoShoot": lidar.get("heightsNoShoot", {}),
+             "lidarChmCellsFilled": lidar.get("chmCellsFilled")}
     with open(os.path.join(outDir, "check.json"), "w") as handle:
         json.dump(check, handle, indent=2)
     reportSite(check)
@@ -249,7 +212,7 @@ def finishSite(site, siteDir, outDir, chmPath, source, filled, args):
 
 
 def reportSite(check):
-    site, tops = check["site"], check["crownTops"]
+    site, tops, floor = check["site"], check["crownTops"], check["floor"]
     print("[qpP1] %s: cells filled %.1f%%; crown tops minus LiDAR's median "
           "%+.2f m, mean |diff| %.2f m, r %.2f; %d of %d scored crowns below "
           "%.1f m" % (site, 100 * check["chmCellsFilled"],
@@ -257,6 +220,10 @@ def reportSite(check):
                       tops["topMinusLidarMeanAbsM"], tops["topCorrelation"],
                       tops["belowVisibleM"], tops["crowns"],
                       tops["visibleM"]), flush=True)
+    print("[qpP1] %s: floor (where LiDAR is 0): median %.2f m, 90%% under "
+          "%.2f m, %.1f%% above 0.5 m"
+          % (site, floor.get("medianM", np.nan), floor.get("p90M", np.nan),
+             100 * floor.get("shareAbove0p5M", np.nan)), flush=True)
     for label, mine, theirs in (("total", "heights", "lidarHeights"),
                                 ("no shoot", "heightsNoShoot",
                                  "lidarHeightsNoShoot")):
@@ -272,22 +239,33 @@ def reportSite(check):
 
 def parseArguments(argv=None):
     parser = argparse.ArgumentParser(
-        description="Quebec Plantations: photogrammetric CHM (ground from the "
-                    "surface model) for sites prepared by tt.qpPrepare.")
+        description="Quebec Plantations: photogrammetric CHM, built from the "
+                    "photogrammetric point cloud as qpPrepare builds the "
+                    "LiDAR one, for sites prepared by tt.qpPrepare.")
     parser.add_argument("--prepared", required=True,
                         help="The folder of LiDAR sites written by qpPrepare")
     parser.add_argument("--output", required=True,
                         help="Where the photogrammetric sites go (not the "
                              "--prepared folder)")
+    parser.add_argument("--pdal", required=True, help="Path to the pdal program")
     parser.add_argument("--sites", nargs="*", default=list(SELECTED),
                         help="Default: the five selected sites")
-    parser.add_argument("--marginM", type=float, default=15.0,
-                        help="Surface read this far beyond the site, so the "
-                             "ground at its edge has a full window")
+    parser.add_argument("--tileM", type=float, default=50.0,
+                        help="Tile size; smaller if PDAL runs out of memory "
+                             "or time on the dense photogrammetric cloud")
+    parser.add_argument("--marginM", type=float, default=5.0,
+                        help="Points read this far beyond each tile")
+    parser.add_argument("--jobs", type=int, default=4)
+    parser.add_argument("--retries", type=int, default=5)
+    parser.add_argument("--retryWaitS", type=float, default=60.0)
+    parser.add_argument("--tileTimeoutMin", type=float, default=30.0)
+    parser.add_argument("--workDir", default=None,
+                        help="Where the temporary PDAL tiles go (default: the "
+                             "system's temporary folder)")
     args = parser.parse_args(argv)
     if os.path.abspath(args.output) == os.path.abspath(args.prepared):
         parser.error("--output must differ from --prepared")
-    args.dsmSource = dsmUrl
+    args.cloudSource = cloudUrl
     return args
 
 

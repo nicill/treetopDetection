@@ -2686,92 +2686,42 @@ class TestCurveRowsOfAnotherNetwork(unittest.TestCase):
 
 
 class TestQpPhotogrammetry(unittest.TestCase):
-    """A photogrammetric CHM for a prepared site, ground from the surface."""
+    """
+    A photogrammetric CHM for a site qpPrepare prepared, from a second point
+    cloud through the same (stand-in) PDAL pipeline: the LiDAR cloud with
+    every tree 0.2 m taller and a little noise on the ground.
+    """
 
-    site = "20990101_testsite"
-    trees = ((12.0, 10.0, 3.0), (25.0, 18.0, 4.0))      # x, y (m), height
+    site, trees = TestQpPrepare.site, TestQpPrepare.trees
+    unannotated, hidden = TestQpPrepare.unannotated, TestQpPrepare.hidden
+    writeCloud = TestQpPrepare.writeCloud
+    qpArguments = TestQpPrepare.arguments
 
     def setUp(self):
-        import geopandas as gpd
-        from shapely.geometry import Point, box
-        self.directory = tempfile.mkdtemp(prefix="ttQpP1")
-        self.west, self.south = 300000.0, 5000000.0
-        lidar = os.path.join(self.directory, "lidar", self.site)
-        os.makedirs(lidar)
-        self.writeRaster(os.path.join(lidar, "chm.tif"), self.cones(0.1, 40,
-                         30, 0.0, 0.0, 0.0), 0.1, self.west, self.south + 30)
-        self.writeRaster(os.path.join(lidar, "rgb.tif"),
-                         np.full((400, 300), 120, np.uint8), 0.1, self.west,
-                         self.south + 30)
-        crs = "EPSG:32619"
-        area = box(self.west + 2, self.south + 2, self.west + 38,
-                   self.south + 28)
-        centres = [Point(self.west + x, self.south + y)
-                   for x, y, _ in self.trees]
-        for name, frame in (
-                ("area", gpd.GeoDataFrame({"name": ["area"]}, geometry=[area],
-                                          crs=crs)),
-                ("scoredArea", gpd.GeoDataFrame({"name": ["scored"]},
-                                                geometry=[area], crs=crs)),
-                ("crowns", gpd.GeoDataFrame(
-                    {"class_code": ["PIGL"] * 2},
-                    geometry=[c.buffer(1.2) for c in centres], crs=crs)),
-                ("trees", gpd.GeoDataFrame(
-                    {"fieldHm": [h for *_, h in self.trees],
-                     "noShootHm": [h - 0.2 for *_, h in self.trees]},
-                    geometry=centres, crs=crs))):
-            frame.to_file(os.path.join(lidar, name + ".shp"))
-        with open(os.path.join(lidar, "check.json"), "w") as handle:
-            json.dump({"visibleM": 1.0, "heights": {"trees": 2}}, handle)
-        self.dsm = os.path.join(self.directory, "dsm.tif")
-        # a tilted surface beyond the site on every side, at 2 cm, offset by
-        # 1 cm from the CHM grid, with a hole and an undeclared nodata patch
-        surface = self.cones(0.02, 80, 70, 200.0, 0.02, 0.01)
-        surface[1600:1700, 2500:2600] = np.nan               # x 30-32, y 16-18
-        surface[1000:1050, 3500:3550] = -32767.0             # x 50 m: outside
-        self.writeRaster(self.dsm, surface, 0.02, self.west - 20.01,
-                         self.south + 50, nodata=True)
-
-    def cones(self, resolution, width, height, base, slope, shift):
-        """Surface over width x height m whose north-west corner is
-        (-20 - shift, 50) m from the site's origin when base > 0, the site's
-        own grid otherwise; cones of radius 1.5 m on a plane."""
-        rows, columns = np.mgrid[0:int(round(height / resolution)),
-                                 0:int(round(width / resolution))]
-        x0, y0 = ((-20.0 - shift, 50.0) if base else (0.0, 30.0))
-        x = x0 + (columns + 0.5) * resolution
-        y = y0 - (rows + 0.5) * resolution
-        z = base + slope * x
-        surface = np.full(x.shape, base, np.float64) + slope * x
-        for tx, ty, h in self.trees:
-            d = np.hypot(x - tx, y - ty)
-            surface = np.maximum(surface, z + h * np.clip(1 - d / 1.5, 0,
-                                                          None))
-        return surface.astype(np.float32)
-
-    def writeRaster(self, path, data, resolution, west, north, nodata=False):
-        import rasterio
-        from affine import Affine
-        stored = np.where(np.isnan(data), -9999.0, data) if nodata else data
-        with rasterio.open(path, "w", driver="GTiff", height=data.shape[0],
-                           width=data.shape[1], count=1, dtype=data.dtype,
-                           crs="EPSG:32619", nodata=-9999.0 if nodata else None,
-                           transform=Affine(resolution, 0, west, 0,
-                                            -resolution, north)) as d:
-            d.write(stored.astype(data.dtype), 1)
-            if nodata:
-                d.build_overviews([2, 4])
+        TestQpPrepare.setUp(self)
+        import laspy
+        from tt.qpPrepare import prepareSite
+        prepareSite(self.site, self.qpArguments())
+        cloud = laspy.read(self.lidar)
+        z = np.asarray(cloud.z)
+        rng = np.random.default_rng(2)
+        cloud.z = np.where(z > 100.01, z + 0.2,
+                           z + rng.uniform(0, 0.02, z.shape))
+        self.cloud = os.path.join(self.directory, "pg.las")
+        cloud.write(self.cloud)
 
     def tearDown(self):
         shutil.rmtree(self.directory, ignore_errors=True)
 
     def arguments(self):
         from tt.qpPhotogrammetry import parseArguments
+        fake = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "tests_support", "fakePdal.py")
         args = parseArguments([
-            "--prepared", os.path.join(self.directory, "lidar"),
+            "--prepared", os.path.join(self.directory, "out"),
             "--output", os.path.join(self.directory, "p1"),
-            "--sites", self.site])
-        args.dsmSource = lambda site: self.dsm
+            "--pdal", fake, "--sites", self.site, "--tileM", "20"])
+        args.cloudSource = lambda site: self.cloud
         return args
 
     def testChmOnTheLidarGridWithTheSameCrowns(self):
@@ -2779,33 +2729,42 @@ class TestQpPhotogrammetry(unittest.TestCase):
         import rasterio
         from tt.qpPhotogrammetry import prepareSite
         check = prepareSite(self.site, self.arguments())
-        lidar = os.path.join(self.directory, "lidar", self.site)
+        lidar = os.path.join(self.directory, "out", self.site)
         out = os.path.join(self.directory, "p1", self.site)
         with rasterio.open(os.path.join(lidar, "chm.tif")) as a, \
                 rasterio.open(os.path.join(out, "chm.tif")) as b:
             self.assertEqual(a.transform, b.transform)
             self.assertEqual(a.shape, b.shape)
-            chm = b.read(1)
-            for x, y, h in self.trees:          # apexes, ground removed
-                row, column = b.index(self.west + x, self.south + y)
-                self.assertAlmostEqual(float(chm[row - 1:row + 2,
-                                                 column - 1:column + 2].max()),
-                                       h, delta=0.3)
-            row, column = b.index(self.west + 31, self.south + 17)
-            self.assertTrue(np.isfinite(chm[row, column]))   # hole filled
-            self.assertLess(chm[row, column], 0.3)
-            row, column = b.index(self.west + 1, self.south + 1)
-            self.assertEqual(chm[row, column], 0.0)          # outside area
-        self.assertGreater(check["chmCellsFilled"], 0.0)
-        self.assertLess(abs(check["crownTops"]["topMinusLidarMedianM"]), 0.3)
-        self.assertEqual(check["crownTops"]["belowVisibleM"], 0)
-        self.assertEqual(check["heights"]["trees"], 2)
-        self.assertLess(abs(check["heights"]["medianChmMinusFieldM"]), 0.3)
+            difference = b.read(1) - a.read(1)
+            self.assertAlmostEqual(float(difference.max()), 0.2, delta=0.03)
+        tops = check["crownTops"]
+        self.assertAlmostEqual(tops["topMinusLidarMedianM"], 0.2, delta=0.05)
+        self.assertEqual(tops["crowns"], 3)
+        self.assertEqual(tops["belowVisibleM"], 0)
+        self.assertLess(check["floor"]["medianM"], 0.05)
+        self.assertEqual(check["heights"]["trees"], 3)
+        self.assertEqual(check["lidarHeights"]["trees"], 3)
         self.assertEqual(len(gpd.read_file(os.path.join(out, "crowns.shp"))),
-                         2)
+                         3)
         for name in ("rgb.tif", "scoredArea.shp", "area.shp", "trees.shp",
-                     "quicklook.png", "check.json"):
+                     "ignored.shp", "quicklook.png", "check.json"):
             self.assertTrue(os.path.exists(os.path.join(out, name)), name)
+
+    def testOffGridChmIsRefused(self):
+        import rasterio
+        from affine import Affine
+        from tt.qpPhotogrammetry import checkSameGrid
+        lidar = os.path.join(self.directory, "out", self.site, "chm.tif")
+        moved = os.path.join(self.directory, "moved.tif")
+        with rasterio.open(lidar) as src:
+            profile, data = src.profile, src.read()
+            t = src.transform
+        profile["transform"] = Affine(t.a, 0, t.c + 0.05, 0, t.e, t.f)
+        with rasterio.open(moved, "w", **profile) as d:
+            d.write(data)
+        checkSameGrid(lidar, lidar)
+        with self.assertRaises(ValueError):
+            checkSameGrid(lidar, moved)
 
     def testPreparedSiteSkippedAndOutputMustDiffer(self):
         from tt import qpPhotogrammetry as p1
@@ -2816,7 +2775,7 @@ class TestQpPhotogrammetry(unittest.TestCase):
             self.assertEqual(p1.main([]), 0)
             prepare.assert_not_called()
         with self.assertRaises(SystemExit):
-            p1.parseArguments(["--prepared", self.directory,
+            p1.parseArguments(["--prepared", self.directory, "--pdal", "x",
                                "--output", self.directory])
 
 
