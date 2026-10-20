@@ -1,5 +1,6 @@
 """
-The height methods (CC, local maxima, watershed) on two CHMs of the same
+The height methods (CC, local maxima, watershed, and Mask R-CNN trained on
+the CHM when it has been run) on two CHMs of the same
 sites, block by block: photogrammetry against LiDAR for each method, and CC
 against the better baseline on each CHM.
 
@@ -24,7 +25,7 @@ import sys
 import numpy as np
 from scipy.stats import wilcoxon
 
-METHODS = ("cc", "lmvw", "watershed")
+METHODS = ("cc", "lmvw", "watershed", "mrcnn")   # mrcnn: on the CHM, when run
 KEYS = ("f1", "weighted")
 
 

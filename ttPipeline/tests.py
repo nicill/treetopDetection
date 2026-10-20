@@ -2884,6 +2884,51 @@ class TestHeightSourceCompare(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestReplayRun(unittest.TestCase):
+    """A run's recorded options written back as the options to replay it."""
+
+    helpText = ("usage: x [--dataset D] [--output O] [--epochs E] "
+                "[--minHeights M] [--noPretrained] [--fixedThreshold] "
+                "[--device D]")
+
+    def testOptionsBackUnderTheirFlags(self):
+        from tt.replayRun import words
+        settings = {"dataset": "a", "output": "b", "log": None, "epochs": 40,
+                    "minHeights": "0.75,1.0", "pretrained": True,
+                    "fixedThreshold": False, "device": "0"}
+        self.assertEqual(words(settings, self.helpText),
+                         ["--epochs", "40", "--minHeights", "0.75,1.0",
+                          "--device", "0"])
+        self.assertEqual(words({"pretrained": False}, self.helpText),
+                         ["--noPretrained"])
+
+    def testUnknownOptionStopsTheReplay(self):
+        from tt.replayRun import words
+        with self.assertRaises(ValueError):
+            words({"minHeight": 2.0}, self.helpText)    # only --minHeights
+        with self.assertRaises(ValueError):
+            words({"epochs": 40}, "")                   # no --help read
+
+    def testConcompRunReplaysAsRecorded(self):
+        from tt.replayRun import main
+        import json
+        d = tempfile.mkdtemp(prefix="ttReplay")
+        try:
+            path = os.path.join(d, "results.json")
+            json.dump({"settings": {"dataset": "x", "resolution": 0.1,
+                                    "minHeights": "0.75,1.0",
+                                    "saveDetections": True, "jobs": 16}},
+                      open(path, "w"))
+            from io import StringIO
+            with mock.patch("sys.stdout", new=StringIO()) as out:
+                self.assertEqual(main([path, "tt.dl", "concomp"]), 0)
+            self.assertEqual(out.getvalue().split(),
+                             ["--resolution", "0.1", "--minHeights",
+                              "0.75,1.0", "--saveDetections"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
