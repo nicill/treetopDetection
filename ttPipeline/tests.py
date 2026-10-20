@@ -2784,6 +2784,18 @@ class TestQpPhotogrammetry(unittest.TestCase):
                      "ignored.shp", "quicklook.png", "check.json"):
             self.assertTrue(os.path.exists(os.path.join(out, name)), name)
 
+    def testCloudNameFoundPerSite(self):
+        from tt import qpPhotogrammetry as p1
+        cb = p1.cloudUrl("20230606_cbblackburn5",
+                         reachable=lambda url: url.endswith("_p1_pg.copc.laz"))
+        self.assertTrue(cb.endswith("20230606_cbblackburn5_p1/"
+                                    "20230606_cbblackburn5_p1_pg.copc.laz"))
+        afca = p1.cloudUrl("20230712_afcahoule_itrf20",
+                           reachable=lambda url: True)
+        self.assertTrue(afca.endswith("_itrf20_p1_pg_highdis.copc.laz"))
+        with self.assertRaises(OSError):
+            p1.cloudUrl("x", reachable=lambda url: False)
+
     def testOffGridChmIsRefused(self):
         import rasterio
         from affine import Affine

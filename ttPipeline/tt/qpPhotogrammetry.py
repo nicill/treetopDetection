@@ -6,7 +6,8 @@ tt.qpPrepare, so every method can run on photogrammetry instead of LiDAR.
         --pdal ~/anaconda3/envs/pdal/bin/pdal
 
 Per site, the dataset's photogrammetric point cloud
-(Photogrammetry_Products/<site>_p1/<site>_p1_pg_highdis.copc.laz) goes through
+(Photogrammetry_Products/<site>_p1/<site>_p1_pg_highdis.copc.laz at the afca
+sites, <site>_p1_pg.copc.laz at the cb sites) goes through
 exactly the pipeline qpPrepare runs on the LiDAR: read from the FRDR server
 for the annotated area only, in tiles, statistical outlier removal, SMRF
 ground, height above the Delaunay ground, highest point per cell, empty cells
@@ -39,6 +40,8 @@ import os
 import shutil
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 
 import geopandas as gpd
 import matplotlib
@@ -60,9 +63,33 @@ SHAPE_PARTS = (".shp", ".shx", ".dbf", ".prj", ".cpg")
 LIDAR_ZERO_M = 0.05          # LiDAR CHM below this: the floor between trees
 
 
-def cloudUrl(site):
-    return "%sPhotogrammetry_Products/%s_p1/%s_p1_pg_highdis.copc.laz" % (
-        qp.BASE, site, site)
+CLOUD_NAMES = ("%s_p1_pg_highdis.copc.laz", "%s_p1_pg.copc.laz")
+
+
+def cloudUrl(site, reachable=None):
+    """
+    The site's photogrammetric point cloud on the server. Its name differs
+    between sites (afca: _pg_highdis, cb: _pg), so each candidate is tried
+    and the first the server has is used.
+    """
+    reachable = reachable or urlExists
+    folder = "%sPhotogrammetry_Products/%s_p1/" % (qp.BASE, site)
+    candidates = [folder + name % site for name in CLOUD_NAMES]
+    for url in candidates:
+        if reachable(url):
+            return url
+    raise OSError("no photogrammetric point cloud for %s; tried %s"
+                  % (site, ", ".join(c.rsplit("/", 1)[1] for c in candidates)))
+
+
+def urlExists(url, timeoutS=60):
+    """Whether the server has url: its first byte is fetched."""
+    request = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeoutS) as response:
+            return response.status in (200, 206)
+    except urllib.error.HTTPError:
+        return False
 
 
 def chmResolution(path):
