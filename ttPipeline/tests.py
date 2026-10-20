@@ -2825,6 +2825,48 @@ class TestQpPhotogrammetry(unittest.TestCase):
                                "--output", self.directory])
 
 
+class TestHeightSourceCompare(unittest.TestCase):
+    """Per-block paired tests between two studies' height runs."""
+
+    def write(self, root, run, f1s, pooled):
+        import json
+        path = os.path.join(root, "site", "runs", run)
+        os.makedirs(path)
+        folds = [{"block": "site_b%02d" % i, "f1": f, "weighted": f}
+                 for i, f in enumerate(f1s)]
+        with open(os.path.join(path, "results.json"), "w") as handle:
+            json.dump({"pooled": {"f1": pooled}, "folds": folds}, handle)
+
+    def testDifferencesAndBetterBaseline(self):
+        from tt.heightSourceCompare import main
+        import json
+        d = tempfile.mkdtemp(prefix="ttHsc")
+        try:
+            lidar, p1 = os.path.join(d, "l"), os.path.join(d, "p")
+            base = [0.80, 0.82, 0.84, 0.86, 0.88, 0.90, 0.92, 0.94]
+            self.write(lidar, "ccLidar", [b + 0.05 for b in base], 0.92)
+            self.write(lidar, "lmvwLidar", base, 0.87)
+            self.write(lidar, "watershedLidar", [b + 0.01 for b in base], 0.88)
+            self.write(p1, "ccP1", [b + 0.05 for b in base], 0.92)    # same
+            self.write(p1, "lmvwP1", [b + 0.03 + 0.001 * i
+                                      for i, b in enumerate(base)], 0.90)
+            self.write(p1, "watershedP1", base, 0.87)
+            out = os.path.join(d, "c.json")
+            self.assertEqual(main(["--first", lidar, "--second", p1,
+                                   "--output", out]), 0)
+            result = json.load(open(out))[0]
+            self.assertEqual(result["sources"]["cc"]["f1P"], 1.0)
+            self.assertLess(result["sources"]["lmvw"]["f1P"], 0.05)
+            self.assertAlmostEqual(result["sources"]["lmvw"]["f1MeanDiff"],
+                                   0.0335, places=4)
+            self.assertEqual(result["ccVsBaseline"]["Lidar"]["baseline"],
+                             "watershed")
+            self.assertEqual(result["ccVsBaseline"]["P1"]["baseline"], "lmvw")
+            self.assertLess(result["ccVsBaseline"]["Lidar"]["f1P"], 0.05)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.

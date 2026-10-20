@@ -18,8 +18,9 @@
 #   runs/lmvwP1        local maxima, likewise replayed from runs/lmvwLidar
 #   runs/watershedP1   watershed, from runs/watershedLidar
 # Output in OUT/<site>/ (a folder of its own: the LiDAR study is untouched),
-# STATUS.txt there, and a table of F1 per site and method, LiDAR beside
-# photogrammetry, at the end. A finished step is skipped when run again.
+# STATUS.txt there, and at the end tt.heightSourceCompare: each method on
+# photogrammetry against LiDAR, and CC against the better baseline on each,
+# paired Wilcoxon over blocks (compare.txt, compare.json). A finished step is skipped when run again.
 #
 # Settings from the environment: DROP, PROC, QP1, OUT, JOBS (default 16).
 
@@ -111,10 +112,6 @@ replay() {   # replay NAME LIDAR_RUN MODULE...: the LiDAR run again on ds/chm
         --dataset "$site_out/ds/chm" --output "$site_out/runs/$name" --jobs "$JOBS"
 }
 
-f1() {   # f1 RESULTS: pooled F1, or - when missing
-    python -c "import json,sys; print('%.3f' % json.load(open(sys.argv[1]))['pooled']['f1'])" "$1" 2>/dev/null || echo "-"
-}
-
 log "start (PROC=$PROC QP1=$QP1 OUT=$OUT OBJECTIVE=$TT_OBJECTIVE)"
 for dir in "$QP1"/*/; do
     site=$(basename "$dir")
@@ -129,15 +126,6 @@ for dir in "$QP1"/*/; do
     replay watershedP1 "$lidar/runs/watershedLidar" tt.dl.dlBaselines
 done
 
-{
-    printf '\n%-28s %9s %9s %9s %9s %9s %9s\n' site ccLidar ccP1 lmvwLidar lmvwP1 wsLidar wsP1
-    for dir in "$OUT"/*/; do
-        site=$(basename "$dir")
-        [ -d "$dir/runs" ] || continue
-        printf '%-28s %9s %9s %9s %9s %9s %9s\n' "$site" \
-            "$(f1 "$PROC/$site/runs/ccLidar/results.json")" "$(f1 "$dir/runs/ccP1/results.json")" \
-            "$(f1 "$PROC/$site/runs/lmvwLidar/results.json")" "$(f1 "$dir/runs/lmvwP1/results.json")" \
-            "$(f1 "$PROC/$site/runs/watershedLidar/results.json")" "$(f1 "$dir/runs/watershedP1/results.json")"
-    done
-} | tee "$OUT/f1.txt"
-log "finished; F1 table in f1.txt"
+python -m tt.heightSourceCompare --first "$PROC" --second "$OUT" \
+    --output "$OUT/compare.json" | tee "$OUT/compare.txt"
+log "finished; comparison in compare.txt"
