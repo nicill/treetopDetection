@@ -15,6 +15,9 @@ alone, processed as the LiDAR was, so the two CHMs differ by their data and
 not by how they were made. (Ground from the surface model alone,
 tt.groundModel, put the floor between the trees 0.5-2 m above 0 here.)
 
+Finished tiles are kept per site (--workDir) until the site is done, so a
+stopped run loses only the tiles in progress; the same command reuses them.
+
 The new CHM is on the LiDAR CHM's grid (checked), 0 outside area.shp. Only
 the height model changes: crowns, the scored area and the don't-care areas
 are copied from the LiDAR site unchanged, so both CHMs are scored on the same
@@ -185,10 +188,30 @@ def prepareSite(site, args):
     source = args.cloudSource(site)
     print("[qpP1] %s: photogrammetric point cloud, %.0f m2 at %.2f m"
           % (site, area.area.iloc[0], args.chmResolution), flush=True)
-    with tempfile.TemporaryDirectory(dir=args.workDir) as tileDir:
-        filled = qp.buildChm(source, area, args, tileDir, chmPath)
+    tileDir = tileFolder(site, args)
+    kept = len([f for f in os.listdir(tileDir) if f.startswith("tile")
+                and not f.endswith(".partial.tif")])
+    if kept:
+        print("[qpP1] %s: %d finished tiles from an earlier run reused"
+              % (site, kept), flush=True)
+    filled = qp.buildChm(source, area, args, tileDir, chmPath)
     checkSameGrid(lidarPath, chmPath)
-    return finishSite(site, siteDir, outDir, chmPath, source, filled)
+    check = finishSite(site, siteDir, outDir, chmPath, source, filled)
+    shutil.rmtree(tileDir, ignore_errors=True)
+    return check
+
+
+def tileFolder(site, args):
+    """
+    Where a site's finished tiles are kept until the site is done, so a
+    stopped run loses only the tiles in progress. Named by tile size and
+    resolution, so tiles made with other settings are never reused.
+    """
+    root = args.workDir or os.path.join(tempfile.gettempdir(), "qpP1tiles")
+    folder = os.path.join(root, "%s_tile%gm_res%gm" % (site, args.tileM,
+                                                       args.chmResolution))
+    os.makedirs(folder, exist_ok=True)
+    return folder
 
 
 def finishSite(site, siteDir, outDir, chmPath, source, filled):
@@ -260,8 +283,10 @@ def parseArguments(argv=None):
     parser.add_argument("--retryWaitS", type=float, default=60.0)
     parser.add_argument("--tileTimeoutMin", type=float, default=30.0)
     parser.add_argument("--workDir", default=None,
-                        help="Where the temporary PDAL tiles go (default: the "
-                             "system's temporary folder)")
+                        help="Where each site's finished PDAL tiles are kept "
+                             "until the site is done, so a restart reuses "
+                             "them (default: qpP1tiles in the system's "
+                             "temporary folder; not a synced folder)")
     args = parser.parse_args(argv)
     if os.path.abspath(args.output) == os.path.abspath(args.prepared):
         parser.error("--output must differ from --prepared")

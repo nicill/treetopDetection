@@ -224,11 +224,19 @@ def runPdal(pdalPath, stages, timeoutS=900):
 
 
 def buildTile(source, tile, args, part):
-    """One tile, retried: reading over HTTPS fails now and then."""
-    stages = pipeline(source, tile, args.marginM, args.chmResolution, part)
+    """
+    One tile, retried: reading over HTTPS fails now and then. PDAL writes to
+    a side file renamed to part only when it succeeds, so a part that exists
+    is complete, and a tile folder kept across runs is reused (skipped here).
+    """
+    if os.path.exists(part):
+        return part
+    partial = part[:-len(".tif")] + ".partial.tif"
+    stages = pipeline(source, tile, args.marginM, args.chmResolution, partial)
     for attempt in range(1, args.retries + 2):
         try:
             runPdal(args.pdal, stages, args.tileTimeoutMin * 60)
+            os.replace(partial, part)
             return part
         except RuntimeError as error:
             if attempt > args.retries:

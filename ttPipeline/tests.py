@@ -2720,9 +2720,43 @@ class TestQpPhotogrammetry(unittest.TestCase):
         args = parseArguments([
             "--prepared", os.path.join(self.directory, "out"),
             "--output", os.path.join(self.directory, "p1"),
-            "--pdal", fake, "--sites", self.site, "--tileM", "20"])
+            "--pdal", fake, "--sites", self.site, "--tileM", "20",
+            "--workDir", os.path.join(self.directory, "tiles")])
         args.cloudSource = lambda site: self.cloud
         return args
+
+    def testStoppedRunReusesFinishedTiles(self):
+        import rasterio
+        from tt import qpPhotogrammetry as p1
+        args = self.arguments()
+        with mock.patch.object(p1, "finishSite", side_effect=OSError("stop")):
+            with self.assertRaises(OSError):
+                p1.prepareSite(self.site, args)
+        out = os.path.join(self.directory, "p1", self.site, "chm.tif")
+        with rasterio.open(out) as src:
+            first = src.read(1)
+        os.remove(out)
+        args.pdal = "/nonexistent"          # every tile must come from before
+        check = p1.prepareSite(self.site, args)
+        with rasterio.open(out) as src:
+            self.assertTrue(np.array_equal(first, src.read(1)))
+        self.assertEqual(check["crownTops"]["crowns"], 3)
+        self.assertEqual(os.listdir(os.path.join(self.directory, "tiles")),
+                         [])                # the site's tiles removed when done
+
+    def testPartialTileIsNotTakenForAFinishedOne(self):
+        from tt import qpPrepare as qp
+        args = self.arguments()
+        args.chmResolution, args.retries = 0.1, 0
+        part = os.path.join(self.directory, "tile0000.tif")
+        with open(part[:-4] + ".partial.tif", "w") as handle:
+            handle.write("killed halfway")
+        tile = (self.west, self.south, self.west + 20, self.south + 20)
+        self.assertEqual(qp.buildTile(self.cloud, tile, args, part), part)
+        self.assertFalse(os.path.exists(part[:-4] + ".partial.tif"))
+        import rasterio
+        with rasterio.open(part) as src:
+            self.assertGreater(src.read(1).max(), 2.0)
 
     def testChmOnTheLidarGridWithTheSameCrowns(self):
         import geopandas as gpd
