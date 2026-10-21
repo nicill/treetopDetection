@@ -6,6 +6,7 @@ rasterio
 geopandas
 shapely
 scikit-learn
+scikit-image   # tt.dsmChm: peaks by prominence (h-maxima)
 odfpy          # the ODT report
 laspy          # tt.neonChm: point clouds
 lazrs          # laspy: .laz files
