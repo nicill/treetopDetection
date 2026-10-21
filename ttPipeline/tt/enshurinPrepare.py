@@ -33,6 +33,11 @@ What differs from the other sites, and what this does about it:
            cropped to the area's grid, 0 outside the area.
   RGB      the three part mosaics of the same date, merged at
            --rgbResolution.
+  polygons --crowns: a polygon annotation (one polygon per crown, drawn on
+           the same mosaics) instead of the masks. Each polygon belongs to the
+           part whose mosaic holds it and moves with that part's shift; every
+           polygon is a crown whatever its species (unidentified trees
+           included); the coverage rule and everything after are unchanged.
   shift    a part whose mosaic (and the mask drawn on it) is offset from the
            surface model can be moved onto it with --shift PART=DX,DY: a VRT
            with the georeferencing moved, the pixels untouched.
@@ -66,9 +71,16 @@ PARTS = ("newtrain", "val", "test")
 TOP_PERCENTILES = (5, 25, 50, 75, 95)
 
 
-def partFiles(data, part, date):
-    """(mosaic, mask, per-class masks) of one part; the mask names vary."""
+def partFiles(data, part, date, needMask=True):
+    """
+    (mosaic, mask, per-class masks) of one part; the mask names vary. With
+    needMask False (crowns from --crowns polygons) only the mosaic is needed.
+    """
     mosaic = os.path.join(data, "%s_%s.tif" % (date, part))
+    if not needMask:
+        if not os.path.exists(mosaic):
+            raise FileNotFoundError("part %s: need %s" % (part, mosaic))
+        return mosaic, None, []
     masks = sorted(glob.glob(os.path.join(data, "mask*%s.tif" % part)))
     if not os.path.exists(mosaic) or len(masks) != 1:
         raise FileNotFoundError("part %s: need %s and one mask*%s.tif in %s"
@@ -140,6 +152,48 @@ def maskCrowns(mask, names, minCrownM2, part):
                      "species": names.get(int(value), str(int(value))),
                      "part": part, "geometry": polygon})
     return gpd.GeoDataFrame(rows, crs=crs), dropped
+
+
+def polygonCrowns(path, footprints, shifts, crs, minCrownM2):
+    """
+    Crowns from a polygon annotation drawn on the part mosaics: each polygon
+    goes to the part whose (unshifted) mosaic holds it, and is moved with that
+    part's shift, as the mask would have been. Polygons under minCrownM2 are
+    dropped, as mask fragments are. A file whose coordinate system is labelled
+    differently from the mosaics' is taken to be in theirs (relabelled, not
+    transformed; reported), but most polygons must then fall on a mosaic, or
+    it stops: a real difference of systems would put them far off.
+    """
+    polygons = gpd.read_file(path)
+    relabelled = None
+    if polygons.crs is not None and polygons.crs != crs:
+        relabelled = str(polygons.crs)
+        polygons = polygons.set_crs(crs, allow_override=True)
+    points = polygons.geometry.representative_point()
+    byPart, notes, placed = {}, {}, np.zeros(len(polygons), bool)
+    for part, foot in footprints.items():
+        mine = points.within(foot).values & ~placed
+        placed |= mine
+        rows = polygons[mine]
+        small = rows.area < minCrownM2
+        dx, dy = shifts.get(part, (0.0, 0.0))
+        byPart[part] = gpd.GeoDataFrame({
+            "class_code": "tree",
+            "classValue": rows["class"].astype(int).values
+            if "class" in rows else 0,
+            "species": rows["name"].astype(str).values
+            if "name" in rows else "tree",
+            "part": part},
+            geometry=rows.geometry.translate(dx, dy).values,
+            crs=crs)[~small.values].reset_index(drop=True)
+        notes[part] = int(small.sum())
+    if placed.mean() < 0.9:
+        raise ValueError("only %d of %d polygons fall on a part mosaic: not "
+                         "the mosaics' coordinate system?"
+                         % (placed.sum(), len(polygons)))
+    return byPart, notes, {"polygons": int(len(polygons)),
+                           "offMosaic": int((~placed).sum()),
+                           "relabelledFrom": relabelled}
 
 
 def footprint(mosaic, resolution=0.25):
@@ -230,20 +284,42 @@ def rasterMask(geometry, chmShape, transform):
     return ~geometry_mask([geometry], chmShape, transform)
 
 
-def buildArea(parts, chmPath, args):
-    """Union over parts of the well-annotated cells inside each mosaic."""
-    cells, crowns, notes = [], [], {}
+def maskSource(parts, args):
+    """Per part: (crowns, fragments dropped, annotation share on a CHM grid)."""
+    names = {}
     # the class values mean the same species in every part; the per-class
     # masks that name them may exist for only some parts
-    names = {}
     for mosaic, mask, perClass in parts.values():
         names.update(speciesNames(mask, perClass))
+    source = {}
     for part, (mosaic, mask, perClass) in parts.items():
-        partCrowns, dropped = maskCrowns(mask, names, args.minCrownM2, part)
+        crowns, dropped = maskCrowns(mask, names, args.minCrownM2, part)
+        share = (lambda m: lambda t, shp, b: annotatedOnChm(m, t, shp, b))(mask)
+        source[part] = (crowns, dropped, share)
+    return source, names
+
+
+def polygonSource(byPart, dropped):
+    """The same per part, from polygon crowns (rasterised on the CHM grid)."""
+    source = {}
+    for part, crowns in byPart.items():
+        share = (lambda c: lambda t, shp, b: (~geometry_mask(
+            list(c.geometry), shp, t)).astype(np.float32) if len(c)
+            else np.zeros(shp, np.float32))(crowns)
+        source[part] = (crowns, dropped[part], share)
+    return source
+
+
+def buildArea(parts, chmPath, args, source=None, names=None):
+    """Union over parts of the well-annotated cells inside each mosaic."""
+    if source is None:
+        source, names = maskSource(parts, args)
+    cells, crowns, notes = [], [], {}
+    for part, (mosaic, mask, perClass) in parts.items():
+        partCrowns, dropped, share = source[part]
         foot = footprint(mosaic)
         chm, transform = readChm(chmPath, foot.bounds)
-        annotated = grown(annotatedOnChm(mask, transform, chm.shape,
-                                         foot.bounds) >= 0.5,
+        annotated = grown(share(transform, chm.shape, foot.bounds) >= 0.5,
                           args.coverMarginM, abs(transform.a))
         inMosaic = rasterMask(foot, chm.shape, transform)
         partCells = coveredCells(chm, transform, annotated, inMosaic, args)
@@ -252,7 +328,8 @@ def buildArea(parts, chmPath, args):
         cells.append(kept)
         crowns.append(partCrowns)
         notes[part] = {"crowns": int(len(partCrowns)),
-                       "fragmentsDropped": dropped, "species": names,
+                       "fragmentsDropped": dropped, "species": names
+                       or sorted(set(partCrowns["species"])),
                        "mosaicM2": float(foot.area),
                        "cellsM2": float(unary_union(partCells)
                                         .intersection(foot).area),
@@ -289,7 +366,8 @@ def writeRgb(mosaics, area, resolution, outPath):
     qp.writeRaster(outPath, data.astype(np.uint8), transform, crs, "uint8")
 
 
-def finish(site, outDir, crowns, area, chmPath, rgbPath, notes, args):
+def finish(site, outDir, crowns, area, chmPath, rgbPath, notes, args,
+           polygonNotes=None):
     inArea = crowns[crowns.intersects(area.geometry.iloc[0])]
     coverage, uncovered = qp.uncoveredCanopy(chmPath, inArea, area, args)
     tops = qp.crownTops(chmPath, inArea)
@@ -303,6 +381,8 @@ def finish(site, outDir, crowns, area, chmPath, rgbPath, notes, args):
     qp.quicklook(rgbPath, scored, area, ignored,
                  os.path.join(outDir, "quicklook.png"))
     check = {"site": site, "parts": notes, "shifts": parseShifts(args.shift),
+             "crownSource": args.crowns or "masks",
+             "polygons": polygonNotes,
              "annotatedCrowns": int(len(crowns)),
              "crownsInArea": int(len(inArea)), "crowns": int(len(scored)),
              "invisibleCrowns": counts["invisible"],
@@ -343,23 +423,37 @@ def report(check):
 def prepare(args):
     outDir = os.path.join(args.output, args.site)
     os.makedirs(outDir, exist_ok=True)
-    parts = {p: partFiles(args.data, p, args.date) for p in args.parts}
+    parts = {p: partFiles(args.data, p, args.date, needMask=not args.crowns)
+             for p in args.parts}
+    original = {p: footprint(m) for p, (m, _, _) in parts.items()} \
+        if args.crowns else None
     shifts = parseShifts(args.shift)
     for part, (dx, dy) in shifts.items():
         mosaic, mask, perClass = parts[part]
         folder = os.path.join(outDir, "shifted")
         parts[part] = (shiftedSource(mosaic, dx, dy, folder),
-                       shiftedSource(mask, dx, dy, folder), perClass)
-        print("[enshurin] %s: mosaic and mask moved %+.2f m east, %+.2f m north"
-              % (part, dx, dy))
-    area, crowns, notes = buildArea(parts, args.chm, args)
+                       shiftedSource(mask, dx, dy, folder) if mask else None,
+                       perClass)
+        print("[enshurin] %s: mosaic and %s moved %+.2f m east, %+.2f m north"
+              % (part, "crowns" if args.crowns else "mask", dx, dy))
+    source = names = polygonNotes = None
+    if args.crowns:
+        with rasterio.open(next(iter(parts.values()))[0]) as src:
+            crs = src.crs
+        byPart, dropped, polygonNotes = polygonCrowns(
+            args.crowns, original, shifts, crs, args.minCrownM2)
+        if polygonNotes["relabelledFrom"]:
+            print("[enshurin] crowns labelled %s, taken to be in the mosaics' "
+                  "system (not transformed)" % polygonNotes["relabelledFrom"])
+        source = polygonSource(byPart, dropped)
+    area, crowns, notes = buildArea(parts, args.chm, args, source, names)
     area.to_file(os.path.join(outDir, "area.shp"))
     chmPath, rgbPath = (os.path.join(outDir, n) for n in ("chm.tif", "rgb.tif"))
     writeChm(args.chm, area, args, chmPath)
     writeRgb([m for m, _, _ in parts.values()], area, args.rgbResolution,
              rgbPath)
     check = finish(args.site, outDir, crowns, area, chmPath, rgbPath, notes,
-                   args)
+                   args, polygonNotes)
     report(check)
     return check
 
@@ -389,6 +483,10 @@ def parseArguments(argv=None):
                              "north onto the surface model (repeatable); the "
                              "CHM is the reference and is not moved")
     parser.add_argument("--parts", nargs="+", default=list(PARTS))
+    parser.add_argument("--crowns", default=None,
+                        help="crown polygons (one per tree, drawn on the part "
+                             "mosaics) instead of the class masks; every "
+                             "polygon is a crown, whatever its species")
     parser.add_argument("--cellM", type=float, default=10.0)
     parser.add_argument("--annotatedShare", type=float, default=0.9)
     parser.add_argument("--coverMarginM", type=float, default=0.5,

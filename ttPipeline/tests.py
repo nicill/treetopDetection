@@ -2160,6 +2160,98 @@ class TestEnshurinPrepare(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestEnshurinPolygons(unittest.TestCase):
+    """Crowns from a polygon annotation: same area and crowns as from masks."""
+
+    def build(self, d, offsetM=0.0):
+        import geopandas as gpd
+        import rasterio
+        from rasterio.transform import from_origin
+        from shapely.geometry import Point
+        crs, x0, y0 = "EPSG:32654", 401800.0, 4268500.0
+        rng = np.random.default_rng(0)
+        trees = [(x0 + cx, y0 - cy, 2.2, rng.uniform(8, 15),
+                  int(rng.integers(1, 5)))
+                 for cx in np.arange(4, 58, 6.0) for cy in np.arange(4, 28, 6.0)]
+        res, W, H = 0.25, 240, 120
+        cols, rows = np.meshgrid(np.arange(W), np.arange(H))
+        X, Y = x0 + (cols + 0.5) * res, y0 - (rows + 0.5) * res
+        chm = np.zeros((H, W), np.float32)
+        for tx, ty, r, h, _ in trees:
+            chm = np.maximum(chm, np.where(np.hypot(X - tx, Y - ty) < r, h, 0))
+        with rasterio.open(os.path.join(d, "chm.tif"), "w", driver="GTiff",
+                           height=H, width=W, count=1, dtype="float32", crs=crs,
+                           transform=from_origin(x0, y0, res, res)) as out:
+            out.write(chm, 1)
+        data = os.path.join(d, "data")
+        os.makedirs(data)
+        for i, part in enumerate(("newtrain", "test")):
+            with rasterio.open(os.path.join(data, "08_22_%s.tif" % part), "w",
+                               driver="GTiff", height=600, width=600, count=3,
+                               dtype="uint8", crs=crs,
+                               transform=from_origin(x0 + 30 * i, y0, 0.05,
+                                                     0.05)) as out:
+                out.write(np.full((3, 600, 600), 60, np.uint8))
+        kept = [t for t in trees if not (t[0] > x0 + 45)]   # test's east half
+        names = {1: "BEECH", 2: "Larch", 3: "OAK", 4: "X"}
+        crowns = gpd.GeoDataFrame(
+            {"name": [names[t[4]] for t in kept], "class": [t[4] for t in kept]},
+            geometry=[Point(t[0] + offsetM, t[1]).buffer(t[2] * 0.95)
+                      for t in kept], crs="EPSG:3095")   # labelled otherwise
+        path = os.path.join(d, "crowns.shp")
+        crowns.to_file(path)
+        return data, path
+
+    def run_(self, d, data, path, extra=()):
+        from tt import enshurinPrepare as ep
+        return ep.prepare(ep.parseArguments([
+            "--data", data, "--chm", os.path.join(d, "chm.tif"),
+            "--output", os.path.join(d, "out"), "--parts", "newtrain", "test",
+            "--cellM", "5", "--crowns", path] + list(extra)))
+
+    def testPolygonsGiveTheMaskResult(self):
+        d = tempfile.mkdtemp(prefix="ttEnsPoly")
+        try:
+            data, path = self.build(d)
+            check = self.run_(d, data, path)
+            # as from the masks: 20 trees in newtrain, 8 annotated in test
+            self.assertEqual(check["crowns"], 28)
+            self.assertAlmostEqual(check["parts"]["newtrain"]["keptM2"], 900,
+                                   delta=30)
+            self.assertAlmostEqual(check["parts"]["test"]["keptM2"], 525,
+                                   delta=40)
+            self.assertEqual(check["polygons"]["relabelledFrom"], "EPSG:3095")
+            self.assertEqual(check["polygons"]["offMosaic"], 0)
+            self.assertIn("X", check["parts"]["newtrain"]["species"] +
+                          check["parts"]["test"]["species"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def testShiftMovesThePolygonsWithTheirPart(self):
+        import geopandas as gpd
+        d = tempfile.mkdtemp(prefix="ttEnsPolyShift")
+        try:
+            data, path = self.build(d, offsetM=1.0)     # drawn 1 m east
+            check = self.run_(d, data, path, ["--shift", "newtrain=-1,0",
+                                              "--shift", "test=-1,0"])
+            self.assertEqual(check["crowns"], 28)
+            crowns = gpd.read_file(os.path.join(d, "out", "enshurin",
+                                                "crowns.shp"))
+            first = crowns.geometry.centroid.x.min() - 401800.0
+            self.assertAlmostEqual(first, 4.0, delta=0.05)   # back on the CHM
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def testPolygonsOffTheMosaicsStop(self):
+        d = tempfile.mkdtemp(prefix="ttEnsPolyOff")
+        try:
+            data, path = self.build(d, offsetM=500.0)   # another datum's shift
+            with self.assertRaises(ValueError):
+                self.run_(d, data, path)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestConCompSlopes(unittest.TestCase):
     """Height slopes reach the detector as grid dimensions, only when given."""
 
