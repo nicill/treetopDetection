@@ -159,16 +159,20 @@ def polygonCrowns(path, footprints, shifts, crs, minCrownM2):
     Crowns from a polygon annotation drawn on the part mosaics: each polygon
     goes to the part whose (unshifted) mosaic holds it, and is moved with that
     part's shift, as the mask would have been. Polygons under minCrownM2 are
-    dropped, as mask fragments are. A file whose coordinate system is labelled
-    differently from the mosaics' is taken to be in theirs (relabelled, not
-    transformed; reported), but most polygons must then fall on a mosaic, or
-    it stops: a real difference of systems would put them far off.
+    dropped, as mask fragments are. A file in another coordinate system (Vlad's
+    is Tokyo-datum UTM, the mosaics WGS84-based UTM, 300-750 m apart) is
+    converted to the mosaics' (reported); the datum conversion used may differ
+    from the one that made the file by a few metres, which the registration
+    check (tt align on the prepared site) measures and --shift removes. Most
+    polygons must fall on a mosaic, or it stops.
     """
     polygons = gpd.read_file(path)
-    relabelled = None
-    if polygons.crs is not None and polygons.crs != crs:
-        relabelled = str(polygons.crs)
-        polygons = polygons.set_crs(crs, allow_override=True)
+    converted = None
+    if polygons.crs is None:
+        polygons = polygons.set_crs(crs)
+    elif polygons.crs != crs:
+        converted = str(polygons.crs)
+        polygons = polygons.to_crs(crs)
     points = polygons.geometry.representative_point()
     byPart, notes, placed = {}, {}, np.zeros(len(polygons), bool)
     for part, foot in footprints.items():
@@ -193,7 +197,7 @@ def polygonCrowns(path, footprints, shifts, crs, minCrownM2):
                          % (placed.sum(), len(polygons)))
     return byPart, notes, {"polygons": int(len(polygons)),
                            "offMosaic": int((~placed).sum()),
-                           "relabelledFrom": relabelled}
+                           "convertedFrom": converted}
 
 
 def footprint(mosaic, resolution=0.25):
@@ -442,9 +446,9 @@ def prepare(args):
             crs = src.crs
         byPart, dropped, polygonNotes = polygonCrowns(
             args.crowns, original, shifts, crs, args.minCrownM2)
-        if polygonNotes["relabelledFrom"]:
-            print("[enshurin] crowns labelled %s, taken to be in the mosaics' "
-                  "system (not transformed)" % polygonNotes["relabelledFrom"])
+        if polygonNotes["convertedFrom"]:
+            print("[enshurin] crowns converted from %s to the mosaics' system"
+                  % polygonNotes["convertedFrom"])
         source = polygonSource(byPart, dropped)
     area, crowns, notes = buildArea(parts, args.chm, args, source, names)
     area.to_file(os.path.join(outDir, "area.shp"))

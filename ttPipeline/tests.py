@@ -2163,7 +2163,7 @@ class TestEnshurinPrepare(unittest.TestCase):
 class TestEnshurinPolygons(unittest.TestCase):
     """Crowns from a polygon annotation: same area and crowns as from masks."""
 
-    def build(self, d, offsetM=0.0):
+    def build(self, d, offsetM=0.0, inTokyoDatum=True):
         import geopandas as gpd
         import rasterio
         from rasterio.transform import from_origin
@@ -2197,7 +2197,9 @@ class TestEnshurinPolygons(unittest.TestCase):
         crowns = gpd.GeoDataFrame(
             {"name": [names[t[4]] for t in kept], "class": [t[4] for t in kept]},
             geometry=[Point(t[0] + offsetM, t[1]).buffer(t[2] * 0.95)
-                      for t in kept], crs="EPSG:3095")   # labelled otherwise
+                      for t in kept], crs=crs)
+        if inTokyoDatum:             # as Vlad's file: another datum entirely
+            crowns = crowns.to_crs("EPSG:3095")
         path = os.path.join(d, "crowns.shp")
         crowns.to_file(path)
         return data, path
@@ -2220,7 +2222,7 @@ class TestEnshurinPolygons(unittest.TestCase):
                                    delta=30)
             self.assertAlmostEqual(check["parts"]["test"]["keptM2"], 525,
                                    delta=40)
-            self.assertEqual(check["polygons"]["relabelledFrom"], "EPSG:3095")
+            self.assertEqual(check["polygons"]["convertedFrom"], "EPSG:3095")
             self.assertEqual(check["polygons"]["offMosaic"], 0)
             self.assertIn("X", check["parts"]["newtrain"]["species"] +
                           check["parts"]["test"]["species"])
