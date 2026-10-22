@@ -3326,6 +3326,98 @@ class TestCandidateTrees(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestRunCompare(unittest.TestCase):
+    """Pooled difference over blocks with a bootstrap, and the block test."""
+
+    def write(self, root, name, folds):
+        import json
+        path = os.path.join(root, name)
+        os.makedirs(path)
+        rows = [{"block": "b%02d" % i, "crowns": c, "recall": r,
+                 "precision": p, "f1": 2 * r * p / (r + p)}
+                for i, (c, r, p) in enumerate(folds)]
+        with open(os.path.join(path, "results.json"), "w") as handle:
+            json.dump({"pooled": {"f1": 0}, "folds": rows}, handle)
+
+    def testSmallBlocksDecideTheTestNotThePooledDifference(self):
+        import json
+        from tt.runCompare import main
+        d = tempfile.mkdtemp(prefix="ttRunCompare")
+        try:
+            big = [(400, 0.80, 0.80)] * 6
+            self.write(d, "a", big + [(30, 0.80, 0.70), (40, 0.80, 0.70)])
+            # the other: equal on big blocks but a hair worse, collapses on
+            # the two small ones
+            self.write(d, "b", [(400, 0.79, 0.80)] * 6 +
+                       [(30, 0.30, 0.80), (40, 0.30, 0.80)])
+            out = os.path.join(d, "c.json")
+            self.assertEqual(main(["--root", d, "--reference", "a", "--others",
+                                   "b", "--bootstrap", "2000",
+                                   "--output", out]), 0)
+            row = json.load(open(out))["rows"][0]
+            self.assertEqual(row["referenceWins"], 8)
+            self.assertLess(row["p"], 0.01)
+            # the pooled difference is small: the big blocks dominate
+            self.assertLess(row["pooledDifference"], 0.05)
+            self.assertGreater(row["meanBlockDifference"],
+                               3 * row["pooledDifference"])
+            lo, hi = row["interval95"]
+            self.assertLessEqual(lo, row["pooledDifference"])
+            self.assertGreaterEqual(hi, row["pooledDifference"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class TestCandidateValidation(unittest.TestCase):
+    """The proposal method inside annotated crowns, where the answer is known."""
+
+    def testOneCandidatePerCrown(self):
+        import geopandas as gpd
+        import rasterio
+        from rasterio.transform import from_origin
+        from shapely.geometry import Point
+        from tt import candidateTrees as ct
+        d = tempfile.mkdtemp(prefix="ttCandVal")
+        try:
+            crs, x0, y0, side, res = "EPSG:32654", 401000.0, 4268000.0, 60, 0.25
+            rng = np.random.default_rng(9)
+            n = int(side / res)
+            yy, xx = np.mgrid[0:n, 0:n]
+            X, Y = x0 + (xx + .5) * res, y0 - (yy + .5) * res
+            trees = [(x0 + cx, y0 - cy, 2.5, rng.uniform(6, 14))
+                     for cx in np.arange(4, side, 7.0)
+                     for cy in np.arange(4, side, 7.0)]
+            chm = np.zeros((n, n), np.float32)
+            for tx, ty, r, h in trees:
+                dd = np.hypot(X - tx, Y - ty)
+                chm = np.maximum(chm, np.where(dd < r, h * (1 - 0.4 * dd / r),
+                                               0)).astype(np.float32)
+            with rasterio.open(os.path.join(d, "chm.tif"), "w", driver="GTiff",
+                               height=n, width=n, count=1, dtype="float32",
+                               crs=crs, transform=from_origin(x0, y0, res, res)) as o:
+                o.write(chm, 1)
+            with rasterio.open(os.path.join(d, "m.tif"), "w", driver="GTiff",
+                               height=n, width=n, count=3, dtype="uint8",
+                               crs=crs, transform=from_origin(x0, y0, res, res)) as o:
+                o.write(np.full((3, n, n), 90, np.uint8))
+            gpd.GeoDataFrame(geometry=[Point(t[0], t[1]).buffer(t[2] * 0.9)
+                                       for t in trees], crs=crs) \
+                .to_file(os.path.join(d, "poly.shp"))
+            out = os.path.join(d, "val")
+            self.assertEqual(ct.main([
+                "--chm", os.path.join(d, "chm.tif"), "--polygons",
+                os.path.join(d, "poly.shp"), "--mosaics",
+                os.path.join(d, "m.tif"), "--output", out, "--validate"]), 0)
+            check = json.load(open(os.path.join(out, "validation.json")))
+            self.assertEqual(check["crowns"], len(trees))
+            self.assertGreater(check["foundOnce"], 0.95)
+            self.assertLess(check["split"], 0.03)
+            self.assertLess(check["missed"], 0.03)
+            self.assertGreater(check["medianIoU"], 0.3)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.

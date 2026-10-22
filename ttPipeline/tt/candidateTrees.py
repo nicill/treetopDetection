@@ -30,6 +30,12 @@ area and top-height quartiles):
      twice the upper end of that range
   C  everything else: likely bushes, branches or fragments, or a pair of crowns
 
+--validate runs the same method inside the annotated crowns instead, where
+the answer is known, and writes validation.json: per annotated crown, the
+share found by exactly one candidate, split into several, or missed; extra
+candidates per crown; and the median overlap (intersection over union) of a
+one-to-one candidate with its crown. Try --minProminenceM 0.5, 0.75, 1.0.
+
 Writes, in --output:
   candidates.shp                 in the CHM's frame (the shifted mosaics')
   candidates_original_frame.shp  moved back to the annotation's own frame (the
@@ -70,17 +76,23 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402  (after the backend is chosen)
 
 
-def reference(chm, transform, polygons):
-    """Area and top-height quantiles of the annotated crowns themselves."""
+def crownTops(chm, transform, polygons):
+    """Highest CHM cell in each polygon, NaN where it covers no cell."""
     ids = rasterize(((g, i + 1) for i, g in enumerate(polygons.geometry)),
                     out_shape=chm.shape, transform=transform, fill=0,
                     dtype="int32")
     index = np.arange(1, len(polygons) + 1)
     present = ndimage.sum(np.ones_like(ids), ids, index) > 0
-    tops = np.asarray(ndimage.maximum(chm, ids, index))[present]
-    area = polygons.area.values
-    return {"area": np.percentile(area, [10, 90]),
-            "top": np.percentile(tops, [10, 25])}
+    tops = np.asarray(ndimage.maximum(chm, ids, index), dtype=float)
+    tops[~present] = np.nan
+    return tops
+
+
+def reference(chm, transform, polygons):
+    """Area and top-height quantiles of the annotated crowns themselves."""
+    tops = crownTops(chm, transform, polygons)
+    return {"area": np.percentile(polygons.area.values, [10, 90]),
+            "top": np.nanpercentile(tops, [10, 25])}
 
 
 def confidence(areaM2, topH, solidity, ref):
@@ -106,40 +118,93 @@ def grow(chm, transform, mask, args):
     return labels, markers, smooth, count
 
 
-def crowns(labels, markers, chm, smooth, transform, annotated, ref, args, crs):
+def crowns(labels, chm, smooth, transform, annotated, ref, args, crs):
+    """
+    One polygon per watershed region, grown by --growM into empty cells only
+    (never into another region), holes filled, never into an annotated crown;
+    attributes from the region itself. All regions at once: fast at any size.
+    """
+    from shapely.geometry import Polygon
+    from shapely.strtree import STRtree
+    from skimage.segmentation import expand_labels
     res = abs(transform.a)
-    taken = annotated
+    grown = expand_labels(labels, distance=args.growM / res) \
+        if args.growM > 0 else labels.copy()
+    index = np.unique(labels[labels > 0])
+    if len(index) == 0:
+        return gpd.GeoDataFrame({"areaM2": [], "conf": []}, geometry=[], crs=crs)
+    tops = np.asarray(ndimage.maximum(chm, labels, index))
+    means = np.asarray(ndimage.mean(chm, labels, index))
+    spread = np.asarray(ndimage.maximum(smooth, labels, index)) - \
+        np.asarray(ndimage.minimum(smooth, labels, index))
+    polys = {}
+    for geom, value in shapes(grown.astype(np.int32), mask=grown > 0,
+                              transform=transform):
+        poly = Polygon(shape(geom).exterior)
+        if int(value) not in polys or poly.area > polys[int(value)].area:
+            polys[int(value)] = poly
+    others = list(annotated.geometry) if annotated is not None else []
+    tree = STRtree(others) if others else None
     rows = []
-    for value in np.unique(labels[labels > 0]):
-        region = labels == value
-        region = ndimage.binary_closing(region, structure=np.ones((3, 3)))
-        region = ndimage.binary_fill_holes(region)
-        polys = [shape(g) for g, v in shapes(region.astype(np.uint8),
-                                             mask=region, transform=transform)]
-        if not polys:
+    for i, value in enumerate(index):
+        poly = polys.get(int(value))
+        if poly is None:
             continue
-        poly = max(polys, key=lambda p: p.area).simplify(res / 2)
-        if args.growM > 0:
-            poly = poly.buffer(args.growM, join_style=1)
-        poly = poly.difference(taken)
+        poly = poly.simplify(res / 2)
+        if tree is not None:
+            near = tree.query(poly)
+            if len(near):
+                poly = poly.difference(unary_union([others[j] for j in near]))
         if poly.is_empty:
             continue
         if poly.geom_type != "Polygon":
-            poly = max(getattr(poly, "geoms", [poly]), key=lambda p: p.area)
+            poly = max(poly.geoms, key=lambda p: p.area)
         if poly.area < args.minCrownM2:
             continue
-        taken = unary_union([taken, poly])
-        peak = float(chm[region].max())
-        prominence = float(smooth[region].max() - smooth[region].min())
         solidity = float(poly.area / poly.convex_hull.area)
-        rows.append({"areaM2": round(poly.area, 1), "topH": round(peak, 1),
-                     "meanH": round(float(chm[region].mean()), 1),
-                     "prominence": round(prominence, 2),
+        rows.append({"areaM2": round(poly.area, 1),
+                     "topH": round(float(tops[i]), 1),
+                     "meanH": round(float(means[i]), 1),
+                     "prominence": round(float(spread[i]), 2),
                      "solidity": round(solidity, 2),
-                     "conf": confidence(poly.area, peak, solidity, ref),
+                     "conf": confidence(poly.area, float(tops[i]), solidity, ref),
                      "geometry": poly})
-    return gpd.GeoDataFrame(rows, geometry="geometry", crs=crs) if rows else \
-        gpd.GeoDataFrame({"areaM2": [], "conf": []}, geometry=[], crs=crs)
+    if not rows:
+        return gpd.GeoDataFrame({"areaM2": [], "conf": []}, geometry=[], crs=crs)
+    return gpd.GeoDataFrame(rows, geometry="geometry", crs=crs)
+
+
+def validate(found, annotated, chm, transform, minHeight):
+    """
+    The proposal method inside the annotated crowns, where the answer is
+    known: per annotated crown (top >= minHeight) how many candidates fall in
+    it (one: found; two or more: split; none: missed), candidates in no crown
+    (extra), and how well a one-to-one candidate's outline covers its crown
+    (intersection over union).
+    """
+    tops = crownTops(chm, transform, annotated)
+    truth = annotated[np.nan_to_num(tops) >= minHeight].reset_index(drop=True)
+    points = gpd.GeoDataFrame(geometry=found.geometry.representative_point(),
+                              crs=found.crs)
+    joined = gpd.sjoin(points, truth[["geometry"]], predicate="within",
+                       how="left")
+    joined = joined[~joined.index.duplicated()]
+    inCrown = joined["index_right"].dropna().astype(int)
+    per = inCrown.value_counts()
+    ones = per[per == 1].index
+    owner = {crown: cand for cand, crown in inCrown.items() if crown in ones}
+    iou = [found.geometry.iloc[c].intersection(truth.geometry.iloc[t]).area /
+           found.geometry.iloc[c].union(truth.geometry.iloc[t]).area
+           for t, c in owner.items()]
+    n = len(truth)
+    return {"crowns": int(n), "candidates": int(len(found)),
+            "candidatesPerCrown": round(len(found) / max(n, 1), 3),
+            "foundOnce": round(float((per == 1).sum()) / max(n, 1), 3),
+            "split": round(float((per >= 2).sum()) / max(n, 1), 3),
+            "missed": round(float(n - len(per)) / max(n, 1), 3),
+            "extraPerCrown": round(float(joined["index_right"].isna().sum())
+                                   / max(n, 1), 3),
+            "medianIoU": round(float(np.median(iou)), 3) if iou else None}
 
 
 def inOriginalFrame(frame, mosaics, shifts, like):
@@ -194,8 +259,20 @@ def overview(path, mosaics, foot, annotated, candidates, pixelM):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--chm", required=True)
-    parser.add_argument("--unannotated", required=True,
-                        help="unannotated.shp from tt.unannotatedTrees")
+    parser.add_argument("--unannotated", default=None,
+                        help="unannotated.shp from tt.unannotatedTrees "
+                             "(not needed with --validate)")
+    parser.add_argument("--validate", action="store_true",
+                        help="run the method inside the annotated crowns "
+                             "instead, where the answer is known, and write "
+                             "validation.json (found once, split, missed, "
+                             "extra, outline overlap)")
+    parser.add_argument("--minHeightM", type=float, default=4.0,
+                        help="--validate: tree canopy, and the crowns "
+                             "checked, at least this tall")
+    parser.add_argument("--marginM", type=float, default=1.0,
+                        help="--validate: the crowns grown by this, as the "
+                             "unannotated mask stops this short of them")
     parser.add_argument("--polygons", required=True,
                         help="the annotated crowns, in the CHM's frame")
     parser.add_argument("--mosaics", nargs="+", required=True)
@@ -218,15 +295,31 @@ def main(argv=None):
         chm = src.read(1, masked=True).filled(0).astype(np.float32)
         transform, crs = src.transform, src.crs
     annotated = gpd.read_file(args.polygons).to_crs(crs)
-    patches = gpd.read_file(args.unannotated).to_crs(crs)
-    mask = rasterize([(g, 1) for g in patches.geometry], out_shape=chm.shape,
-                     transform=transform, fill=0, dtype="uint8").astype(bool)
+    if args.validate:
+        mask = rasterize([(g, 1) for g in annotated.geometry.buffer(args.marginM)],
+                         out_shape=chm.shape, transform=transform, fill=0,
+                         dtype="uint8").astype(bool) & (chm >= args.minHeightM)
+    else:
+        if not args.unannotated:
+            parser.error("--unannotated is needed unless --validate")
+        patches = gpd.read_file(args.unannotated).to_crs(crs)
+        mask = rasterize([(g, 1) for g in patches.geometry],
+                         out_shape=chm.shape, transform=transform, fill=0,
+                         dtype="uint8").astype(bool)
     ref = reference(chm, transform, annotated)
     labels, markers, smooth, count = grow(chm, transform, mask, args)
-    found = crowns(labels, markers, chm, smooth, transform,
-                   unary_union(annotated.geometry), ref, args, crs)
+    found = crowns(labels, chm, smooth, transform,
+                   None if args.validate else annotated, ref, args, crs)
     found.insert(0, "id", np.arange(1, len(found) + 1))
     found.to_file(os.path.join(args.output, "candidates.shp"))
+    if args.validate:
+        check = validate(found, annotated, chm, transform, args.minHeightM)
+        check.update({"minProminenceM": args.minProminenceM,
+                      "smoothM": args.smoothM, "growM": args.growM})
+        with open(os.path.join(args.output, "validation.json"), "w") as handle:
+            json.dump(check, handle, indent=2)
+        print("[validate] %s" % json.dumps(check))
+        return 0
     if len(found):
         gpd.GeoDataFrame(found[["id"]], geometry=found.geometry.centroid) \
             .to_file(os.path.join(args.output, "candidates_tops.shp"))
