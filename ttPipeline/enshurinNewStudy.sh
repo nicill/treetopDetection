@@ -21,7 +21,12 @@
 # printed side by side (R, P, F1) and not tested against each other. A
 # finished step is skipped when the script is run again.
 #
-# Settings from the environment: DROP, PROC, N, OUT, JOBS (default 16).
+# OVERRIDES="minHeights=4.0 minHeight=4.0" replaces those options of every
+# replayed run (and only those): Vlad's rule that a tree is at least 4 m tall,
+# for the height methods, whose minimum height is otherwise a tuned grid.
+#
+# Settings from the environment: DROP, PROC, N, OUT, JOBS (default 16),
+# OVERRIDES (default none).
 
 set -u
 cd "$(dirname "$0")" || exit 1
@@ -45,7 +50,11 @@ done
 replayArgs() {   # replayArgs RESULTS MODULE...: a run's own options, quoted
     python - "$@" <<'PY'
 import json, shlex, subprocess, sys
+import os
 settings = json.load(open(sys.argv[1]))["settings"]
+for pair in os.environ.get("OVERRIDES", "").split():
+    key, value = pair.split("=", 1)
+    settings[key] = value
 helpText = subprocess.run([sys.executable, "-m"] + sys.argv[2:] + ["--help"],
                           capture_output=True, text=True).stdout
 skip = {"dataset", "output", "log", "jobs", "progress"}
