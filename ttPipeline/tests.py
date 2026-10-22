@@ -3418,6 +3418,69 @@ class TestCandidateValidation(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestEdgePatches(unittest.TestCase):
+    """The edge part of the uncovered canopy, written and drawn."""
+
+    def testEdgeAndInteriorSeparated(self):
+        import types
+        import geopandas as gpd
+        import rasterio
+        from rasterio.transform import from_origin
+        from shapely.geometry import Point, box
+        from tt import edgePatches as ep
+        from tt import qpPrepare as qp
+        d = tempfile.mkdtemp(prefix="ttEdge")
+        try:
+            site = os.path.join(d, "site")
+            os.makedirs(site)
+            crs, x0, y0, W, H, res = "EPSG:32654", 500000.0, 4400000.0, 40, 40, 0.25
+            nx, ny = int(W / res), int(H / res)
+            cc, rr = np.meshgrid(np.arange(nx), np.arange(ny))
+            X, Y = x0 + (cc + .5) * res, y0 - (rr + .5) * res
+            trees = [(x0 + cx, y0 - cy) for cx in np.arange(2, W, 3.2)
+                     for cy in np.arange(2, H, 3.2)]
+            chm = np.zeros((ny, nx), np.float32)
+            for tx, ty in trees:
+                chm[np.hypot(X - tx, Y - ty) < 1.4] = 6.0
+            for name, data, count in (("chm", chm[None], 1),
+                                      ("rgb", np.full((3, ny, nx), 90, np.uint8), 3)):
+                with rasterio.open(os.path.join(site, name + ".tif"), "w",
+                                   driver="GTiff", height=ny, width=nx,
+                                   count=count, dtype=data.dtype, crs=crs,
+                                   transform=from_origin(x0, y0, res, res)) as o:
+                    o.write(data)
+            area = gpd.GeoDataFrame({"name": ["a"]}, geometry=[box(
+                x0 + 1, y0 - H + 1, x0 + W - 1, y0 - 1)], crs=crs)
+            area.to_file(os.path.join(site, "area.shp"))
+            # west column of trees and one interior tree left unannotated
+            interiorTree = min(trees, key=lambda t: np.hypot(t[0] - x0 - W / 2,
+                                                             t[1] - y0 + H / 2))
+            ann = [t for t in trees if t[0] > x0 + 3 and t != interiorTree]
+            crowns = gpd.GeoDataFrame({"class_code": ["tree"] * len(ann)},
+                                      geometry=[Point(*t).buffer(1.35) for t in ann],
+                                      crs=crs)
+            crowns.to_file(os.path.join(site, "crowns.shp"))
+            _, frame = qp.uncoveredCanopy(
+                os.path.join(site, "chm.tif"), crowns, area,
+                types.SimpleNamespace(crownMarginM=0.2, canopyM=1.5,
+                                      minPatchM2=0.5))
+            frame.to_file(os.path.join(site, "uncovered.shp"))
+            out = os.path.join(d, "out")
+            self.assertEqual(ep.main(["--site", site, "--output", out,
+                                      "--like", os.path.join(site, "area.shp"),
+                                      "--zooms", "2", "--zoomM", "12"]), 0)
+            summary = json.load(open(os.path.join(out, "summary.json")))
+            self.assertGreaterEqual(summary["edgePatches"], 10)   # the west column
+            edge = gpd.read_file(os.path.join(out, "edge_patches.shp"))
+            self.assertFalse(edge.contains(Point(*interiorTree)).any())
+            self.assertTrue((edge.centroid.x < x0 + 4).all())
+            for name in ("overview.png", "zooms.png",
+                         "edge_patches_original.shp"):
+                self.assertTrue(os.path.exists(os.path.join(out, name)), name)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
