@@ -55,12 +55,13 @@ CELL_M = 1.0
 
 
 def footprint(mosaics):
-    """The union of the mosaics' extents (valid-data outline is not needed)."""
-    parts = []
-    for path in mosaics:
-        with rasterio.open(path) as src:
-            parts.append(box(*src.bounds))
-    return unary_union(parts)
+    """
+    Where the mosaics have image: their non-black pixels, as the preparation
+    finds them (not the rectangles around them: a rotated mosaic has empty
+    corners, where the CHM may still show canopy).
+    """
+    from tt.enshurinPrepare import footprint as validData
+    return unary_union([validData(m) for m in mosaics])
 
 
 def siteGrid(chmPath, crowns, area, foot, canopyM):

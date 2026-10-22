@@ -13,6 +13,7 @@ without it).
 
 Unannotated tree canopy, on the CHM's grid, inside the mosaics:
   CHM >= --minHeightM (tree height; lower vegetation, shrubs, is left out),
+  inside the part of the mosaics that has image (not the empty corners),
   farther than --marginM from every polygon (outlines are drawn tighter than
   the crown's rim: the rim is not a missing tree),
   then opened with a disc of --openingM (thin slivers between crowns go) and
@@ -46,11 +47,21 @@ from rasterio.features import rasterize, shapes
 from rasterio.merge import merge
 from rasterio.transform import from_origin
 from scipy import ndimage
-from shapely.geometry import box, shape
+from shapely.geometry import shape
 from shapely.ops import unary_union
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402  (after the backend is chosen)
+
+
+def footprint(mosaics):
+    """
+    Where the mosaics have image (non-black pixels, as the preparation finds
+    them), not the rectangles around them: a rotated mosaic has empty corners
+    where the CHM may still show canopy that is not in any image.
+    """
+    from tt.enshurinPrepare import footprint as validData
+    return unary_union([validData(m) for m in mosaics])
 
 
 def disc(radius):
@@ -214,7 +225,7 @@ def main(argv=None):
     os.makedirs(args.output, exist_ok=True)
 
     mosaics = [m for p in args.mosaics for m in sorted(glob.glob(p))]
-    foot = unary_union([box(*rasterio.open(m).bounds) for m in mosaics])
+    foot = footprint(mosaics)
     polygons = gpd.read_file(args.polygons)
     chm, transform, crs = readChm(args.chm)
     polygons = polygons.to_crs(crs) if polygons.crs != crs else polygons

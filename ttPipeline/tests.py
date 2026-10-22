@@ -3183,6 +3183,8 @@ class TestUnannotatedTrees(unittest.TestCase):
                 chm = np.maximum(chm, np.where(dd < r, h * (1 - 0.4 * dd / r),
                                                0)).astype(np.float32)
             chm[(X > x0 + 45) & (Y < y0 - 45) & (chm < 1)] = 2.5    # shrubs
+            corner = (X + (y0 - Y) * 0 > x0 + 40) & ((y0 - Y) < 12)  # no image
+            chm[corner] = 9.0                                        # canopy there
             with rasterio.open(os.path.join(d, "chm.tif"), "w", driver="GTiff",
                                height=n, width=n, count=1, dtype="float32",
                                crs=crs, transform=from_origin(x0, y0, res, res)) as o:
@@ -3190,7 +3192,9 @@ class TestUnannotatedTrees(unittest.TestCase):
             with rasterio.open(os.path.join(d, "m.tif"), "w", driver="GTiff",
                                height=n, width=n, count=3, dtype="uint8",
                                crs=crs, transform=from_origin(x0, y0, res, res)) as o:
-                o.write(np.full((3, n, n), 90, np.uint8))
+                image = np.full((3, n, n), 90, np.uint8)
+                image[:, corner] = 0                       # the empty corner
+                o.write(image)
             annotated = [t for t in trees if t[0] < x0 + 30]
             gpd.GeoDataFrame(geometry=[Point(t[0], t[1]).buffer(t[2] * 0.9)
                                        for t in annotated], crs=crs) \
@@ -3205,11 +3209,16 @@ class TestUnannotatedTrees(unittest.TestCase):
                 "--area", os.path.join(d, "area.shp"), "--output", out,
                 "--rgbPixelM", "0.25"]), 0)
             summary = json.load(open(os.path.join(out, "summary.json")))
-            self.assertEqual(summary["topsRough"], len(trees) - len(annotated))
+            real = [t for t in trees if t[0] >= x0 + 30 and not
+                    (t[0] > x0 + 40 and y0 - t[1] < 12)]
+            self.assertEqual(summary["topsRough"], len(real))   # not the corner
             self.assertEqual(summary["topsInArea"], 0)
             frame = gpd.read_file(os.path.join(out, "unannotated.shp"))
-            self.assertEqual(len(frame), len(trees) - len(annotated))
+            self.assertEqual(len(frame), len(real))
             self.assertTrue((frame["maxH"] >= 4).all())        # no shrubs
+            hits = frame.geometry.centroid.apply(
+                lambda p: p.x > x0 + 40 and y0 - p.y < 12).sum()
+            self.assertEqual(int(hits), 0)       # nothing in the empty corner
             for name in ("overview.png", "rgb_unannotated.tif",
                          "unannotated_tops.shp"):
                 self.assertTrue(os.path.exists(os.path.join(out, name)), name)
