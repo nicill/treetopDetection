@@ -3247,6 +3247,85 @@ class TestUnannotatedTrees(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestCandidateTrees(unittest.TestCase):
+    """Candidate crowns for the unannotated trees, and the way back to the
+    annotator's frame."""
+
+    def testCandidatesFoundAndRoundTrip(self):
+        import geopandas as gpd
+        import rasterio
+        from shapely.affinity import translate
+        from rasterio.transform import from_origin
+        from shapely.geometry import Point, box
+        from tt import candidateTrees as ct
+        from tt import unannotatedTrees as ut
+        d = tempfile.mkdtemp(prefix="ttCand")
+        try:
+            crs, x0, y0, side, res = "EPSG:32654", 401000.0, 4268000.0, 60, 0.25
+            rng = np.random.default_rng(5)
+            n = int(side / res)
+            yy, xx = np.mgrid[0:n, 0:n]
+            X, Y = x0 + (xx + .5) * res, y0 - (yy + .5) * res
+            trees = [(x0 + cx, y0 - cy, 2.5, rng.uniform(6, 14))
+                     for cx in np.arange(4, side, 7.0)
+                     for cy in np.arange(4, side, 7.0)]
+            chm = np.zeros((n, n), np.float32)
+            for tx, ty, r, h in trees:
+                dd = np.hypot(X - tx, Y - ty)
+                chm = np.maximum(chm, np.where(dd < r, h * (1 - 0.4 * dd / r),
+                                               0)).astype(np.float32)
+            with rasterio.open(os.path.join(d, "chm.tif"), "w", driver="GTiff",
+                               height=n, width=n, count=1, dtype="float32",
+                               crs=crs, transform=from_origin(x0, y0, res, res)) as o:
+                o.write(chm, 1)
+            for i, name in enumerate(("newtrain", "test")):
+                with rasterio.open(os.path.join(d, "m_%s.tif" % name), "w",
+                                   driver="GTiff", height=n, width=n // 2,
+                                   count=3, dtype="uint8", crs=crs,
+                                   transform=from_origin(x0 + 30 * i, y0, res, res)) as o:
+                    o.write(np.full((3, n, n // 2), 90, np.uint8))
+            annotated = [t for t in trees if t[0] < x0 + 30]
+            missing = [t for t in trees if t[0] >= x0 + 30]
+            gpd.GeoDataFrame(geometry=[Point(t[0], t[1]).buffer(t[2] * 0.9)
+                                       for t in annotated], crs=crs) \
+                .to_file(os.path.join(d, "poly.shp"))
+            like = os.path.join(d, "like.shp")        # the annotator's frame
+            gpd.GeoDataFrame(geometry=[Point(0, 0).buffer(1)], crs=crs) \
+                .to_crs("EPSG:3095").to_file(like)
+            un = os.path.join(d, "un")
+            self.assertEqual(ut.main([
+                "--chm", os.path.join(d, "chm.tif"), "--polygons",
+                os.path.join(d, "poly.shp"), "--mosaics",
+                os.path.join(d, "m_*.tif"), "--output", un,
+                "--rgbPixelM", "0.5"]), 0)
+            out = os.path.join(d, "cand")
+            shifts = ["--shift", "newtrain=-1.37,-0.43", "--shift",
+                      "test=-1.67,-0.47"]
+            self.assertEqual(ct.main([
+                "--chm", os.path.join(d, "chm.tif"), "--unannotated",
+                os.path.join(un, "unannotated.shp"), "--polygons",
+                os.path.join(d, "poly.shp"), "--mosaics",
+                os.path.join(d, "m_*.tif"), "--like", like,
+                "--output", out, "--overviewPixelM", "0.5"] + shifts), 0)
+            found = gpd.read_file(os.path.join(out, "candidates.shp"))
+            self.assertAlmostEqual(len(found), len(missing), delta=2)
+            hit = sum(found.contains(Point(t[0], t[1])).any() for t in missing)
+            self.assertGreaterEqual(hit, len(missing) - 2)
+            self.assertFalse(found.intersects(
+                gpd.read_file(os.path.join(d, "poly.shp")).union_all()).any())
+            self.assertTrue(set(found["conf"]) <= {"A", "B", "C"})
+            # the way back: forward conversion of the original-frame file
+            back = gpd.read_file(os.path.join(out, "candidates_original_frame.shp"))
+            self.assertEqual(set(back["name"]), {"CAND"})
+            forward = back.to_crs(crs)
+            for geom, ref in zip(forward.geometry, found.geometry):
+                shift = (-1.37, -0.43) if ref.centroid.x < x0 + 30 else (-1.67, -0.47)
+                moved = translate(geom, *shift)
+                self.assertLess(moved.centroid.distance(ref.centroid), 0.02)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
