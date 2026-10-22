@@ -3158,6 +3158,65 @@ class TestAreaExamples(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestUnannotatedTrees(unittest.TestCase):
+    """The mask of unannotated tree canopy finds the trees left out."""
+
+    def testUnannotatedTreesFoundAndShrubsNot(self):
+        import geopandas as gpd
+        import rasterio
+        from rasterio.transform import from_origin
+        from shapely.geometry import Point, box
+        from tt import unannotatedTrees as ut
+        d = tempfile.mkdtemp(prefix="ttUnann")
+        try:
+            crs, x0, y0, side, res = "EPSG:32654", 401000.0, 4268000.0, 60, 0.25
+            rng = np.random.default_rng(3)
+            n = int(side / res)
+            yy, xx = np.mgrid[0:n, 0:n]
+            X, Y = x0 + (xx + .5) * res, y0 - (yy + .5) * res
+            trees = [(x0 + cx, y0 - cy, 2.5, rng.uniform(6, 14))
+                     for cx in np.arange(4, side, 7.0)
+                     for cy in np.arange(4, side, 7.0)]
+            chm = np.zeros((n, n), np.float32)
+            for tx, ty, r, h in trees:
+                dd = np.hypot(X - tx, Y - ty)
+                chm = np.maximum(chm, np.where(dd < r, h * (1 - 0.4 * dd / r),
+                                               0)).astype(np.float32)
+            chm[(X > x0 + 45) & (Y < y0 - 45) & (chm < 1)] = 2.5    # shrubs
+            with rasterio.open(os.path.join(d, "chm.tif"), "w", driver="GTiff",
+                               height=n, width=n, count=1, dtype="float32",
+                               crs=crs, transform=from_origin(x0, y0, res, res)) as o:
+                o.write(chm, 1)
+            with rasterio.open(os.path.join(d, "m.tif"), "w", driver="GTiff",
+                               height=n, width=n, count=3, dtype="uint8",
+                               crs=crs, transform=from_origin(x0, y0, res, res)) as o:
+                o.write(np.full((3, n, n), 90, np.uint8))
+            annotated = [t for t in trees if t[0] < x0 + 30]
+            gpd.GeoDataFrame(geometry=[Point(t[0], t[1]).buffer(t[2] * 0.9)
+                                       for t in annotated], crs=crs) \
+                .to_file(os.path.join(d, "poly.shp"))
+            gpd.GeoDataFrame(geometry=[box(x0, y0 - side, x0 + 30, y0)],
+                             crs=crs).to_file(os.path.join(d, "area.shp"))
+            out = os.path.join(d, "out")
+            self.assertEqual(ut.main([
+                "--chm", os.path.join(d, "chm.tif"),
+                "--polygons", os.path.join(d, "poly.shp"),
+                "--mosaics", os.path.join(d, "m.tif"),
+                "--area", os.path.join(d, "area.shp"), "--output", out,
+                "--rgbPixelM", "0.25"]), 0)
+            summary = json.load(open(os.path.join(out, "summary.json")))
+            self.assertEqual(summary["topsRough"], len(trees) - len(annotated))
+            self.assertEqual(summary["topsInArea"], 0)
+            frame = gpd.read_file(os.path.join(out, "unannotated.shp"))
+            self.assertEqual(len(frame), len(trees) - len(annotated))
+            self.assertTrue((frame["maxH"] >= 4).all())        # no shrubs
+            for name in ("overview.png", "rgb_unannotated.tif",
+                         "unannotated_tops.shp"):
+                self.assertTrue(os.path.exists(os.path.join(out, name)), name)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
