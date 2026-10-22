@@ -38,6 +38,10 @@ What differs from the other sites, and what this does about it:
            part whose mosaic holds it and moves with that part's shift; every
            polygon is a crown whatever its species (unidentified trees
            included); the coverage rule and everything after are unchanged.
+  whole    --wholeMosaics: no area rule, every mosaic's whole image is scored,
+           and canopy no crown covers is not cut out as don't-care: a detector
+           must ignore bushes and unannotated trees. The rule above stays the
+           default, and the way the other sites are scored.
   shift    a part whose mosaic (and the mask drawn on it) is offset from the
            surface model can be moved onto it with --shift PART=DX,DY: a VRT
            with the georeferencing moved, the pixels untouched.
@@ -345,6 +349,32 @@ def buildArea(parts, chmPath, args, source=None, names=None):
                              columns=crowns[0].columns, crs=crs), notes)
 
 
+def wholeArea(parts, source, names=None):
+    """
+    The whole of every mosaic's image as the area, every annotated crown whole,
+    with the same per-part notes as buildArea. No annotation-share rule: the
+    unannotated vegetation (bushes, understory, trees nobody drew) is scored
+    like the rest, so a detector has to ignore it.
+    """
+    cells, crowns, notes = [], [], {}
+    for part, (mosaic, mask, perClass) in parts.items():
+        partCrowns, dropped, share = source[part]
+        foot = footprint(mosaic)
+        cells.append(foot)
+        crowns.append(partCrowns)
+        notes[part] = {"crowns": int(len(partCrowns)),
+                       "fragmentsDropped": dropped, "species": names
+                       or sorted(set(partCrowns["species"])),
+                       "mosaicM2": float(foot.area),
+                       "cellsM2": float(foot.area), "keptM2": float(foot.area)}
+    crs = crowns[0].crs
+    allCrowns = gpd.GeoDataFrame(np.concatenate([c.values for c in crowns]),
+                                 columns=crowns[0].columns, crs=crs)
+    area = unary_union(cells + list(allCrowns.geometry))
+    return (gpd.GeoDataFrame({"name": ["area"]}, geometry=[area], crs=crs),
+            allCrowns, notes)
+
+
 def writeChm(chmPath, area, args, outPath):
     """The full-site CHM on the area's grid, 0 outside the area."""
     west, south, east, north = qp.gridBounds(area, args.chmResolution)
@@ -375,7 +405,8 @@ def finish(site, outDir, crowns, area, chmPath, rgbPath, notes, args,
     inArea = crowns[crowns.intersects(area.geometry.iloc[0])]
     coverage, uncovered = qp.uncoveredCanopy(chmPath, inArea, area, args)
     tops = qp.crownTops(chmPath, inArea)
-    scored, ignored, region, counts = qp.scoredRegion(inArea, area, uncovered,
+    cut = uncovered.iloc[0:0] if args.wholeMosaics else uncovered
+    scored, ignored, region, counts = qp.scoredRegion(inArea, area, cut,
                                                       tops, args.visibleM)
     qp.writeLayers(outDir, {"uncovered": uncovered,
                             "crowns": scored[["class_code", "geometry"]],
@@ -386,6 +417,7 @@ def finish(site, outDir, crowns, area, chmPath, rgbPath, notes, args,
                  os.path.join(outDir, "quicklook.png"))
     check = {"site": site, "parts": notes, "shifts": parseShifts(args.shift),
              "crownSource": args.crowns or "masks",
+             "wholeMosaics": bool(args.wholeMosaics),
              "polygons": polygonNotes,
              "annotatedCrowns": int(len(crowns)),
              "crownsInArea": int(len(inArea)), "crowns": int(len(scored)),
@@ -450,7 +482,12 @@ def prepare(args):
             print("[enshurin] crowns converted from %s to the mosaics' system"
                   % polygonNotes["convertedFrom"])
         source = polygonSource(byPart, dropped)
-    area, crowns, notes = buildArea(parts, args.chm, args, source, names)
+    if source is None:
+        source, names = maskSource(parts, args)
+    if args.wholeMosaics:
+        area, crowns, notes = wholeArea(parts, source, names)
+    else:
+        area, crowns, notes = buildArea(parts, args.chm, args, source, names)
     area.to_file(os.path.join(outDir, "area.shp"))
     chmPath, rgbPath = (os.path.join(outDir, n) for n in ("chm.tif", "rgb.tif"))
     writeChm(args.chm, area, args, chmPath)
@@ -491,6 +528,13 @@ def parseArguments(argv=None):
                         help="crown polygons (one per tree, drawn on the part "
                              "mosaics) instead of the class masks; every "
                              "polygon is a crown, whatever its species")
+    parser.add_argument("--wholeMosaics", action="store_true",
+                        help="score the whole image of every mosaic: no "
+                             "annotation-share rule for the area and no "
+                             "don't-care cut for uncovered canopy, so bushes "
+                             "and unannotated trees count like the rest "
+                             "(uncovered.shp is still written, for "
+                             "information)")
     parser.add_argument("--cellM", type=float, default=10.0)
     parser.add_argument("--annotatedShare", type=float, default=0.9)
     parser.add_argument("--coverMarginM", type=float, default=0.5,

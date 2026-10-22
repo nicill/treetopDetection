@@ -2229,6 +2229,27 @@ class TestEnshurinPolygons(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    def testWholeMosaicsScoresEverythingAndCutsNothing(self):
+        import geopandas as gpd
+        d = tempfile.mkdtemp(prefix="ttEnsWhole")
+        try:
+            data, path = self.build(d)
+            usual = self.run_(d, data, path)
+            whole = self.run_(d, data, path, ["--wholeMosaics", "--output",
+                                               os.path.join(d, "outWhole")])
+            self.assertTrue(whole["wholeMosaics"])
+            self.assertGreater(whole["scoredAreaM2"], usual["scoredAreaM2"] + 200)
+            self.assertAlmostEqual(whole["scoredAreaM2"], 1800, delta=80)
+            self.assertEqual(whole["crowns"], usual["crowns"])
+            path = os.path.join(d, "outWhole", "enshurin", "ignored.shp")
+            reasons = set(gpd.read_file(path)["reason"]) \
+                if os.path.exists(path) else set()      # nothing cut out at all
+            self.assertNotIn("uncovered", reasons)
+            self.assertGreater(whole["coverage"]["interiorShare"] +
+                               whole["coverage"]["edgeShare"], 0.2)  # still measured
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
     def testShiftMovesThePolygonsWithTheirPart(self):
         import geopandas as gpd
         d = tempfile.mkdtemp(prefix="ttEnsPolyShift")
