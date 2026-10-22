@@ -3098,6 +3098,66 @@ class TestDsmChm(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestAreaExamples(unittest.TestCase):
+    """Example images of the parts left out of the scored area."""
+
+    def testWindowsFoundAndDrawn(self):
+        import geopandas as gpd
+        import rasterio
+        from rasterio.transform import from_origin
+        from shapely.geometry import Point, box
+        from tt import areaExamples as ae
+        d = tempfile.mkdtemp(prefix="ttExamples")
+        try:
+            crs, x0, y0, side = "EPSG:32654", 401000.0, 4268000.0, 400
+            rng = np.random.default_rng(1)
+            # canopy everywhere; trees on a 6 m lattice; only the west half is
+            # annotated, so the east half is left out of the area
+            trees = [(x0 + cx, y0 - cy) for cx in np.arange(3, side, 6.0)
+                     for cy in np.arange(3, side, 6.0)]
+            chm = np.full((side * 2, side * 2), 6.0, np.float32)
+            tf = from_origin(x0, y0, 0.5, 0.5)
+            with rasterio.open(os.path.join(d, "chm.tif"), "w", driver="GTiff",
+                               height=side * 2, width=side * 2, count=1,
+                               dtype="float32", crs=crs, transform=tf) as out:
+                out.write(chm, 1)
+            for i, name in enumerate(("a", "b")):
+                with rasterio.open(os.path.join(d, "m%s.tif" % name), "w",
+                                   driver="GTiff", height=800, width=400,
+                                   count=3, dtype="uint8", crs=crs,
+                                   transform=from_origin(x0 + 200 * i, y0, 0.5,
+                                                         0.5)) as out:
+                    out.write(rng.integers(60, 200, (3, 800, 400),
+                                           dtype=np.uint8))
+            kept = [t for t in trees if t[0] < x0 + side / 2]
+            crowns = gpd.GeoDataFrame(geometry=[Point(*t).buffer(2.4)
+                                                for t in kept], crs=crs)
+            crowns.to_file(os.path.join(d, "crowns.shp"))
+            gpd.GeoDataFrame(geometry=[box(x0, y0 - side, x0 + side / 2, y0)],
+                             crs=crs).to_file(os.path.join(d, "area.shp"))
+            out = os.path.join(d, "ex")
+            self.assertEqual(ae.main([
+                "--mosaics", os.path.join(d, "m*.tif"),
+                "--chm", os.path.join(d, "chm.tif"),
+                "--polygons", os.path.join(d, "crowns.shp"),
+                "--area", os.path.join(d, "area.shp"), "--output", out,
+                "--windowM", "60", "--edge", "1", "--unused", "1", "--used", "1",
+                "--separationM", "60", "--pixelM", "0.5"]), 0)
+            rows = json.load(open(os.path.join(out, "examples.json")))
+            kinds = {r["kind"]: r for r in rows}
+            self.assertEqual(set(kinds), {"edge", "mostly left out", "used"})
+            self.assertAlmostEqual(kinds["edge"]["unused"], 0.5, delta=0.1)
+            self.assertGreater(kinds["mostly left out"]["unused"], 0.9)
+            self.assertEqual(kinds["used"]["unused"], 0.0)
+            self.assertGreater(kinds["used"]["coveredUsed"], 0.3)
+            self.assertLess(kinds["mostly left out"]["coveredUnused"], 0.05)
+            for r in rows:
+                self.assertTrue(os.path.exists(r["file"]))
+            self.assertTrue(os.path.exists(os.path.join(out, "examples_all.png")))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
