@@ -3481,6 +3481,59 @@ class TestEdgePatches(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestEdgeOnlyArea(unittest.TestCase):
+    """The scored area with only the edge part of the uncovered canopy cut."""
+
+    def testInteriorScoredAgainEdgeStillCut(self):
+        import types
+        import geopandas as gpd
+        import rasterio
+        from rasterio.transform import from_origin
+        from shapely.geometry import Point, box
+        from tt import qpPrepare as qp
+        from tt.edgeOnlyArea import main
+        d = tempfile.mkdtemp(prefix="ttEdgeOnly")
+        try:
+            crs, x0, y0, W, H, res = "EPSG:32654", 500000.0, 4400000.0, 40, 40, 0.25
+            nx, ny = int(W / res), int(H / res)
+            cc, rr = np.meshgrid(np.arange(nx), np.arange(ny))
+            X, Y = x0 + (cc + .5) * res, y0 - (rr + .5) * res
+            trees = [(x0 + cx, y0 - cy) for cx in np.arange(2, W, 3.2)
+                     for cy in np.arange(2, H, 3.2)]
+            chm = np.zeros((ny, nx), np.float32)
+            for tx, ty in trees:
+                chm[np.hypot(X - tx, Y - ty) < 1.4] = 6.0
+            with rasterio.open(os.path.join(d, "chm.tif"), "w", driver="GTiff",
+                               height=ny, width=nx, count=1, dtype="float32",
+                               crs=crs, transform=from_origin(x0, y0, res, res)) as o:
+                o.write(chm, 1)
+            area = gpd.GeoDataFrame({"name": ["a"]}, geometry=[box(
+                x0 + 1, y0 - H + 1, x0 + W - 1, y0 - 1)], crs=crs)
+            inner = min(trees, key=lambda t: np.hypot(t[0] - x0 - W / 2,
+                                                      t[1] - y0 + H / 2))
+            ann = [t for t in trees if t[0] > x0 + 3 and t != inner]
+            crowns = gpd.GeoDataFrame({"class_code": ["tree"] * len(ann)},
+                                      geometry=[Point(*t).buffer(1.35) for t in ann],
+                                      crs=crs)
+            args = types.SimpleNamespace(crownMarginM=0.2, canopyM=1.5,
+                                         minPatchM2=0.5)
+            _, unc = qp.uncoveredCanopy(os.path.join(d, "chm.tif"), crowns,
+                                        area, args)
+            tops = qp.crownTops(os.path.join(d, "chm.tif"), crowns)
+            scored, ign, region, _ = qp.scoredRegion(crowns, area, unc, tops, 1.0)
+            area.to_file(os.path.join(d, "area.shp"))
+            qp.writeLayers(d, {"uncovered": unc, "ignored": ign,
+                               "scoredArea": region})
+            self.assertEqual(main([d]), 0)
+            new = gpd.read_file(os.path.join(d, "scoredAreaEdge.shp")).union_all()
+            self.assertTrue(new.contains(Point(*inner)))            # scored again
+            west = [t for t in trees if t[0] < x0 + 3 and y0 - H + 4 < t[1] < y0 - 4]
+            self.assertFalse(any(new.contains(Point(*t)) for t in west))  # still cut
+            self.assertGreater(new.area, region.area.sum())
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
