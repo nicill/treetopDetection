@@ -3534,6 +3534,44 @@ class TestEdgeOnlyArea(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestExperimentReport(unittest.TestCase):
+    """Old against new runs, with changed conclusions flagged."""
+
+    def testPlantedChangeIsFlaggedAndNoiseIsNot(self):
+        import json
+        from tt.experimentReport import report
+        d = tempfile.mkdtemp(prefix="ttReport")
+        rng = np.random.default_rng(1)
+        try:
+            def run(path, base, shift=0.0):
+                os.makedirs(path)
+                folds = []
+                for i in range(8):
+                    r = base + shift + rng.normal(0, .005)
+                    p = base + rng.normal(0, .005)
+                    folds.append({"block": "x_b%d%d" % (i // 4, i % 4),
+                                  "crowns": 100, "recall": r, "precision": p,
+                                  "f1": 2 * r * p / (r + p)})
+                json.dump({"pooled": {"f1": base, "recall": base,
+                                      "precision": base}, "folds": folds},
+                          open(os.path.join(path, "results.json"), "w"))
+            s = "20230712_afcamoisan_itrf20"
+            for m, b in (("cc", .90), ("lmvw", .85), ("watershed", .86),
+                         ("mrcnn", .88)):
+                run(os.path.join(d, "study_procedure", s, "runs", m + "Lidar"), b)
+                run(os.path.join(d, "study_procedureP1", s, "runs", m + "P1"), b)
+                run(os.path.join(d, "study_edge", s, "runs", m + "Lidar"), b)
+                run(os.path.join(d, "study_edge", s, "runs", m + "P1"), b,
+                    0.06 if m == "lmvw" else 0.0)
+            lines = report(d, np.random.default_rng(0), 500)
+            changed = lines[1:lines.index("")]
+            self.assertTrue(any("lmvw: P1 minus Lidar" in c for c in changed))
+            self.assertFalse(any("cc: P1 minus Lidar" in c for c in changed))
+            self.assertTrue(any(l.startswith("ccLidar") for l in lines))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestCommandLine(Fixture):
     """
     Every subcommand, end to end, on the synthetic scene.
