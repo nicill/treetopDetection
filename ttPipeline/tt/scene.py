@@ -11,88 +11,17 @@ takes a Scene and those decisions are made once, here.
 
 import os
 
-import geopandas as gpd
 import numpy as np
-from scipy.ndimage import gaussian_filter, maximum_filter
+import geopandas as gpd
 import rasterio
-from rasterio.enums import Resampling
+from scipy.ndimage import gaussian_filter
 from rasterio.features import geometry_mask
 from rasterio.features import rasterize
-from shapely import affinity
-from shapely import make_valid
 
 
-LOCAL_HEIGHT_M = 2.0       # tree height: the tallest canopy within this window
-SMOOTH_STEP_PX = 0.5       # the standard deviations used, in steps of this
-
-
-def heightSmoothed(chm, smoothM, slope, pixel, windowM=LOCAL_HEIGHT_M):
-    """
-    The CHM smoothed by a Gaussian whose standard deviation grows with tree
-    height: smoothM + slope x h metres, h the tallest canopy within windowM
-    (the height of the tree a pixel belongs to, so a crown's rim is smoothed
-    like its top). A wide window also gives a small tree beside a tall one
-    the tall one's smoothing, which can merge it; a narrow one (down to a
-    pixel: the pixel's own height) keeps small neighbours apart. Large crowns, whose
-    branches give several peaks, are smoothed more; small trees beside them
-    less. The deviations are rounded to steps of SMOOTH_STEP_PX pixels and
-    each pixel takes the CHM smoothed at its own step.
-    """
-    size = max(1, int(round(windowM / pixel)))
-    height = maximum_filter(chm, size=size)
-    sigma = (smoothM + slope * height) / pixel
-    steps = np.round(sigma / SMOOTH_STEP_PX) * SMOOTH_STEP_PX
-    out = chm.copy()
-    for step in np.unique(steps):
-        where = steps == step
-        if step <= 0:
-            continue
-        out[where] = gaussian_filter(chm, sigma=float(step))[where]
-    return out
-
-
-RESAMPLING = {
-    "average": Resampling.average,
-    "max": Resampling.max,
-    "bilinear": Resampling.bilinear,
-    "nearest": Resampling.nearest,
-}
-
-
-def readCrowns(path, crs, boundary=None, shiftEastM=0.0, shiftSouthM=0.0):
-    """
-    Crown polygons, reprojected to `crs`, repaired, optionally shifted and
-    clipped to `boundary`. Returns (crowns, number repaired).
-
-    The one crown loader. Scene, Alignment and the benchmark all go through it,
-    because three copies had been written and had begun to disagree about
-    whether the shift was applied and in which direction.
-
-    The shift is where the crowns SIT relative to the CHM, as the alignment
-    tools report it, so the polygons are moved by its negative. East is +x,
-    south is -y, hence the sign flip on only one axis.
-    """
-    crowns = gpd.read_file(path)
-    if crowns.crs is None:
-        raise ValueError("%s has no CRS" % path)
-    if crs is not None and crowns.crs != crs:
-        crowns = crowns.to_crs(crs)
-
-    invalid = ~crowns.geometry.is_valid
-    if invalid.any():
-        crowns.loc[invalid, "geometry"] = \
-            crowns.loc[invalid, "geometry"].apply(make_valid)
-
-    if shiftEastM or shiftSouthM:
-        crowns["geometry"] = crowns.geometry.apply(
-            lambda g: affinity.translate(g, xoff=-shiftEastM,
-                                         yoff=shiftSouthM)
-            if g is not None and not g.is_empty else g)
-
-    if boundary is not None:
-        crowns = crowns[crowns.geometry.centroid.within(boundary)]
-
-    return crowns.reset_index(drop=True), int(invalid.sum())
+from .data.annotations import readCrowns
+from .data.raster import (LOCAL_HEIGHT_M, RESAMPLING, SMOOTH_STEP_PX,
+                          heightSmoothed)
 
 
 class Scene(object):

@@ -17,51 +17,8 @@ import numpy as np
 from scipy.spatial import cKDTree
 from shapely.geometry import Point
 
+from .scoring.evaluator import assignToCrowns
 from .tops import Tops
-
-
-def assignToCrowns(xs, ys, scores, crowns):
-    """
-    The one scoring rule, shared by CrownEvaluator and the benchmark.
-
-    A point inside several overlapping crowns goes to the smallest, the most
-    specific claim. Within a crown the highest-scoring point is the hit and the
-    rest are repeats; a point in no crown is background. Written once because
-    it was written twice, and two scorers are how results quietly stop being
-    comparable.
-
-    Returns (kinds, hitCrowns, assigned): a verdict per point, the set of crown
-    rows reached, and point index -> crown row.
-    """
-    count = len(xs)
-    if count == 0 or len(crowns) == 0:
-        return ["background"] * count, set(), {}
-
-    points = gpd.GeoDataFrame({"point": np.arange(count)},
-                              geometry=gpd.points_from_xy(xs, ys),
-                              crs=crowns.crs)
-    joined = gpd.sjoin(points, crowns[["geometry"]], how="inner",
-                       predicate="within")
-
-    areas = crowns.geometry.area.to_numpy()
-    assigned = {}
-    for point, crown in zip(joined["point"].to_numpy(),
-                            joined["index_right"].to_numpy()):
-        point, crown = int(point), int(crown)
-        current = assigned.get(point)
-        if current is None or areas[crown] < areas[current]:
-            assigned[point] = crown
-
-    best = {}
-    for point, crown in assigned.items():
-        if crown not in best or scores[point] > best[crown][0]:
-            best[crown] = (scores[point], point)
-    primary = {point for _, point in best.values()}
-
-    kinds = ["background"] * count
-    for point in assigned:
-        kinds[point] = "hit" if point in primary else "repeat"
-    return kinds, set(assigned.values()), assigned
 
 
 class Classification(object):

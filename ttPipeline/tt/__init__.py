@@ -2,7 +2,12 @@
 
 import warnings
 
+from .data import Annotations, Detections, HeightModel, RGBMosaic, TDData
 from .detector import ConCompDetector
+from .detectors import (CCDetector, Detector, LocalMaximaDetector, NMS,
+                        PostProcessor, WatershedDetector)
+from .experiments import CrossValidation, ParameterGrid, RunSet
+from .scoring import AnnotatedCrowns, Evaluator, F1, Weighted
 from .evaluation import CrownEvaluator, Classification
 from .merging import TopMerger
 from .pseudoCrowns import PseudoCrowns
@@ -17,5 +22,12 @@ warnings.filterwarnings("ignore", category=PendingDeprecationWarning,
                         module=r"rasterio(\.|$)")
 
 
-__all__ = ["Scene", "Tops", "ConCompDetector", "CrownEvaluator",
-           "Classification", "TopMerger", "PseudoCrowns", "readCrowns"]
+__all__ = [
+    # the redesigned classes
+    "TDData", "HeightModel", "RGBMosaic", "Annotations", "Detections",
+    "Detector", "CCDetector", "LocalMaximaDetector", "WatershedDetector",
+    "PostProcessor", "NMS", "Evaluator", "AnnotatedCrowns", "F1", "Weighted",
+    "ParameterGrid", "CrossValidation", "RunSet",
+    # still used by modules not yet moved to them
+    "Scene", "Tops", "ConCompDetector", "CrownEvaluator", "Classification",
+    "TopMerger", "PseudoCrowns", "readCrowns"]

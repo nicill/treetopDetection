@@ -50,7 +50,14 @@ from rasterio.windows import from_bounds
 from shapely.geometry import Point, box
 from shapely.ops import unary_union
 
+from ..data.annotations import crownsInRegion
+from ..data.detections import Detections
+from ..detectors.base import nmsKeep
 from ..evaluation import assignToCrowns
+from ..experiments.runset import poolFolds
+from ..scoring.evaluator import Evaluator
+from ..scoring.objective import RECALL_WEIGHT, Objective, f1Of, weightedOf
+from ..scoring.reference import CrownFrame
 
 
 
@@ -432,31 +439,9 @@ def tileToWorld(predictions, transform, c0, r0):
 
 
 def nonMaximumSuppression(predictions, iouThreshold=0.4):
-    """Plain NMS in world coordinates, to merge the same tree seen in two tiles."""
-    if not predictions:
-        return []
-    boxes = np.array([p["box"] for p in predictions], np.float64)
-    scores = np.array([p["score"] for p in predictions], np.float64)
-    areas = np.maximum(0, boxes[:, 2] - boxes[:, 0]) * \
-        np.maximum(0, boxes[:, 3] - boxes[:, 1])
-    order = np.argsort(-scores)
-
-    keep = []
-    while order.size:
-        current = order[0]
-        keep.append(int(current))
-        if order.size == 1:
-            break
-        rest = order[1:]
-        x0 = np.maximum(boxes[current, 0], boxes[rest, 0])
-        y0 = np.maximum(boxes[current, 1], boxes[rest, 1])
-        x1 = np.minimum(boxes[current, 2], boxes[rest, 2])
-        y1 = np.minimum(boxes[current, 3], boxes[rest, 3])
-        overlap = np.maximum(0, x1 - x0) * np.maximum(0, y1 - y0)
-        union = areas[current] + areas[rest] - overlap
-        iou = overlap / np.maximum(union, 1e-9)
-        order = rest[iou <= iouThreshold]
-
+    """Plain NMS in world coordinates (tt.detectors.base.nmsKeep)."""
+    keep = nmsKeep([p["box"] for p in predictions],
+                   [p["score"] for p in predictions], iouThreshold)
     return [predictions[i] for i in keep]
 
 
@@ -470,34 +455,24 @@ def nonMaximumSuppression(predictions, iouThreshold=0.4):
 # uses one: TT_OBJECTIVE=f1 (the default) or TT_OBJECTIVE=weighted, the
 # weighted mean RECALL_WEIGHT * recall + (1 - RECALL_WEIGHT) * precision.
 # Every result carries both "f1" and "weighted", whichever was tuned on.
-RECALL_WEIGHT = 0.6
 OBJECTIVES = ("f1", "weighted")
 
 
 def tuningObjective():
-    objective = os.environ.get("TT_OBJECTIVE", "f1")
-    if objective not in OBJECTIVES:
-        raise ValueError("TT_OBJECTIVE must be one of %s, not %r"
-                         % (OBJECTIVES, objective))
-    return objective
+    return Objective.fromEnvironment().name
 
 
 def weightedScore(recall, precision):
-    return RECALL_WEIGHT * recall + (1.0 - RECALL_WEIGHT) * precision
+    return weightedOf(recall, precision)
 
 
 def objectiveOf(result):
     """The value the tuning maximises for one scored result."""
-    if tuningObjective() == "weighted":
-        return result.get("weighted",
-                          weightedScore(result["recall"], result["precision"]))
-    return result["f1"]
+    return Objective.fromEnvironment().value(result)
 
 
 def _scores(recall, precision):
-    f1 = (2 * recall * precision / (recall + precision)
-          if recall + precision else 0.0)
-    return f1, weightedScore(recall, precision)
+    return f1Of(recall, precision), weightedOf(recall, precision)
 
 
 # ---------------------------------------------------------------------- #
@@ -506,48 +481,18 @@ def _scores(recall, precision):
 
 def evaluateDetections(predictions, crowns, blockGeometry, verbose=False):
     """
-    Score predictions against crowns inside one block.
-
-    Only crowns whose centroid is in the block, and only predictions whose
-    centre is in the block, so a tree on a block boundary is scored by exactly
-    one fold. The scoring rule itself is tt.evaluation.assignToCrowns, the same
-    one every other score in the package uses.
+    Score prediction dicts against crowns inside one block, through
+    tt.scoring.Evaluator, the one scorer.
     """
-    inBlock = crownsInRegion(crowns, blockGeometry)
-    kept = predictionsInRegion(predictions, blockGeometry)
-
-    result = {"crowns": len(inBlock), "predictions": len(kept),
-              "hits": 0, "repeats": 0, "falsePositives": 0,
-              "recall": 0.0, "precision": 0.0, "f1": 0.0, "weighted": 0.0}
-    if not len(inBlock) or not kept:
-        return result
-
-    kinds, _, _ = assignToCrowns(
-        np.array([p["centreX"] for p in kept]),
-        np.array([p["centreY"] for p in kept]),
-        np.array([p["score"] for p in kept]), inBlock)
-
-    hits = kinds.count("hit")
-    recall = hits / float(len(inBlock))
-    precision = hits / float(len(kept))
-    result.update({"hits": hits, "repeats": kinds.count("repeat"),
-                   "falsePositives": kinds.count("background"),
-                   "recall": recall, "precision": precision})
-    result["f1"], result["weighted"] = _scores(recall, precision)
+    result = Evaluator(CrownFrame(crowns)).score(
+        Detections.fromPredictions(predictions), blockGeometry)
     if verbose:
         print("    crowns %d, predictions %d -> hits %d, repeats %d, fp %d  "
               "| R %.3f P %.3f F1 %.3f"
-              % (result["crowns"], result["predictions"], hits,
+              % (result["crowns"], result["predictions"], result["hits"],
                  result["repeats"], result["falsePositives"],
-                 recall, precision, result["f1"]))
+                 result["recall"], result["precision"], result["f1"]))
     return result
-
-
-def crownsInRegion(crowns, region):
-    """Crowns whose centroid lies in `region`, re-indexed from zero."""
-    centroids = crowns.geometry.centroid
-    inside = contains_xy(region, centroids.x.to_numpy(), centroids.y.to_numpy())
-    return crowns[inside].reset_index(drop=True)
 
 
 def predictionsInRegion(predictions, region):
@@ -646,31 +591,8 @@ def thresholdCurve(predictions, crowns, candidates):
 
 
 def averageFolds(foldResults):
-    """
-    Pool the folds. Counts are summed before the ratios are formed, so a block
-    with few trees does not weigh the same as a block with many — a mean of
-    per-fold F1 would do that and is the more common mistake.
-    """
-    total = {"crowns": 0, "predictions": 0, "hits": 0, "repeats": 0,
-             "falsePositives": 0}
-    for fold in foldResults:
-        for key in total:
-            total[key] += fold[key]
-
-    recall = total["hits"] / float(total["crowns"]) if total["crowns"] else 0.0
-    precision = total["hits"] / float(total["predictions"]) \
-        if total["predictions"] else 0.0
-    f1, weighted = _scores(recall, precision)
-
-    perFoldF1 = [f["f1"] for f in foldResults if f["crowns"] > 0]
-    total.update({"recall": recall, "precision": precision, "f1": f1,
-                  "weighted": weighted, "objective": tuningObjective(),
-                  "folds": len(foldResults),
-                  "perFoldF1Mean": float(np.mean(perFoldF1))
-                  if perFoldF1 else 0.0,
-                  "perFoldF1Std": float(np.std(perFoldF1))
-                  if perFoldF1 else 0.0})
-    return total
+    """Pool the folds (tt.experiments.poolFolds)."""
+    return poolFolds(foldResults)
 
 
 # ---------------------------------------------------------------------- #

@@ -40,7 +40,10 @@ import sys
 import numpy as np
 from shapely.ops import unary_union
 
+from ..data.site import TDData
 from ..detector import ConCompDetector
+from ..detectors.height import CCDetector
+from ..experiments import CrossValidation, ParameterGrid
 from ..merging import TopMerger
 from ..scene import LOCAL_HEIGHT_M, Scene
 from . import dlCommon as dc
@@ -457,31 +460,32 @@ def gridFromArguments(args):
 
 
 def crossValidate(args):
+    """The `concomp` command, run through the experiment classes."""
     os.makedirs(args.output, exist_ok=True)
     dc.startLogging(args.log or os.path.join(args.output, "run.log"))
-
-    validation = ConCompCrossValidation(
-        args.dataset, grid=gridFromArguments(args),
-        resolution=args.resolution, minHeight=args.minHeight,
-        minTreeAreaM2=args.minTreeArea, output=args.output, jobs=args.jobs)
+    data = TDData.fromDataset(args.dataset)
+    detector = CCDetector(resolution=args.resolution, minHeight=args.minHeight,
+                          minTreeAreaM2=args.minTreeArea)
+    validation = CrossValidation(data, detector,
+                                 ParameterGrid(gridFromArguments(args)),
+                                 jobs=args.jobs, output=args.output)
     validation.progress = bool(getattr(args, "progress", False))
-    folds, pooled = validation.run()
+    runSet = validation.run()
+    runSet.settings = vars(args)
+    runSet.save(args.output)
+    validation.writeSettingsTable(os.path.join(args.output, "settings.tsv"))
     if args.saveDetections:
-        saveDetections(os.path.join(args.output, "detections.npz"),
-                       validation.detections)
-
+        validation.saveAllDetections(os.path.join(args.output,
+                                                  "detections.npz"))
+    pooled = runSet.pooled
     print("\n[concomp] pooled over %d folds: R %.3f  P %.3f  F1 %.3f "
           "(per-fold F1 %.3f +- %.3f)"
           % (pooled["folds"], pooled["recall"], pooled["precision"],
              pooled["f1"], pooled["perFoldF1Mean"], pooled["perFoldF1Std"]))
-    print("[concomp] objective %s (weighted = %.1f R + %.1f P): R %.3f P %.3f "
-          "F1 %.3f weighted %.3f" % (dc.tuningObjective(), dc.RECALL_WEIGHT,
-                                     1 - dc.RECALL_WEIGHT, pooled["recall"],
-                                     pooled["precision"], pooled["f1"],
-                                     pooled["weighted"]))
-    print("[concomp] tuning optimism: %+.3f — how much the figure would "
-          "have been overstated by reporting the tuning score"
-          % pooled["tuningOptimism"])
+    print("[concomp] objective %s: R %.3f P %.3f F1 %.3f weighted %.3f"
+          % (pooled["objective"], pooled["recall"], pooled["precision"],
+             pooled["f1"], pooled["weighted"]))
+    print("[concomp] tuning optimism: %+.3f" % pooled["tuningOptimism"])
     for metric, p in pooled["byMergeMetric"].items():
         print("[concomp] %-10s only: R %.3f  P %.3f  F1 %.3f"
               % (metric, p["recall"], p["precision"], p["f1"]))
@@ -492,11 +496,6 @@ def crossValidate(args):
     print("[concomp] whole-area best (optimistic ceiling): R %.3f  P %.3f  "
           "F1 %.3f at %s" % (ceiling["recall"], ceiling["precision"],
                              ceiling["f1"], ceiling["settings"]))
-
-    dc.saveJson({"method": "concomp", "dataset": validation.meta["name"],
-                 "source": validation.meta["source"], "settings": vars(args),
-                 "folds": folds, "pooled": pooled},
-                os.path.join(args.output, "results.json"))
     print("[concomp] wrote %s" % os.path.join(args.output, "results.json"))
     return pooled
 
