@@ -48,6 +48,9 @@ class Detections(object):
         # (settings, threshold, validation predictions, ...); None writes
         # the settings and region as the tuned detectors' files always had
         self.fileFields = None
+        # per-detection arrays computed by others and carried through subset
+        # and concat (e.g. the apex a height surface found for each)
+        self.cache = {}
 
     def __len__(self):
         return len(self.x)
@@ -74,12 +77,62 @@ class Detections(object):
         if keep.dtype == bool:
             keep = np.flatnonzero(keep)
         pick = lambda items: None if items is None else [items[i] for i in keep]
-        return Detections(
+        out = Detections(
             self.x[keep], self.y[keep], self.scores[keep],
             None if self.heights is None else self.heights[keep],
             None if self.boxes is None else self.boxes[keep],
             pick(self.polygons), self.geometry, self.crs, self.detector,
             self.params, self.block, pick(self.extra))
+        out.cache = {k: v[keep] for k, v in self.cache.items()}
+        return out
+
+    def withScores(self, score):
+        """A copy with every score set to `score`."""
+        out = self.subset(np.arange(len(self)))
+        out.scores = np.full(len(self), float(score))
+        return out
+
+    @staticmethod
+    def concat(parts):
+        """
+        Several detection sets as one, in order. Points among boxes keep their
+        small square as a box; a part without outlines contributes none.
+        """
+        parts = [p for p in parts if p is not None]
+        geometries = {p.geometry for p in parts if len(p)}
+        geometry = ("points" if geometries <= {"points"} else
+                    "masks" if "masks" in geometries else "boxes")
+        join = lambda name: np.concatenate(
+            [getattr(p, name) for p in parts]) if parts else np.zeros(0)
+        heights = (join("heights") if parts and all(p.heights is not None
+                                                     for p in parts) else None)
+        boxes = None if geometry == "points" else np.concatenate(
+            [p.boxesOrPoints() for p in parts]).reshape(-1, 4)
+        polygons = None
+        if any(p.polygons is not None for p in parts):
+            polygons = [poly for p in parts for poly in
+                        (p.polygons if p.polygons is not None
+                         else [None] * len(p))]
+        extra = None
+        if any(p.extra is not None for p in parts):
+            extra = [e for p in parts for e in
+                     (p.extra if p.extra is not None else [{}] * len(p))]
+        out = Detections(join("x"), join("y"), join("scores"), heights, boxes,
+                         polygons, geometry,
+                         parts[0].crs if parts else None, extra=extra)
+        shared = set.intersection(*[set(p.cache) for p in parts]) \
+            if parts else set()
+        out.cache = {k: np.concatenate([p.cache[k] for p in parts])
+                     for k in shared}
+        return out
+
+    def slim(self):
+        """Prediction dicts with only where, how sure, and the box."""
+        boxes = self.boxesOrPoints()
+        return [{"centreX": float(self.x[i]), "centreY": float(self.y[i]),
+                 "score": float(self.scores[i]),
+                 "box": [float(v) for v in boxes[i]]}
+                for i in range(len(self))]
 
     def inRegion(self, region):
         """Those whose centre lies in `region`."""

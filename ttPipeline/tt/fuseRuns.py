@@ -16,11 +16,11 @@ import argparse
 import os
 import sys
 
-from tt.comparison import MethodRun
 from tt.dl import dlCommon as dc
-from tt.fusion import FusionCrossValidation, printSummary
+from tt.experiments import RunSet
+from tt.experiments.fusion import FusionCrossValidation, printSummary
 from tt.heightFilter import siteInputs
-from tt.report import saveFusedOutputs
+from tt.scoring import CrownFrame
 
 STRATEGIES = ["boxes", "union"]
 
@@ -28,15 +28,16 @@ STRATEGIES = ["boxes", "union"]
 def fuse(site, box, points, name, verbose=True):
     meta, scene, _ = siteInputs(site)
     blocks = meta["blockGeometries"]
-    boxRun = MethodRun(box, os.path.join(site, "runs", box), blocks)
-    pointRun = MethodRun(name, points, blocks)
-    validation = FusionCrossValidation(scene.crowns, blocks, boxRun, pointRun,
+    boxRun = RunSet.load(os.path.join(site, "runs", box))
+    pointRun = RunSet.load(points)
+    validation = FusionCrossValidation(CrownFrame(scene.crowns), dict(blocks),
+                                       boxRun, pointRun,
                                        strategies=STRATEGIES, verbose=False)
     summary = validation.run()
     folder = os.path.join(site, "report", "fused", "%s_%s" % (box, name))
     os.makedirs(folder, exist_ok=True)
     dc.saveJson(summary, os.path.join(folder, "summary.json"))
-    saveFusedOutputs(folder, validation.outputs)
+    validation.saveOutputs(folder)
     if verbose:
         print("[fuse] %s: %s + %s" % (os.path.basename(os.path.normpath(site)),
                                       box, name))

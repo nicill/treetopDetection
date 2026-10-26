@@ -25,7 +25,10 @@ from . import reportFigures as figures
 from .comparison import MethodRun, TreeComparison, matchBlock
 from .dl import dlCommon as dc
 from .dl import dlPrepare as dp
-from .fusion import FusionCrossValidation, SaddleSurface
+from .detectors.fusion import SaddleSurface
+from .experiments import RunSet
+from .experiments.fusion import FusionCrossValidation
+from .scoring import CrownFrame
 from .odt import OdtDocument
 from .pseudoCrowns import PseudoCrowns
 from .reportText import (HEIGHT_METHODS, HEIGHT_SOURCE, RGB_BOX_METHODS,
@@ -94,11 +97,13 @@ class Evidence(object):
 
     def _fusePair(self, box, height):
         validation = FusionCrossValidation(
-            self.scene.crowns, self.blocks, self.runs[box], self.runs[height],
+            CrownFrame(self.scene.crowns), dict(self.blocks),
+            RunSet.load(self.runs[box].runDir),
+            RunSet.load(self.runs[height].runDir),
             surface=self.surfaceFor(height), verbose=False)
         summary = validation.run()
         folder = os.path.join(self.args.output, "fused", "%s_%s" % (box, height))
-        saveFusedOutputs(folder, validation.outputs)
+        validation.saveOutputs(folder)
         # the scores too, so results can be gathered across sites
         dc.saveJson(summary, os.path.join(folder, "summary.json"))
         return summary

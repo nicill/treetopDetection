@@ -1,4 +1,9 @@
 """
+TRANSITIONAL: the dict-based strategies, kept only for tripleFusion,
+calibration and deepForestCompare until they move to tt.detectors.fusion
+(which holds the strategies as classes) and tt.experiments.fusion (the
+cross-validation). Nothing new should import this module.
+
 Combining a box detector (Mask R-CNN, YOLO) with the point detector
 (connected components), evaluated under the same cross-validation as each part.
 
@@ -47,8 +52,6 @@ from rasterio.features import geometry_mask
 from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
 
-from .comparison import sharedBlocks
-from .dl import dlCommon as dc
 from .merging import saddleDrop
 
 THRESHOLDS = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
@@ -351,135 +354,6 @@ def _grid(parameters):
     keys = list(parameters)
     return [dict(zip(keys, values))
             for values in itertools.product(*[parameters[k] for k in keys])]
-
-
-# ---------------------------------------------------------------------- #
-# cross-validation
-# ---------------------------------------------------------------------- #
-
-class FusionCrossValidation(object):
-    """
-    Every strategy under leave-one-block-out, tuned on validation blocks.
-
-    `boxRun` is the RGB Mask R-CNN: boxes with scores. `pointRun` is the
-    detector working on the height model, either connected components (tops,
-    no confidence) or a Mask R-CNN on the CHM, whose boxes enter through their
-    centres. Each enters at the operating point its own cross-validation chose
-    for the fold, recorded beside its predictions, so the "alone" rows repeat
-    each model's own fold results and every other threshold is tuned on the
-    validation block.
-    """
-
-    def __init__(self, crowns, blocks, boxRun, pointRun, surface=None,
-                 strategies=None, verbose=True, heightSurface=None):
-        self.crowns = crowns
-        self.allBlocks = dict(blocks)
-        self.boxRun = boxRun
-        self.pointRun = pointRun
-        self.blocks = sharedBlocks(blocks, (boxRun, pointRun), verbose)
-        self.surface = surface
-        self.heightSurface = heightSurface
-        available = [n for n in STRATEGIES
-                     if surface is not None or n not in SURFACE_STRATEGIES]
-        if heightSurface is not None:
-            available += list(HEIGHT_STRATEGIES)
-        self.strategies = strategies or available
-        self.verbose = verbose
-
-    def apply(self, name, boxes, points, setting):
-        if name in HEIGHT_STRATEGIES:
-            return HEIGHT_STRATEGIES[name][0](
-                boxes, points, surface=self.heightSurface, **setting)
-        extra = {"surface": self.surface} if name in SURFACE_STRATEGIES \
-            else {}
-        return STRATEGIES[name][0](boxes, points, **dict(setting, **extra))
-
-    def _foldInputs(self, block):
-        """Boxes and points on this fold's validation and test blocks."""
-        validationBlock, boxValidation = self.boxRun.validation(block)
-        _, pointValidation = self.pointRun.validation(block)
-        boxTest = self.boxRun.record(block)["predictions"]
-        pointTest = self.pointRun.record(block)["predictions"]
-        floor = self.pointRun.threshold(block)
-        pointValidation = [p for p in pointValidation if p["score"] >= floor]
-        pointTest = [p for p in pointTest if p["score"] >= floor]
-
-        # geometry from every block: a block a model skipped as a test fold
-        # can still be another fold's validation block
-        region, test = self.allBlocks[validationBlock], self.allBlocks[block]
-        inputs = {
-            "validationBlock": validationBlock,
-            "boxThreshold": self.boxRun.threshold(block),
-            "validation": (dc.predictionsInRegion(boxValidation, region),
-                           dc.predictionsInRegion(pointValidation, region)),
-            "test": (dc.predictionsInRegion(boxTest, test),
-                     dc.predictionsInRegion(pointTest, test)),
-        }
-        if self.surface is not None:
-            # once per fold, before any strategy copies a prediction
-            for split in ("validation", "test"):
-                for predictions in inputs[split]:
-                    for prediction in predictions:
-                        self.surface.apex(prediction)
-        return inputs
-
-    def _score(self, predictions, block):
-        return dc.evaluateDetections(predictions, self.crowns,
-                                     self.allBlocks[block])
-
-    def tune(self, name, inputs):
-        """The strategy's setting that scores best on the validation block."""
-        parameters = (STRATEGIES.get(name) or HEIGHT_STRATEGIES[name])[1]
-        if name == "boxes":
-            # the box model alone, at the threshold it chose for itself
-            return {"threshold": inputs["boxThreshold"]}, None
-        if name == "boxesHigh":
-            # the same threshold: only the height filter is tuned
-            parameters = {"threshold": [inputs["boxThreshold"]],
-                          "boxMinHeightM": BOX_MIN_HEIGHTS}
-        boxes, points = inputs["validation"]
-        best, bestF1 = {}, -1.0
-        for setting in _grid(parameters):
-            f1 = dc.objectiveOf(self._score(self.apply(name, boxes, points,
-                                                       setting),
-                                            inputs["validationBlock"]))
-            if f1 > bestF1:
-                best, bestF1 = setting, f1
-        return best, bestF1
-
-    def runFold(self, block):
-        """Every strategy on one fold: its score, setting and output."""
-        inputs = self._foldInputs(block)
-        boxes, points = inputs["test"]
-        results = {}
-        for name in self.strategies:
-            setting, validationF1 = self.tune(name, inputs)
-            output = self.apply(name, boxes, points, setting)
-            result = self._score(output, block)
-            result.update(block=block, setting=setting,
-                          validationF1=validationF1,
-                          output=[slim(p) for p in output])
-            results[name] = result
-        return results
-
-    def run(self):
-        """
-        Scores per strategy, and each strategy's held-out output per block in
-        self.outputs, kept apart so the summary stays small.
-        """
-        perStrategy = {name: [] for name in self.strategies}
-        self.outputs = {name: {} for name in self.strategies}
-        for block in sorted(self.blocks):
-            for name, result in self.runFold(block).items():
-                # "output", not "predictions": the score already uses that
-                # key for the count of detections
-                self.outputs[name][block] = result.pop("output")
-                perStrategy[name].append(result)
-        summary = {name: {"folds": folds, "pooled": dc.averageFolds(folds)}
-                   for name, folds in perStrategy.items()}
-        if self.verbose:
-            printSummary(summary)
-        return summary
 
 
 def slim(prediction):

@@ -24,12 +24,15 @@ import argparse
 import os
 import sys
 
-from tt.comparison import MethodRun
 from tt.dl import dlCommon as dc
 from tt.dl import dlPrepare as dp
-from tt.fusion import BOX_MIN_HEIGHTS, FusionCrossValidation, SaddleSurface
-from tt.report import saveFusedOutputs
+from tt.detectors.fusion import BOX_MIN_HEIGHTS
+from tt.detectors.fusion import SaddleSurface as HeightSurface
+from tt.experiments import RunSet
+from tt.experiments.fusion import FusionCrossValidation
+from tt.fusion import SaddleSurface
 from tt.scene import Scene
+from tt.scoring import CrownFrame
 
 STRATEGIES = ["boxes", "union", "boxesHigh", "unionHigh"]
 CHECKED = ("boxes", "union")
@@ -68,15 +71,16 @@ def filterSite(site, verbose=True):
     report = []
     for box, height, folder in pairs(site):
         try:
-            boxRun = MethodRun(box, os.path.join(site, "runs", box), blocks)
-            pointRun = MethodRun(height, os.path.join(site, "runs", height),
-                                 blocks)
+            boxRun = RunSet.load(os.path.join(site, "runs", box))
+            pointRun = RunSet.load(os.path.join(site, "runs", height))
         except FileNotFoundError as error:
             report.append("%s_%s: skipped (%s)" % (box, height, error))
             continue
         validation = FusionCrossValidation(
-            scene.crowns, blocks, boxRun, pointRun, strategies=STRATEGIES,
-            verbose=False, heightSurface=surface)
+            CrownFrame(scene.crowns), dict(blocks), boxRun, pointRun,
+            strategies=STRATEGIES, verbose=False,
+            heightSurface=HeightSurface(surface.chm, surface.transform,
+                                        surface.pixelSize, 0.0))
         summary = validation.run()
         saved = dc.loadJson(os.path.join(folder, "summary.json"))
         for name in CHECKED:
@@ -91,8 +95,9 @@ def filterSite(site, verbose=True):
         for name in ("boxesHigh", "unionHigh"):
             saved[name] = summary[name]
         dc.saveJson(saved, os.path.join(folder, "summary.json"))
-        saveFusedOutputs(folder, {n: validation.outputs[n]
-                                  for n in ("boxesHigh", "unionHigh")})
+        validation.outputs = {n: validation.outputs[n]
+                              for n in ("boxesHigh", "unionHigh")}
+        validation.saveOutputs(folder)
         line = "%s_%s:" % (box, height)
         for plain, high in (("boxes", "boxesHigh"), ("union", "unionHigh")):
             p, q = summary[plain]["pooled"], summary[high]["pooled"]
