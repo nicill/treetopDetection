@@ -639,9 +639,12 @@ class TestBlockImages(Fixture):
 
     def renderer(self):
         from shapely.geometry import box as shapelyBox
-        from tt.blockImages import BlockRenderer
+        from tt.report.blockImages import BlockRenderer
+        import types
         scene = self.scene()
-        return scene, BlockRenderer(scene, [("all", shapelyBox(
+        # a Scene has everything a height surface has
+        view = types.SimpleNamespace(surface=scene, crowns=scene.crowns)
+        return scene, BlockRenderer(view, [("all", shapelyBox(
             *scene.boundary.bounds))], minSidePx=200)
 
     def detections(self, scene):
@@ -659,18 +662,18 @@ class TestBlockImages(Fixture):
         extra = dict(predictions[0], centreX=predictions[0]["centreX"] + 0.3,
                      score=9.0)
         fates, missed, crowns = renderer.classify(
-            predictions[1:] + [extra], "all")
+            asPoints(predictions[1:] + [extra]), "all")
         self.assertEqual(crowns, 9)
         self.assertEqual(fates.count("hit"), 9)
         self.assertEqual(missed, [])
-        fates, missed, _ = renderer.classify(predictions[1:], "all")
+        fates, missed, _ = renderer.classify(asPoints(predictions[1:]), "all")
         self.assertEqual(len(missed), 1)
 
     def testImageIsWritten(self):
         import tempfile
         scene, renderer = self.renderer()
         path = os.path.join(tempfile.mkdtemp(), "sub", "all.jpg")
-        renderer.render(self.detections(scene), "all", "test", path)
+        renderer.render(asPoints(self.detections(scene)), "all", "test", path)
         self.assertGreater(os.path.getsize(path), 1000)
 
 
@@ -1039,7 +1042,7 @@ class TestStudySummary(unittest.TestCase):
             json.dump(data, handle)
 
     def testBestSingleAndDifferences(self):
-        from tt.studySummary import compareHybrids, readStudy
+        from tt.report.studySummary import compareHybrids, readStudy
         sites = readStudy(self.directory)
         self.assertEqual([sites[s]["bestSingle"]["f1"] for s in sorted(sites)],
                          ["ccLidar", "mrcnnRgb", "mrcnnRgb"])
@@ -1055,7 +1058,7 @@ class TestStudySummary(unittest.TestCase):
         self.assertNotIn("ccLidar ceiling", sites["siteA"]["singles"])
 
     def testWritesTheTables(self):
-        from tt.studySummary import main
+        from tt.report.studySummary import main
         out = os.path.join(self.directory, "out")
         self.assertEqual(main(["--root", self.directory, "--output", out]), 0)
         with open(os.path.join(out, "sites.csv")) as handle:
@@ -1137,7 +1140,7 @@ class TestPseudoCrownCanopy(Fixture):
     """The canopy mask is the whole kept CHM unless a percentile is asked for."""
 
     def testWholeChmByDefaultSmallerWithAPercentile(self):
-        from tt.pseudoCrowns import PseudoCrowns
+        from tt.scoring.pseudoCrowns import PseudoCrowns
         scene = self.scene()
         whole = PseudoCrowns(scene, None, verbose=False).canopyMask() > 0
         np.testing.assert_array_equal(whole, scene.chm > 0)
@@ -1438,7 +1441,7 @@ class TestPseudoTuning(unittest.TestCase):
         from tt.pseudoTuning import autoRunDir
         self.assertEqual(autoRunDir("/s/runs/ccLidar"), "/s/runs/ccAutoLidar")
         self.assertEqual(autoRunDir("/s/runs/ccP1/"), "/s/runs/ccAutoP1")
-        from tt.reportText import HEIGHT_SOURCE
+        from tt.report.text import HEIGHT_SOURCE
         self.assertEqual(HEIGHT_SOURCE["ccAutoLidar"], "lidar")
         self.assertEqual(HEIGHT_SOURCE["ccAutoP1"], "p1")
 
@@ -1752,7 +1755,7 @@ class TestBaselines(unittest.TestCase):
                 "--output", output, "--resolution", "0.25", "--minHeight",
                 "1", "--minHeights", "0.5,1.0"]))
             self.assertGreater(pooled["f1"], 0.9)
-            from tt.studySummary import singles
+            from tt.report.studySummary import singles
             os.makedirs(os.path.join(site.directory, "runs"), exist_ok=True)
             shutil.move(output, os.path.join(site.directory, "runs", "lmvwP1"))
             methods, ceilings = singles(site.directory)
@@ -3262,7 +3265,7 @@ class TestExperimentReport(unittest.TestCase):
 
     def testPlantedChangeIsFlaggedAndNoiseIsNot(self):
         import json
-        from tt.experimentReport import report
+        from tt.report.experiments import report
         d = tempfile.mkdtemp(prefix="ttReport")
         rng = np.random.default_rng(1)
         try:

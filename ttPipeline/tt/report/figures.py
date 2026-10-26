@@ -182,21 +182,21 @@ def _crop(renderer, tile):
     return image, scale
 
 
-def _dot(image, scene, x, y, tile, scale, colour, radius):
+def _dot(image, analysis, x, y, tile, scale, colour, radius):
     c0, r0, _, _ = tile
-    column, row = scene.toPixel(x, y)
+    column, row = analysis.surface.toPixel(x, y)
     cv2.circle(image, (int((column - c0) * scale), int((row - r0) * scale)),
                radius, colour, -1)
 
 
-def worstTile(renderer, scene, xs, ys, weight=None):
+def worstTile(renderer, analysis, xs, ys, weight=None):
     """The tile holding the most of some points (misses, false positives)."""
     best, bestCount = None, -1
     for tile in renderer.tiles():
         c0, r0, c1, r1 = tile
         count = 0
         for index, (x, y) in enumerate(zip(xs, ys)):
-            column, row = scene.toPixel(x, y)
+            column, row = analysis.surface.toPixel(x, y)
             if c0 <= column < c1 and r0 <= row < r1:
                 count += 1 if weight is None else weight[index]
         if count > bestCount:
@@ -204,25 +204,25 @@ def worstTile(renderer, scene, xs, ys, weight=None):
     return best
 
 
-def fateTile(scene, comparison, name, path, tile=None):
+def fateTile(analysis, comparison, name, path, tile=None):
     """One method's detections coloured by fate, missed crowns outlined."""
-    renderer = TileRenderer(scene, tileM=30.0, minSidePx=900)
+    renderer = TileRenderer(analysis.surface, analysis.crowns, tileM=30.0, minSidePx=900)
     result = comparison.results[name]
-    missed = [i for i in range(len(scene.crowns)) if i not in result["found"]]
+    missed = [i for i in range(len(analysis.crowns)) if i not in result["found"]]
     if tile is None:
-        centroids = scene.crowns.geometry.centroid
-        tile = worstTile(renderer, scene, centroids.x.to_numpy()[missed],
+        centroids = analysis.crowns.geometry.centroid
+        tile = worstTile(renderer, analysis, centroids.x.to_numpy()[missed],
                          centroids.y.to_numpy()[missed])
     image, scale = _crop(renderer, tile)
     renderer.drawCrowns(image, missed, tile[0], tile[1], scale, MISSED)
 
     fates = {i: "canopy" for i in result["split"]["canopy"]}
     fates.update({i: "low" for i in result["split"]["low"]})
-    radius = max(4, int(0.45 / scene.pixelSize * scale))
+    radius = max(4, int(0.45 / analysis.surface.pixelSize * scale))
     for index, kind in enumerate(result["kinds"]):
         fate = kind if kind in ("hit", "repeat") else fates.get(index)
         if fate:
-            _dot(image, scene, result["xs"][index], result["ys"][index],
+            _dot(image, analysis, result["xs"][index], result["ys"][index],
                  tile, scale, FATE_COLOURS[fate], radius)
     renderer.caption(image, "green hit | orange repeat | blue outside at "
                      "canopy height | red outside, low | yellow missed crown")
@@ -230,17 +230,17 @@ def fateTile(scene, comparison, name, path, tile=None):
     return path, tile
 
 
-def agreementTile(scene, comparison, first, second, path, labels=None):
+def agreementTile(analysis, comparison, first, second, path, labels=None):
     """Crowns coloured by which of two methods found them."""
-    renderer = TileRenderer(scene, tileM=30.0, minSidePx=900)
+    renderer = TileRenderer(analysis.surface, analysis.crowns, tileM=30.0, minSidePx=900)
     a, b = comparison.results[first]["found"], \
         comparison.results[second]["found"]
-    disputed = sorted((a ^ b) | (set(range(len(scene.crowns))) - a - b))
-    centroids = scene.crowns.geometry.centroid
-    tile = worstTile(renderer, scene, centroids.x.to_numpy()[disputed],
+    disputed = sorted((a ^ b) | (set(range(len(analysis.crowns))) - a - b))
+    centroids = analysis.crowns.geometry.centroid
+    tile = worstTile(renderer, analysis, centroids.x.to_numpy()[disputed],
                      centroids.y.to_numpy()[disputed])
     image, scale = _crop(renderer, tile)
-    everything = set(range(len(scene.crowns)))
+    everything = set(range(len(analysis.crowns)))
     for group, members in (("both", a & b), ("first", a - b),
                            ("second", b - a), ("neither", everything - a - b)):
         renderer.drawCrowns(image, sorted(members), tile[0], tile[1], scale,
@@ -252,15 +252,15 @@ def agreementTile(scene, comparison, first, second, path, labels=None):
     return path
 
 
-def shapeTile(scene, comparison, name, polygons, path, tile=None):
+def shapeTile(analysis, comparison, name, polygons, path, tile=None):
     """Real crowns against a method's own outlines or pseudo-crowns."""
-    renderer = TileRenderer(scene, tileM=30.0, minSidePx=900)
+    renderer = TileRenderer(analysis.surface, analysis.crowns, tileM=30.0, minSidePx=900)
     if tile is None:
         tile = next(iter(renderer.tiles()))
     image, scale = _crop(renderer, tile)
-    renderer.drawCrowns(image, range(len(scene.crowns)), tile[0], tile[1],
+    renderer.drawCrowns(image, range(len(analysis.crowns)), tile[0], tile[1],
                         scale, (255, 255, 0))
-    inverse = ~scene.transform
+    inverse = ~analysis.surface.transform
     for shape in polygons:
         if shape is None or shape.is_empty:
             continue

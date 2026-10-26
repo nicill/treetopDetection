@@ -21,7 +21,8 @@ from .missAnalysis import MissAnalysis
 from .detector import ConCompDetector
 from .evaluation import CrownEvaluator
 from .merging import TopMerger, METRICS
-from .pseudoCrowns import PseudoCrowns
+from .data.detections import Detections
+from .scoring.pseudoCrowns import PseudoCrowns
 from .scene import Scene
 from .sweeps import Sweep
 
@@ -212,7 +213,8 @@ def commandCrowns(args):
     scene = buildScene(args)
     tops = buildDetector(args).detect(scene)
 
-    crowns = PseudoCrowns(scene, tops, percentile=args.crownPercentile,
+    crowns = PseudoCrowns(scene, Detections.fromPixels(tops.points, scene),
+                          percentile=args.crownPercentile,
                           windowSizeM=args.windowSize, many=args.many,
                           lots=args.lots, voronoiWeight=args.voronoiWeight)
     crowns.build()

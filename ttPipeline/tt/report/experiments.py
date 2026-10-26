@@ -3,7 +3,7 @@ One report over every study: each site's runs under the current rules next
 to the earlier ones, the comparisons of experiments 1 and 2, and every place
 where a conclusion changed between the earlier runs and the current ones.
 
-    python -m tt.experimentReport --db "$DB" --output "$DB/report.txt"
+    python -m tt.report.experiments --db "$DB" --output "$DB/report.txt"
 
 Sites and where their runs are (missing runs are skipped):
   Quebec (five sites)  now study_edge (edge-only cut), height maps Lidar and P1;
@@ -33,13 +33,12 @@ Experiment 3 (the combinations) has no runs under the current rules yet.
 
 import argparse
 import glob
-import json
 import os
 import sys
 
 import numpy as np
 
-from tt.runCompare import compare, loadRun
+from ..runCompare import compare, loadRun
 
 QUEBEC = ("20230712_afcamoisan_itrf20", "20230712_afcahoule_itrf20",
           "20230606_cbblackburn5", "20230608_cbbernard4",

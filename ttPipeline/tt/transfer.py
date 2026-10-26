@@ -24,7 +24,7 @@ would be used, and then block by block.
 
 Each fixed setting is written as a run — one predictions_<block>.json per
 block, holding the whole area as a connected-component run does — so it can
-be drawn by tt.blockImages and compared with any other run. transfer.json
+be drawn by tt.report.blockImages and compared with any other run. transfer.json
 holds every block's F1 and the paired comparison with the tuned run.
 """
 

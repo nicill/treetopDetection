@@ -121,7 +121,7 @@ reportAndImages() {   # reportAndImages LABEL: report, snapshot, block images
     else
         status "report $STAGE: FAILED, see logs/report_$STAGE.log"
     fi
-    if python -m tt.blockImages --chm "$LIDAR" --crowns "$CROWNS" \
+    if python -m tt.report.blockImages --chm "$LIDAR" --crowns "$CROWNS" \
             --boundary "$AREA" --dataset ds/lidar "${runs[@]}" \
             --fused "$OUT/report/fused" --output "$OUT/images" \
             > "$OUT/logs/images_$STAGE.log" 2>&1; then
@@ -184,7 +184,7 @@ sergiCompare() {   # sergiCompare LABEL: fixed settings, learned runs, images
         ls "$dir"predictions_*.json > /dev/null 2>&1 && \
             runs+=(--run "$(basename "$dir")=$dir")
     done
-    if python -m tt.blockImages --chm "$SCHM" --crowns "$SCROWNS" \
+    if python -m tt.report.blockImages --chm "$SCHM" --crowns "$SCROWNS" \
             --boundary "$SAREA" --dataset ds/sergi "${runs[@]}" \
             --output "$SERGI/images" \
             > "$OUT/logs/sergiImages_$label.log" 2>&1; then

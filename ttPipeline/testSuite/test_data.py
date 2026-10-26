@@ -57,6 +57,24 @@ class TestTDData(SiteCase):
         self.assertAlmostEqual(site.blockArea.area, site.area.area, places=3)
 
 
+class TestShow(SiteCase):
+
+    def testTheSiteWithARunOnIt(self):
+        import tempfile
+        from tt.detectors import CCDetector
+        site = self.site()
+        detections = CCDetector(minHeight=1.0).detect(site)
+        path = site.show(os.path.join(tempfile.mkdtemp(), "site.png"),
+                         {"cc": detections}, minSidePx=200)
+        self.assertGreater(os.path.getsize(path), 1000)
+        minX, minY, maxX, maxY = site.area.bounds
+        from shapely.geometry import box
+        half = box(minX, minY, (minX + maxX) / 2, maxY)
+        path = site.show(os.path.join(tempfile.mkdtemp(), "half.png"),
+                         {"cc": detections}, region=half, minSidePx=200)
+        self.assertGreater(os.path.getsize(path), 1000)
+
+
 class TestDetections(unittest.TestCase):
 
     def detections(self):

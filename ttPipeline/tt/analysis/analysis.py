@@ -50,6 +50,15 @@ class Analysis(object):
         self._crowns = None
 
     @property
+    def crowns(self):
+        """The crowns results are scored against."""
+        return self.reference.crowns()
+
+    @property
+    def area(self):
+        return self.data.area
+
+    @property
     def saddle(self):
         if self._saddle is None:
             self._saddle = SaddleSurface.fromSurface(self.surface)

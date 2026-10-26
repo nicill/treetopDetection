@@ -60,7 +60,7 @@ It also runs two things on the Sergi site: connected components at settings
 fixed on Mongolia against Sergi's own tuning (`python -m tt.transfer`), and
 Mask R-CNN on the Sergi height model, under `sergi/` in the same folder.
 
-Block images alone: `python -m tt.blockImages --help`. Colour code: green hit,
+Block images alone: `python -m tt.report.blockImages --help`. Colour code: green hit,
 orange repeat, blue outside every crown at canopy height, red outside and
 low, yellow outline for a missed crown.
 

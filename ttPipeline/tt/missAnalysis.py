@@ -16,7 +16,8 @@ import os
 import numpy as np
 from scipy.spatial import cKDTree
 
-from .render import TileRenderer
+from .data.detections import Detections
+from .report.render import TileRenderer
 
 
 class MissAnalysis(object):
@@ -188,9 +189,10 @@ class MissAnalysis(object):
             frame.to_file(os.path.join(outputDir, "missedCrowns.shp"))
 
         if images:
-            renderer = TileRenderer(self.scene)
+            renderer = TileRenderer(self.scene, self.scene.crowns)
             paths = renderer.writeTiles(
-                os.path.join(outputDir, "images"), self.tops,
+                os.path.join(outputDir, "images"),
+                Detections.fromPixels(self.tops.points, self.scene),
                 self.kindsForRendering(), missedCrowns=missed,
                 label="green hit | orange repeat | blue unannotated? | "
                       "red low | yellow missed")

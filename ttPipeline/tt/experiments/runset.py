@@ -73,8 +73,18 @@ class RunSet(object):
 
     @classmethod
     def load(cls, directory, withPredictions=True):
-        with open(os.path.join(directory, "results.json")) as handle:
-            content = json.load(handle)
+        """
+        A run folder. A folder of predictions alone (a combination's output)
+        loads too, with no scores; a folder with neither is an error.
+        """
+        path = os.path.join(directory, "results.json")
+        content = {}
+        if os.path.exists(path):
+            with open(path) as handle:
+                content = json.load(handle)
+        elif not glob.glob(os.path.join(directory, "predictions_*.json")):
+            raise FileNotFoundError("no results.json or predictions_<block>"
+                                    ".json in %s" % directory)
         predictions = {}
         if withPredictions:
             for path in sorted(glob.glob(os.path.join(directory,

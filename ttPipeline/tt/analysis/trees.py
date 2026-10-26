@@ -51,17 +51,7 @@ class TreeTable(object):
                 "split": splitBackground(xs, ys, heights, kinds)}
 
     def heightsAt(self, xs, ys):
-        """The highest height within HEIGHT_RADIUS_M of each point."""
-        radius = self.surface.metresToPixels(HEIGHT_RADIUS_M)
-        heights = np.zeros(len(xs))
-        for index, (x, y) in enumerate(zip(xs, ys)):
-            column, row = self.surface.toPixel(x, y)
-            column, row = int(column), int(row)
-            window = self.surface.chm[max(0, row - radius):row + radius + 1,
-                                      max(0, column - radius):
-                                      column + radius + 1]
-            heights[index] = float(window.max()) if window.size else 0.0
-        return heights
+        return heightsNear(self.surface, xs, ys)
 
     # ------------------------------------------------------------------ #
 
@@ -162,3 +152,16 @@ def _outline(ring):
 def _iou(first, second):
     union = first.union(second).area
     return first.intersection(second).area / union if union > 0 else 0.0
+
+
+def heightsNear(surface, xs, ys, radiusM=HEIGHT_RADIUS_M):
+    """The highest height within radiusM of each point."""
+    radius = surface.metresToPixels(radiusM)
+    heights = np.zeros(len(xs))
+    for index, (x, y) in enumerate(zip(xs, ys)):
+        column, row = surface.toPixel(x, y)
+        column, row = int(column), int(row)
+        window = surface.chm[max(0, row - radius):row + radius + 1,
+                             max(0, column - radius):column + radius + 1]
+        heights[index] = float(window.max()) if window.size else 0.0
+    return heights

@@ -6,7 +6,7 @@ by cutting a species mask with the Voronoi diagram of its treetops and then
 shrinking the resulting boxes using a distance transform.
 
 The one substitution: that notebook had hand-drawn species masks to cut up, and
-here there are none. The canopy mask is instead every cell the scene keeps: the
+here there are none. The canopy mask is instead every cell the height surface keeps: the
 CHM above the scene's minimum height (1 m for the Quebec plantations, the
 height below which a crown counts as invisible; 2 m for Terelj). One fixed,
 explained threshold.
@@ -55,6 +55,8 @@ from scipy.spatial import Voronoi
 from shapely.geometry import Polygon
 from shapely.geometry import box as shapelyBox
 
+from .reference import CrownFrame
+
 
 MANY = 2
 LOTS = 6
@@ -63,11 +65,21 @@ VORONOI_WEIGHT = 0.65
 
 class PseudoCrowns(object):
 
-    def __init__(self, scene, tops, percentile=0, windowSizeM=40.0,
+    def __init__(self, surface, tops, percentile=0, windowSizeM=40.0,
                  many=MANY, lots=LOTS, voronoiWeight=VORONOI_WEIGHT,
                  verbose=True):
-        self.scene = scene
-        self.tops = tops
+        """
+        surface: the HeightSurface the canopy is read from; tops: Detections
+        (None for none), placed on the surface's pixels, each given the
+        surface height there.
+        """
+        self.surface = surface
+        self.points = []
+        for x, y in (zip(tops.x, tops.y) if tops is not None else ()):
+            column, row = (int(v) for v in surface.toPixel(x, y))
+            self.points.append((column, row, float(surface.chm[row, column])))
+        self.pixels = np.array([[c, r] for c, r, _ in self.points],
+                               np.float64).reshape(-1, 2)
         self.percentile = int(percentile)
         self.windowSizeM = float(windowSizeM)
         self.many = int(many)
@@ -82,7 +94,7 @@ class PseudoCrowns(object):
 
     def __repr__(self):
         return ("PseudoCrowns(%d tops, %s)"
-                % (len(self.tops),
+                % (len(self.points),
                    "not built" if self.boxes is None else "%d boxes"
                    % len(self.boxes)))
 
@@ -101,22 +113,22 @@ class PseudoCrowns(object):
         """
 
         if self.percentile <= 0:
-            canopy = (self.scene.chm > 0).astype(np.uint8) * 255
+            canopy = (self.surface.chm > 0).astype(np.uint8) * 255
             if self.verbose:
                 print("[crowns] canopy: every cell above the scene's minimum "
                       "height, %.1f%% of the grid"
                       % (100.0 * np.count_nonzero(canopy) / canopy.size))
             return canopy
 
-        tile = self.scene.metresToPixels(self.windowSizeM, 8)
-        rows, columns = self.scene.chm.shape
+        tile = self.surface.metresToPixels(self.windowSizeM, 8)
+        rows, columns = self.surface.chm.shape
         tileRows = max(1, int(np.ceil(rows / tile)))
         tileColumns = max(1, int(np.ceil(columns / tile)))
 
         coarse = np.zeros((tileRows, tileColumns), np.float32)
         for r in range(tileRows):
             for c in range(tileColumns):
-                patch = self.scene.chm[r * tile:(r + 1) * tile,
+                patch = self.surface.chm[r * tile:(r + 1) * tile,
                                        c * tile:(c + 1) * tile]
                 values = patch[patch > 0]
                 coarse[r, c] = (np.percentile(values, self.percentile)
@@ -127,8 +139,8 @@ class PseudoCrowns(object):
         threshold = cv2.resize(coarse, (columns, rows),
                                interpolation=cv2.INTER_LINEAR)
 
-        canopy = ((self.scene.chm > 0)
-                  & (self.scene.chm >= threshold)).astype(np.uint8) * 255
+        canopy = ((self.surface.chm > 0)
+                  & (self.surface.chm >= threshold)).astype(np.uint8) * 255
         if self.verbose:
             print("[crowns] canopy at the %dth local percentile: %.1f%% of "
                   "the grid" % (self.percentile,
@@ -146,8 +158,8 @@ class PseudoCrowns(object):
         without the corners the outermost trees lose their cells entirely.
         """
 
-        rows, columns = self.scene.chm.shape
-        points = self.tops.pixels
+        rows, columns = self.surface.chm.shape
+        points = self.pixels
         if len(points) < 4:
             return np.zeros((rows, columns), np.uint8)
 
@@ -176,10 +188,10 @@ class PseudoCrowns(object):
 
         count, labels = cv2.connectedComponents(canopy, connectivity=8)
         perComponent = defaultdict(list)
-        for index, point in enumerate(self.tops.points):
+        for index, point in enumerate(self.points):
             perComponent[labels[point[1], point[0]]].append(index)
 
-        grouping = [0] * len(self.tops)
+        grouping = [0] * len(self.points)
         for members in perComponent.values():
             code = 0 if len(members) < self.many else (
                 1 if len(members) < self.lots else 2)
@@ -207,7 +219,7 @@ class PseudoCrowns(object):
             if 2 in self.grouping else None
 
         boxes = []
-        for index, (x, y, _) in enumerate(self.tops.points):
+        for index, (x, y, _) in enumerate(self.points):
             label = labels[y, x]
             if label == 0:
                 boxes.append(self._fallbackBox(x, y, distance))
@@ -233,7 +245,7 @@ class PseudoCrowns(object):
     def _fallbackBox(self, x, y, distance):
         """A top that fell on a Voronoi edge or outside the canopy."""
         half = float(distance[y, x]) if distance is not None else \
-            self.scene.metresToPixels(1.0)
+            self.surface.metresToPixels(1.0)
         half = max(half, 1.0)
         return (int(x - half), int(y - half), int(2 * half), int(2 * half))
 
@@ -282,7 +294,7 @@ class PseudoCrowns(object):
             self.build()
 
         shapes = []
-        for index, (x, y, _) in enumerate(self.tops.points):
+        for index, (x, y, _) in enumerate(self.points):
             label = self.labels[y, x]
             if label == 0:
                 shapes.append(None)
@@ -297,7 +309,7 @@ class PseudoCrowns(object):
             if outline.ndim != 2 or len(outline) < 3:
                 shapes.append(None)
                 continue
-            world = [self.scene.toWorld(c, r) for c, r in outline]
+            world = [self.surface.toWorld(c, r) for c, r in outline]
             polygon = Polygon(world)
             shapes.append(polygon if polygon.is_valid else polygon.buffer(0))
         return shapes
@@ -309,8 +321,8 @@ class PseudoCrowns(object):
             self.build()
         shapes = []
         for px, py, w, h in self.boxes:
-            west, north = self.scene.toWorld(px, py)
-            east, south = self.scene.toWorld(px + w, py + h)
+            west, north = self.surface.toWorld(px, py)
+            east, south = self.surface.toWorld(px + w, py + h)
             shapes.append(shapelyBox(min(west, east), min(north, south),
                                      max(west, east), max(north, south)))
         return shapes
@@ -319,9 +331,9 @@ class PseudoCrowns(object):
 
     def attributes(self):
         """The per-top fields written beside every geometry."""
-        return {"height": self.tops.heights, "grouping": self.grouping,
-                "widthM": [w * self.scene.pixelSize for _, _, w, _ in self.boxes],
-                "heightM": [h * self.scene.pixelSize
+        return {"height": np.array([h for _, _, h in self.points]), "grouping": self.grouping,
+                "widthM": [w * self.surface.pixelSize for _, _, w, _ in self.boxes],
+                "heightM": [h * self.surface.pixelSize
                             for _, _, _, h in self.boxes]}
 
     def write(self, outputDir, crowns=True, boxes=True, mask=True):
@@ -343,12 +355,12 @@ class PseudoCrowns(object):
     def _writeBoxes(self, outputDir):
         shapefile = os.path.join(outputDir, "pseudoBoxes.shp")
         gpd.GeoDataFrame(self.attributes(), geometry=self.boxPolygons(),
-                         crs=self.scene.crs).to_file(shapefile)
+                         crs=self.surface.crs).to_file(shapefile)
         listing = os.path.join(outputDir, "pseudoBoxes.txt")
         with open(listing, "w") as handle:
             handle.write("# x y width height heightM grouping\n")
             for (px, py, w, h), height, group in zip(
-                    self.boxes, self.tops.heights, self.grouping):
+                    self.boxes, np.array([h for _, _, h in self.points]), self.grouping):
                 handle.write("%d %d %d %d %.2f %d\n"
                              % (px, py, w, h, height, group))
         return [shapefile, listing]
@@ -362,11 +374,11 @@ class PseudoCrowns(object):
         gpd.GeoDataFrame({key: [value[i] for i in keep]
                           for key, value in self.attributes().items()},
                          geometry=[shapes[i] for i in keep],
-                         crs=self.scene.crs).to_file(path)
+                         crs=self.surface.crs).to_file(path)
         return [path]
 
     def _writeBoxImage(self, outputDir):
-        image = np.zeros(self.scene.chm.shape, np.uint8)
+        image = np.zeros(self.surface.chm.shape, np.uint8)
         for px, py, w, h in self.boxes:
             cv2.rectangle(image, (px, py), (px + w, py + h), 255, 1)
         path = os.path.join(outputDir, "pseudoBoxes.png")
@@ -391,7 +403,7 @@ class PseudoCrowns(object):
 
         frame = gpd.GeoDataFrame({"index": [i for i, _ in valid]},
                                  geometry=[s for _, s in valid],
-                                 crs=self.scene.crs)
+                                 crs=self.surface.crs)
         joined = gpd.sjoin(frame, trueCrowns[["geometry"]], how="inner",
                            predicate="intersects")
 
@@ -421,3 +433,9 @@ class PseudoCrowns(object):
                 if scores.size else 0.0,
                 "pseudoAreaMedian": float(np.median([s.area for _, s in valid])),
                 "trueAreaMedian": float(trueCrowns.geometry.area.median())}
+
+    def reference(self):
+        """The pseudo-crowns as something to score against."""
+        return CrownFrame(gpd.GeoDataFrame(
+            geometry=[p for p in self.polygons() if p is not None],
+            crs=self.surface.crs))

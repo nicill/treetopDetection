@@ -11,7 +11,7 @@
 # and continued from another computer: a finished stage is never redone):
 #   $STUDY/<site>/STATUS.txt       stage by stage, the file to open first
 #   $STUDY/STATUS.txt              all sites together
-#   $STUDY/summary/                the cross-site tables (tt.studySummary)
+#   $STUDY/summary/                the cross-site tables (tt.report.studySummary)
 #
 # Quebec sites left out: the two serpentin plots (incomplete annotation) and
 # afcagauthier (no tree heights in half of its LiDAR). Sites not yet prepared
@@ -37,7 +37,7 @@ mkdir -p "$STUDY"
 log() { printf '%s  %s\n' "$(date '+%F %T')" "$*" | tee -a "$STUDY/STATUS.txt"; }
 
 summary() {
-    python -m tt.studySummary --root "$STUDY" --output "$STUDY/summary" \
+    python -m tt.report.studySummary --root "$STUDY" --output "$STUDY/summary" \
         > "$STUDY/summary/summary.txt" 2>&1 || true
 }
 

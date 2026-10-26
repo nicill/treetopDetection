@@ -9,8 +9,8 @@ import os
 import numpy as np
 from scipy.stats import wilcoxon
 
-from . import reportFigures as figures
-from .dl import dlCommon as dc
+from . import figures
+from ..dl import dlCommon as dc
 
 LABELS = {
     "ccLidar": ("Connected components, LiDAR CHM", "CC LiDAR"),
@@ -114,7 +114,7 @@ def summary(r):
         "The best F1 was %s, for %s; the highest recall was %s, for %s. The "
         "whole field spans %s F1 points, while a single method's F1 varies "
         "by %s from one block to the next."
-        % (len(rows), len(r.e.scene.crowns),
+        % (len(rows), len(r.e.analysis.crowns),
            ", ".join(row["label"] for row in rows), fmt(best["f1"]),
            best["label"], pct(topRecall), " and ".join(recallLeaders),
            fmt(100 * (rows[0]["f1"] - rows[-1]["f1"]), 1),
@@ -173,7 +173,7 @@ def mrcnnErrorTotals(r):
 
 
 def data(r):
-    crowns = r.e.scene.crowns
+    crowns = r.e.analysis.crowns
     r.doc.heading("Data and evaluation protocol")
     r.doc.paragraph(
         "The site covers %.1f ha near Ulaanbaatar, with %d hand-drawn crowns "
@@ -182,7 +182,7 @@ def data(r):
         "(2026), and the P1 RGB orthomosaic. Alignment between all layers was "
         "measured by normalised cross-correlation at about 0.1 m, so no "
         "correction was applied."
-        % (r.e.scene.boundary.area / 1e4, len(crowns),
+        % (r.e.site.area.area / 1e4, len(crowns),
            crowns.geometry.area.median()))
     r.doc.paragraph(
         "The area is split into %d spatial blocks of about 63 x 64 m. Each "
@@ -311,7 +311,7 @@ def sweepPoints(r):
         _, highRecall, ceiling = r.e.sweepPoints(name)
         if highRecall:
             extra = (ceiling["recall"] - highRecall["recall"]) * \
-                len(r.e.scene.crowns)
+                len(r.e.analysis.crowns)
             added = ceiling["detections"] - highRecall["detections"]
             costs.append("on %s, going from %s to the sweep's highest recall "
                          "of %s finds %d more crowns for %d more detections, "
@@ -455,7 +455,7 @@ def missed(r):
                  "Area and height of found and missed crowns, %s. The missed "
                  "crowns sit at the small end of the size distribution but "
                  "across most of the height range." % label(first))
-    path, _ = figures.fateTile(r.e.scene, c, first,
+    path, _ = figures.fateTile(r.e.analysis, c, first,
                                r.figurePath("missedTile_" + first))
     r.doc.figure(path, "The tile where %s misses most, chosen as a worst case "
                  "rather than a typical one. Yellow outlines are missed "
@@ -505,9 +505,11 @@ def precision(r):
     xs = c.results[name]["xs"]
     ys = c.results[name]["ys"]
     wrong = [i for i, k in enumerate(c.results[name]["kinds"]) if k != "hit"]
-    tile = figures.worstTile(figures.TileRenderer(r.e.scene, tileM=30.0),
-                             r.e.scene, xs[wrong], ys[wrong])
-    path, _ = figures.fateTile(r.e.scene, c, name,
+    tile = figures.worstTile(figures.TileRenderer(r.e.analysis.surface,
+                                                     r.e.analysis.crowns,
+                                                     tileM=30.0),
+                             r.e.analysis, xs[wrong], ys[wrong])
+    path, _ = figures.fateTile(r.e.analysis, c, name,
                                r.figurePath("fateTile_" + name), tile=tile)
     r.doc.figure(path, "The tile where %s's non-hits concentrate. Blue "
                  "detections sit on bright crowns with no polygon: most look "
@@ -543,13 +545,13 @@ def agreementBlock(r, c, first, second):
     rows = [[group, str(p["count"]), fmt(p["area"], 1), fmt(p["peak"], 1),
              fmt(p["nearest"], 2)] for group, p in groups.items()]
     both = groups["both"]["count"]
-    union = len(r.e.scene.crowns) - groups["neither"]["count"]
+    union = len(r.e.analysis.crowns) - groups["neither"]["count"]
     r.doc.heading("%s and %s" % (label(first, True), label(second, True)), 2)
     r.doc.table(["crowns found by", "count", "median area m²",
                  "median height m", "nearest crown m"], rows,
                 caption="Which crowns each found.",
                 widthsCm=[4.4, 1.8, 3.0, 3.2, 3.2])
-    total = float(len(r.e.scene.crowns))
+    total = float(len(r.e.analysis.crowns))
     if combinable(first, second):
         gain = union - max(len(c.results[first]["found"]),
                            len(c.results[second]["found"]))
@@ -559,7 +561,7 @@ def agreementBlock(r, c, first, second):
             "caps what a combination can add at %s of recall over the better "
             "one alone. The crowns only one of them finds are small, and the "
             "ones neither finds are smaller still."
-            % (both, union, len(r.e.scene.crowns), pct(union / total),
+            % (both, union, len(r.e.analysis.crowns), pct(union / total),
                pct(gain / total)))
     else:
         r.doc.paragraph(
@@ -573,7 +575,7 @@ def agreementBlock(r, c, first, second):
                                                     % (first, second))),
                  "Crowns by which method found them, and their median size.")
     r.doc.figure(figures.agreementTile(
-        r.e.scene, c, first, second,
+        r.e.analysis, c, first, second,
         r.figurePath("agreementTile_%s_%s" % (first, second)),
         labels=(label(first, True), label(second, True))),
         "The tile where %s and %s disagree most, chosen as a worst case."
@@ -613,7 +615,7 @@ def shapes(r):
     name = next(n for n in c.results if isPointMethod(n)) \
         if any(isPointMethod(n) for n in c.results) else None
     if name:
-        r.doc.figure(figures.shapeTile(r.e.scene, c, "pseudo-crowns, "
+        r.doc.figure(figures.shapeTile(r.e.analysis, c, "pseudo-crowns, "
                                        + label(name, True),
                                        [s for s in shapesBy[name] if s],
                                        r.figurePath("shapes_" + name)),
@@ -764,7 +766,7 @@ def caveats(r):
         "or two between methods cannot be established on this site, and "
         "none of the tuned settings has been tested on another. The second "
         "annotated area is what would show whether any of them generalise."
-        % len(r.e.scene.crowns))
+        % len(r.e.analysis.crowns))
     r.doc.paragraph(
         "The Mask R-CNN runs reported here were made before two changes. "
         "They trained on tiles that torchvision silently upscaled from 512 to "

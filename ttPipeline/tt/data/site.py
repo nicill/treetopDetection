@@ -16,6 +16,9 @@ import os
 from shapely import wkt
 from shapely.ops import unary_union
 
+import numpy as np
+
+from ..report.render import drawSite
 from .annotations import Annotations
 from .patches import ChannelSpec, PatchSet, makeBlocks
 from .raster import HeightModel, LOCAL_HEIGHT_M, RGBMosaic
@@ -207,6 +210,38 @@ class TDData(object):
         self.blocks = [Block(name, geometry)
                        for name, geometry in self.patchSet.blocks]
         return self.patchSet
+
+    def show(self, path, runs=None, region=None, kind="CHM", source=None,
+             minHeight=2.0, minSidePx=1200):
+        """
+        Draw the site: a height layer in grey, the crowns outlined, and each
+        run's detections as dots in its own colour. runs: {name: Detections
+        or RunSet} (a RunSet shows its held-out detections); region: a
+        polygon to draw (the whole layer by default). Returns the path.
+        """
+        surface = self.heightSurface(kind, source, minHeight=minHeight,
+                                     restrict=False)
+        crowns = None
+        if self.annotations is not None and self.annotations.crownsPath:
+            crowns = self.crowns if region is None \
+                else self.annotations.crownsIn(region)
+        blocks = {b.name: b.geometry for b in self.blocks}
+        shown = {}
+        for name, run in (runs or {}).items():
+            detections = run.heldOut(blocks) if hasattr(run, "heldOut") \
+                else run
+            shown[name] = (detections if region is None
+                           else detections.inRegion(region))
+        window = None
+        if region is not None:
+            minX, minY, maxX, maxY = region.bounds
+            c0, r0 = surface.toPixel(minX, maxY)
+            c1, r1 = surface.toPixel(maxX, minY)
+            rows, columns = surface.shape
+            window = (max(0, int(c0)), max(0, int(r0)),
+                      min(columns, int(np.ceil(c1))),
+                      min(rows, int(np.ceil(r1))))
+        return drawSite(surface, crowns, shown, path, window, minSidePx)
 
     def addRun(self, detections):
         self.runs.append(detections)

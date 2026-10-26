@@ -2,7 +2,7 @@
 One image per held-out block for every result: each run, and each
 combination's output.
 
-    python -m tt.blockImages --chm lidar.tif --crowns crowns.shp \\
+    python -m tt.report.blockImages --chm lidar.tif --crowns crowns.shp \\
         --boundary area.shp --dataset ds/lidar \\
         --run ccLidar=runs/ccLidar --run mrcnnRgb=runs/mrcnnRgb \\
         --fused report/fused --output images
@@ -30,59 +30,51 @@ import cv2
 import numpy as np
 from shapely import contains_xy
 
-from .comparison import MethodRun
-from .dl import dlPrepare as dp
-from .evaluation import assignToCrowns, splitBackground
+from ..analysis import Analysis
+from ..analysis.trees import heightsNear
+from ..analysis.statistics import splitBackground
+from ..data.site import Block, TDData
+from ..dl import dlPrepare as dp
+from ..experiments import RunSet
+from ..scoring.evaluator import assignToCrowns
 from .render import TileRenderer
-from .scene import Scene
 
 FATE_COLOURS = {"hit": (0, 190, 0), "repeat": (0, 150, 255),     # BGR
                 "canopy": (255, 90, 0), "low": (0, 0, 230)}
 MISSED = (0, 255, 255)
-HEIGHT_RADIUS_M = 0.75
 JPEG_QUALITY = 88
 
 
 class BlockRenderer(object):
+    """Every block of a run drawn: fates coloured, missed crowns outlined."""
 
-    def __init__(self, scene, blocks, minSidePx=900):
-        self.scene = scene
+    def __init__(self, analysis, blocks, minSidePx=900):
+        self.analysis = analysis
+        self.surface = analysis.surface
         self.blocks = dict(blocks)
-        self.renderer = TileRenderer(scene, minSidePx=minSidePx)
-        centroids = scene.crowns.geometry.centroid
+        self.renderer = TileRenderer(analysis.surface, analysis.crowns,
+                                     minSidePx=minSidePx)
+        centroids = analysis.crowns.geometry.centroid
         self.centroidX = centroids.x.to_numpy()
         self.centroidY = centroids.y.to_numpy()
 
     def pixelBounds(self, block):
         minX, minY, maxX, maxY = self.blocks[block].bounds
-        c0, r0 = self.scene.toPixel(minX, maxY)
-        c1, r1 = self.scene.toPixel(maxX, minY)
-        rows, columns = self.scene.chm.shape
+        c0, r0 = self.surface.toPixel(minX, maxY)
+        c1, r1 = self.surface.toPixel(maxX, minY)
+        rows, columns = self.surface.chm.shape
         return (int(max(0, c0)), int(max(0, r0)),
                 int(min(columns, c1)), int(min(rows, r1)))
 
-    def heightsAt(self, xs, ys):
-        radius = self.scene.metresToPixels(HEIGHT_RADIUS_M)
-        heights = np.zeros(len(xs))
-        for index, (x, y) in enumerate(zip(xs, ys)):
-            column, row = (int(v) for v in self.scene.toPixel(x, y))
-            window = self.scene.chm[max(0, row - radius):row + radius + 1,
-                                    max(0, column - radius):
-                                    column + radius + 1]
-            heights[index] = float(window.max()) if window.size else 0.0
-        return heights
-
-    def classify(self, predictions, block):
+    def classify(self, detections, block):
         """Fates of the block's detections, and the block's missed crowns."""
         inBlock = np.nonzero(contains_xy(self.blocks[block], self.centroidX,
                                          self.centroidY))[0]
-        crowns = self.scene.crowns.iloc[inBlock]
-        xs = np.array([p["centreX"] for p in predictions])
-        ys = np.array([p["centreY"] for p in predictions])
-        scores = np.array([p["score"] for p in predictions])
-        kinds, hit, _ = assignToCrowns(xs, ys, scores,
-                                       crowns.reset_index(drop=True))
-        split = splitBackground(xs, ys, self.heightsAt(xs, ys), kinds)
+        crowns = self.analysis.crowns.iloc[inBlock].reset_index(drop=True)
+        xs, ys = detections.x, detections.y
+        kinds, hit, _ = assignToCrowns(xs, ys, detections.scores, crowns)
+        heights = heightsNear(self.surface, xs, ys)
+        split = splitBackground(xs, ys, heights, kinds)
         fates = list(kinds)
         for index in split["canopy"]:
             fates[index] = "canopy"
@@ -91,17 +83,16 @@ class BlockRenderer(object):
         missed = [int(inBlock[i]) for i in range(len(inBlock)) if i not in hit]
         return fates, missed, len(inBlock)
 
-    def render(self, predictions, block, title, path):
-        fates, missed, crownCount = self.classify(predictions, block)
+    def render(self, detections, block, title, path):
+        fates, missed, crownCount = self.classify(detections, block)
         c0, r0, c1, r1 = self.pixelBounds(block)
         image, scale = self.renderer.background(c0, r0, c1, r1)
         self.renderer.drawCrowns(image, missed, c0, r0, scale, MISSED)
-        radius = max(4, int(0.45 / self.scene.pixelSize * scale))
-        for prediction, fate in zip(predictions, fates):
+        radius = max(4, int(0.45 / self.surface.pixelSize * scale))
+        for x, y, fate in zip(detections.x, detections.y, fates):
             if fate not in FATE_COLOURS:
                 continue
-            column, row = self.scene.toPixel(prediction["centreX"],
-                                             prediction["centreY"])
+            column, row = self.surface.toPixel(x, y)
             cv2.circle(image, (int((column - c0) * scale),
                                int((row - r0) * scale)),
                        radius, FATE_COLOURS[fate], -1)
@@ -119,14 +110,14 @@ class BlockRenderer(object):
 
     def renderRun(self, name, runDir, outputDir):
         """Every block of one run; returns how many images were drawn."""
-        run = MethodRun(name, runDir, self.blocks.items())
+        held = RunSet.load(runDir).heldOut(self.blocks)
         drawn = 0
         for block in sorted(self.blocks):
             path = os.path.join(outputDir, "%s.jpg" % block)
             if os.path.exists(path):
                 continue
-            predictions = [p for p in run.predictions if p["block"] == block]
-            self.render(predictions, block, name, path)
+            self.render(held.subset(held.cache["block"] == block), block,
+                        name, path)
             drawn += 1
         return drawn
 
@@ -164,10 +155,11 @@ def parseArguments(argv=None):
 
 def main(argv=None):
     args = parseArguments(argv)
-    scene = Scene(args.chm, crownsPath=args.crowns,
-                  boundaryPath=args.boundary, verbose=False)
-    renderer = BlockRenderer(scene,
-                             dp.loadDataset(args.dataset)["blockGeometries"])
+    blocks = dp.loadDataset(args.dataset)["blockGeometries"]
+    site = TDData.fromFiles("site", chm=args.chm, crowns=args.crowns,
+                            area=args.boundary,
+                            blocks=[Block(n, g) for n, g in blocks])
+    renderer = BlockRenderer(Analysis(site), blocks)
     jobs = [(spec.split("=", 1)[0], spec.split("=", 1)[1],
              spec.split("=", 1)[0]) for spec in args.run]
     if args.fused and os.path.isdir(args.fused):

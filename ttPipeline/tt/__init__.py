@@ -10,7 +10,7 @@ from .experiments import CrossValidation, ParameterGrid, RunSet
 from .scoring import AnnotatedCrowns, Evaluator, F1, Weighted
 from .evaluation import CrownEvaluator, Classification
 from .merging import TopMerger
-from .pseudoCrowns import PseudoCrowns
+from .scoring.pseudoCrowns import PseudoCrowns
 from .scene import Scene, readCrowns
 from .tops import Tops
 

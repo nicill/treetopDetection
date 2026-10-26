@@ -163,7 +163,7 @@ class HeightModel(Raster):
         heights[heights < minHeight] = 0.0
         if region is not None:
             heights[~grid.mask(region)] = 0.0
-        return HeightSurface(heights, grid, self)
+        return HeightSurface(heights, grid, self, minHeight)
 
 
 class HeightSurface(object):
@@ -173,10 +173,11 @@ class HeightSurface(object):
     all the height detectors use.
     """
 
-    def __init__(self, heights, grid, model=None):
+    def __init__(self, heights, grid, model=None, minHeight=0.0):
         self.chm = heights
         self.grid = grid
         self.model = model
+        self.minHeight = float(minHeight)   # heights below it are 0
 
     def __repr__(self):
         return "HeightSurface(%d x %d px at %.3f m)" % (

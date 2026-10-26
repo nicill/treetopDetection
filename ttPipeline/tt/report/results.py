@@ -21,22 +21,20 @@ import sys
 import numpy as np
 from scipy.stats import wilcoxon
 
-from . import reportFigures as figures
-from .analysis import Analysis
-from .data.site import Block, TDData
-from .dl import dlCommon as dc
-from .dl import dlPrepare as dp
-from .detectors.fusion import SaddleSurface
-from .experiments import RunSet
-from .experiments.runset import matchBlock
-from .experiments.fusion import FusionCrossValidation
-from .scoring import CrownFrame
+from . import figures
+from ..analysis import Analysis
+from ..data.site import Block, TDData
+from ..detectors.fusion import SaddleSurface
+from ..dl import dlCommon as dc
+from ..dl import dlPrepare as dp
+from ..experiments import RunSet
+from ..experiments.fusion import FusionCrossValidation
+from ..experiments.runset import matchBlock
+from ..scoring import CrownFrame
+from ..scoring.pseudoCrowns import PseudoCrowns
 from .odt import OdtDocument
-from .pseudoCrowns import PseudoCrowns
-from .reportText import (HEIGHT_METHODS, HEIGHT_SOURCE, RGB_BOX_METHODS,
+from .text import (HEIGHT_METHODS, HEIGHT_SOURCE, RGB_BOX_METHODS,
                          SADDLE_DROP, SECTIONS, label)
-from .scene import Scene
-from .tops import Tops
 
 # ---------------------------------------------------------------------- #
 # evidence
@@ -49,20 +47,23 @@ class Evidence(object):
         self.args = args
         self.meta = dp.loadDataset(args.dataset)
         self.blocks = self.meta["blockGeometries"]
-        self.scene = Scene(args.lidarChm, crownsPath=args.crowns,
-                           boundaryPath=args.boundary, verbose=False)
-        self.p1Scene = (Scene(args.p1Chm, crownsPath=args.crowns,
-                              boundaryPath=args.boundary, verbose=False)
-                        if args.p1Chm else None)
+        chms = {"LiDAR": args.lidarChm}
+        if args.p1Chm:
+            chms["P1"] = args.p1Chm
+        self.site = TDData.fromFiles(
+            "site", chm=chms, crowns=args.crowns, area=args.boundary,
+            blocks=[Block(n, g) for n, g in self.blocks])
+        # the LiDAR CHM is drawn and read heights from; the P1 one serves
+        # the saddle rule and the pseudo-crowns of the P1 methods
+        self.analysis = Analysis(self.site, self.site.heightSurface(
+            source="LiDAR"))
+        self.p1Analysis = (Analysis(self.site, self.site.heightSurface(
+            source="P1")) if args.p1Chm else None)
         self.cv = self._loadCv(args.cv)
         self.sweeps = {spec.split("=", 1)[0]: dc.loadJson(spec.split("=", 1)[1])
                        for spec in args.sweep}
-        self.site = TDData.fromFiles(
-            "site", chm=args.lidarChm, crowns=args.crowns, area=args.boundary,
-            heightSource="LiDAR",
-            blocks=[Block(n, g) for n, g in self.blocks])
         self.runs = self._loadPredictions(args.cv)
-        self.comparison = (Analysis(self.site).treeByTree(
+        self.comparison = (self.analysis.treeByTree(
             self.runs, dict(self.blocks)) if self.runs else None)
         self.fusion = self._fusion()
 
@@ -105,7 +106,7 @@ class Evidence(object):
 
     def _fusePair(self, box, height):
         validation = FusionCrossValidation.pair(
-            CrownFrame(self.scene.crowns), dict(self.blocks),
+            CrownFrame(self.analysis.crowns), dict(self.blocks),
             self.runs[box], self.runs[height],
             surface=self.surfaceFor(height), verbose=False)
         summary = validation.run()
@@ -117,10 +118,10 @@ class Evidence(object):
 
     def surfaceFor(self, height):
         source = HEIGHT_SOURCE[height]
-        scene = self.p1Scene if source == "p1" else self.scene
-        if scene is None:
+        analysis = self.p1Analysis if source == "p1" else self.analysis
+        if analysis is None:
             return None
-        return SaddleSurface.fromScene(scene, SADDLE_DROP[source])
+        return SaddleSurface.fromSurface(analysis.surface, SADDLE_DROP[source])
 
     # ------------------------------------------------------------------ #
 
@@ -165,15 +166,11 @@ class Evidence(object):
 
     def pseudoCrowns(self, name):
         """Pseudo-crown outlines for a point method's held-out tops."""
-        scene = self.p1Scene if (name.endswith("P1") and self.p1Scene) \
-            else self.scene
-        points = []
-        held = self.comparison.detections[name]
-        for x, y in zip(held.x, held.y):
-            column, row = scene.toPixel(x, y)
-            column, row = int(column), int(row)
-            points.append((column, row, float(scene.chm[row, column])))
-        crowns = PseudoCrowns(scene, Tops(points), verbose=False)
+        analysis = self.p1Analysis if (name.endswith("P1")
+                                        and self.p1Analysis) \
+            else self.analysis
+        crowns = PseudoCrowns(analysis.surface,
+                              self.comparison.detections[name], verbose=False)
         crowns.build()
         return crowns.polygons()
 
@@ -213,16 +210,6 @@ class ResultsReport(object):
                 print("[report] " + message, file=sys.stderr)
                 self.doc.paragraph("[" + message + "]")
         return self.doc.save(os.path.join(self.outputDir, "report.odt"))
-
-
-def saveFusedOutputs(directory, outputs):
-    """One folder per strategy, one predictions_<block>.json per fold."""
-    for strategy, perBlock in outputs.items():
-        folder = os.path.join(directory, strategy)
-        os.makedirs(folder, exist_ok=True)
-        for block, predictions in perBlock.items():
-            dc.saveJson({"block": block, "predictions": predictions},
-                        os.path.join(folder, "predictions_%s.json" % block))
 
 
 def parseArguments(argv=None):

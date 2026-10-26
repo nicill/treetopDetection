@@ -2,7 +2,7 @@
 Across sites: does a hybrid of connected components and deep learning beat
 the best of its parts?
 
-    python -m tt.studySummary --root "<study folder>" --output summary
+    python -m tt.report.studySummary --root "<study folder>" --output summary
 
 Reads, for every site folder under --root (as tt's siteStudy.sh writes them):
 
