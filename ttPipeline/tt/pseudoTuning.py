@@ -25,28 +25,25 @@ fold, and its ranking of all settings is compared with the real ranking
 the other blocks' real crowns, is the target an automatic tuning has to
 reach.
 
+The scorers and the tuning are tt.experiments.pseudo.PseudoTuning.
+
 The detections of every setting are taken from the run's detections.npz
 (tt.dl concomp --saveDetections) or, when it has none, recomputed from the
 grid the run recorded and cached in --output.
 """
 
 import argparse
-import multiprocessing
 import os
 import sys
 
-import geopandas as gpd
-import numpy as np
-from scipy.stats import spearmanr
-from shapely.geometry import box
-
-from .comparison import MethodRun, sharedBlocks
+from .data.site import TDData
+from .detectors.height import CCDetector
 from .dl import dlCommon as dc
-from .dl import dlPrepare as dp
-from .dl.dlConComp import (ConCompCrossValidation, gridFromArguments,
-                           loadDetections, saveDetections)
+from .dl.dlConComp import gridFromArguments
+from .experiments import CrossValidation, ParameterGrid, RunSet
+from .experiments.crossValidation import loadAllDetections
+from .experiments.pseudo import PseudoTuning
 
-ZONE_LEVELS = (0.5, 0.7, 0.9)
 # the scorer whose choices become a run of their own (runs/ccAuto<height>),
 # fixed before any result: plain F1 (or the tuning objective) against the boxes
 AUTO_SCORER = "pseudoF1"
@@ -62,122 +59,35 @@ def runGrid(ccRun):
     return gridFromArguments(options), recorded
 
 
-def detections(args, validation):
-    """Every setting's detections: the run's, the cache, or computed now."""
-    for path in (os.path.join(args.ccRun, "detections.npz"),
-                 os.path.join(args.output, "detections.npz")):
+def savedDetections(ccRun, output):
+    """The detections.npz saved with the run, or cached in output."""
+    for path in (os.path.join(ccRun, "detections.npz"),
+                 os.path.join(output, "detections.npz")):
         if os.path.exists(path):
-            print("[pseudo] detections from %s" % path)
-            return loadDetections(path)
-    print("[pseudo] computing %d settings, %d jobs"
-          % (len(validation.settings), validation.jobs))
-    found = validation.detectAll()
-    saveDetections(os.path.join(args.output, "detections.npz"), found)
-    return found
+            return path
+    return None
 
 
-def pseudoCrowns(predictions, crs):
-    return gpd.GeoDataFrame(geometry=[box(*p["box"]) for p in predictions],
-                            crs=crs)
-
-
-def exactlyOneShare(points, boxes):
-    """Share of boxes holding exactly one point."""
-    if not len(boxes):
-        return 0.0
-    if not len(points):
-        return 0.0
-    x, y = points[:, 0][None, :], points[:, 1][None, :]
-    inside = ((x >= boxes[:, 0:1]) & (x <= boxes[:, 2:3]) &
-              (y >= boxes[:, 1:2]) & (y <= boxes[:, 3:4]))
-    return float((inside.sum(axis=1) == 1).mean())
-
-
-_BLOCK = None      # the block being scored, shared with forked workers
-
-
-def _scoreReal(index):
-    return dc.evaluateDetections(_BLOCK.inBlock[index], _BLOCK.crowns,
-                                 _BLOCK.region)
-
-
-def _scorePseudo(index):
-    return dc.objectiveOf(dc.evaluateDetections(_BLOCK.inBlock[index],
-                                                _BLOCK.pseudo, _BLOCK.region))
-
-
-class BlockScores(object):
-    """One held-out block: every setting under every scorer."""
-
-    def __init__(self, block, region, crowns, rgbRecord, allDetections,
-                 jobs=1):
-        self.block = block
-        self.region = region
-        self.crowns = crowns
-        self.jobs = max(1, int(jobs))
-        self.inBlock = [dc.predictionsInRegion(d, region) for d in allDetections]
-        held = dc.predictionsInRegion(rgbRecord["predictions"], region)
-        threshold = rgbRecord.get("threshold", -np.inf)
-        self.pseudo = pseudoCrowns([p for p in held if p["score"] >= threshold],
-                                   crowns.crs)
-        self.zones = {c: np.array([p["box"] for p in held if p["score"] >= c],
-                                  float).reshape(-1, 4) for c in ZONE_LEVELS}
-
-    def _map(self, function):
-        """function(i) for every setting, --jobs at a time; same results."""
-        global _BLOCK
-        _BLOCK = self
-        try:
-            indices = range(len(self.inBlock))
-            if self.jobs == 1:
-                return [function(i) for i in indices]
-            with multiprocessing.get_context("fork").Pool(self.jobs) as pool:
-                return pool.map(function, indices, chunksize=max(
-                    1, len(self.inBlock) // (self.jobs * 8)))
-        finally:
-            _BLOCK = None
-
-    def realScores(self):
-        if not hasattr(self, "_real"):
-            self._real = self._map(_scoreReal)
-        return self._real
-
-    def scorers(self):
-        """{scorer: score per setting}, none of them using the crowns."""
-        points = [np.array([[p["centreX"], p["centreY"]] for p in d],
-                           float).reshape(-1, 2) for d in self.inBlock]
-        out = {"pseudoF1": self._map(_scorePseudo)}
-        for c, boxes in self.zones.items():
-            out["zones@%.1f" % c] = [exactlyOneShare(p, boxes) for p in points]
-        return out
-
-
-def tuneBlock(scores):
-    """
-    Per scorer: the chosen setting's real result and the rank agreement;
-    None for a block without crowns (it has nothing to score).
-    """
-    real = scores.realScores()
-    if not real or not real[0]["crowns"]:
-        return None
-    realF1 = np.array([dc.objectiveOf(r) for r in real])
-    rows = {"real": dict(real[int(np.argmax(realF1))], spearman=1.0,
-                         chosen=int(np.argmax(realF1)))}
-    for name, values in scores.scorers().items():
-        values = np.array(values)
-        chosen = int(np.argmax(values))
-        rho = spearmanr(values, realF1).correlation \
-            if np.ptp(values) > 0 and np.ptp(realF1) > 0 else float("nan")
-        rows[name] = dict(real[chosen], spearman=float(rho), chosen=chosen)
-    return rows
-
-
-def pool(perBlock, name):
-    folds = [rows[name] for rows in perBlock.values()]
-    pooled = dc.averageFolds(folds)
-    rhos = [f["spearman"] for f in folds if np.isfinite(f["spearman"])]
-    pooled["meanSpearman"] = float(np.mean(rhos)) if rhos else float("nan")
-    return pooled
+def experiment(args):
+    """The cross-validation the CC run made, and every setting's detections."""
+    grid, fixed = runGrid(args.ccRun)
+    site = TDData.fromDataset(args.dataset)
+    validation = CrossValidation(
+        site, CCDetector(resolution=fixed["resolution"],
+                         minHeight=fixed["minHeight"],
+                         minTreeAreaM2=fixed["minTreeArea"]),
+        ParameterGrid(grid), verbose=False, jobs=args.jobs)
+    path = savedDetections(args.ccRun, args.output)
+    if path:
+        print("[pseudo] detections from %s" % path)
+        found = loadAllDetections(path)
+    else:
+        print("[pseudo] computing %d settings, %d jobs"
+              % (len(validation.settings), validation.jobs))
+        found = validation.detectAll()
+        validation.saveAllDetections(os.path.join(args.output,
+                                                  "detections.npz"))
+    return site, validation, found
 
 
 def printTable(table, target):
@@ -212,64 +122,6 @@ def parseArguments(argv=None):
     return parser.parse_args(argv)
 
 
-def autoFromSaved(args):
-    """
-    The automatic run from a finished pseudo-tuning: the choices recorded in
-    pseudoTuning.json and the detections saved with the run (or cached),
-    without scoring anything again. False when there is nothing to use.
-    """
-    saved = os.path.join(args.output, "pseudoTuning.json")
-    if not os.path.exists(saved):
-        return False
-    paths = [p for p in (os.path.join(args.ccRun, "detections.npz"),
-                         os.path.join(args.output, "detections.npz"))
-             if os.path.exists(p)]
-    if not paths:
-        return False
-    record = dc.loadJson(saved)
-    found = loadDetections(paths[0])
-    writeAutoRun(args.ccRun, record["blocks"], found,
-                 record["pooled"][args.autoScorer], args.autoRun,
-                 args.autoScorer)
-    return True
-
-
-def main(argv=None):
-    args = parseArguments(argv)
-    os.makedirs(args.output, exist_ok=True)
-    autoRun = args.autoRun or autoRunDir(args.ccRun)
-    if not os.path.exists(os.path.join(autoRun, "results.json")) \
-            and autoFromSaved(args):
-        print("[pseudo] automatic run written from the saved pseudo-tuning")
-        return 0
-    grid, fixed = runGrid(args.ccRun)
-    validation = ConCompCrossValidation(
-        args.dataset, grid=grid, resolution=fixed["resolution"],
-        minHeight=fixed["minHeight"], minTreeAreaM2=fixed["minTreeArea"],
-        verbose=False, jobs=args.jobs)
-    found = detections(args, validation)
-    blocks = dict(validation.blocks)
-    rgb = MethodRun("rgb", args.rgbRun, blocks)
-    perBlock = {}
-    for name, region in sorted(sharedBlocks(blocks, (rgb,)).items()):
-        rows = tuneBlock(BlockScores(name, region, validation.scene.crowns,
-                                     rgb.record(name), found, args.jobs))
-        if rows is not None:
-            perBlock[name] = rows
-    names = list(next(iter(perBlock.values())))
-    table = {n: pool(perBlock, n) for n in names}
-    target = dc.loadJson(os.path.join(args.ccRun, "results.json"))["pooled"]
-    for rows in perBlock.values():
-        for name, row in rows.items():
-            row["settings"] = validation.settings[row["chosen"]]
-    dc.saveJson({"blocks": perBlock, "pooled": table, "target": target},
-                os.path.join(args.output, "pseudoTuning.json"))
-    writeAutoRun(args.ccRun, perBlock, found, table[args.autoScorer],
-                 args.autoRun, args.autoScorer)
-    printTable(table, target)
-    return 0
-
-
 def autoRunDir(ccRun):
     """runs/ccLidar -> runs/ccAutoLidar (beside the run it was tuned from)."""
     name = os.path.basename(os.path.normpath(ccRun))
@@ -277,28 +129,42 @@ def autoRunDir(ccRun):
     return os.path.join(os.path.dirname(os.path.normpath(ccRun)), auto)
 
 
-def writeAutoRun(ccRun, perBlock, found, pooled, directory=None,
-                 scorer=AUTO_SCORER):
-    """
-    The scorer's chosen setting per block, as a run like any other: per
-    block the whole-area detections of that setting (as connected-component
-    runs store them), and the pooled results. The report then combines it
-    with the RGB networks like any height method.
-    """
-    directory = directory or autoRunDir(ccRun)
-    os.makedirs(directory, exist_ok=True)
-    folds = []
-    for block, rows in sorted(perBlock.items()):
-        row = rows[scorer]
-        dc.saveJson({"block": block, "predictions": found[row["chosen"]]},
-                    os.path.join(directory, "predictions_%s.json" % block))
-        folds.append(dict(row, block=block))
-    dc.saveJson({"method": "connected components tuned on the RGB Mask "
-                           "R-CNN's held-out boxes (%s)" % scorer,
-                 "folds": folds, "pooled": pooled},
-                os.path.join(directory, "results.json"))
+def writeAutoRun(tuning, perBlock, pooled, directory, scorer):
+    tuning.asRun(perBlock, pooled, scorer).save(directory)
     print("[pseudo] wrote the automatic run %s" % directory)
     return directory
+
+
+def main(argv=None):
+    args = parseArguments(argv)
+    os.makedirs(args.output, exist_ok=True)
+    autoRun = args.autoRun or autoRunDir(args.ccRun)
+    saved = os.path.join(args.output, "pseudoTuning.json")
+    rgb = RunSet.load(args.rgbRun)
+    if not os.path.exists(os.path.join(autoRun, "results.json")) \
+            and os.path.exists(saved) \
+            and savedDetections(args.ccRun, args.output):
+        # the automatic run from a finished pseudo-tuning, scoring nothing
+        record = dc.loadJson(saved)
+        site = TDData.fromDataset(args.dataset)
+        found = loadAllDetections(savedDetections(args.ccRun, args.output))
+        tuning = PseudoTuning(site, None, found, rgb)
+        writeAutoRun(tuning, record["blocks"],
+                     record["pooled"][args.autoScorer], autoRun,
+                     args.autoScorer)
+        print("[pseudo] automatic run written from the saved pseudo-tuning")
+        return 0
+    site, validation, found = experiment(args)
+    tuning = PseudoTuning(site, validation.settings, found, rgb,
+                          jobs=args.jobs)
+    perBlock, table = tuning.run()
+    target = dc.loadJson(os.path.join(args.ccRun, "results.json"))["pooled"]
+    dc.saveJson({"blocks": perBlock, "pooled": table, "target": target},
+                saved)
+    writeAutoRun(tuning, perBlock, table[args.autoScorer], autoRun,
+                 args.autoScorer)
+    printTable(table, target)
+    return 0
 
 
 if __name__ == "__main__":

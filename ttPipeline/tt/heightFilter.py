@@ -26,11 +26,9 @@ import sys
 
 from tt.dl import dlCommon as dc
 from tt.dl import dlPrepare as dp
-from tt.detectors.fusion import BOX_MIN_HEIGHTS
-from tt.detectors.fusion import SaddleSurface as HeightSurface
+from tt.detectors.fusion import BOX_MIN_HEIGHTS, SaddleSurface
 from tt.experiments import RunSet
 from tt.experiments.fusion import FusionCrossValidation
-from tt.fusion import SaddleSurface
 from tt.scene import Scene
 from tt.scoring import CrownFrame
 
@@ -76,11 +74,10 @@ def filterSite(site, verbose=True):
         except FileNotFoundError as error:
             report.append("%s_%s: skipped (%s)" % (box, height, error))
             continue
-        validation = FusionCrossValidation(
+        validation = FusionCrossValidation.pair(
             CrownFrame(scene.crowns), dict(blocks), boxRun, pointRun,
             strategies=STRATEGIES, verbose=False,
-            heightSurface=HeightSurface(surface.chm, surface.transform,
-                                        surface.pixelSize, 0.0))
+            heightSurface=surface)
         summary = validation.run()
         saved = dc.loadJson(os.path.join(folder, "summary.json"))
         for name in CHECKED:

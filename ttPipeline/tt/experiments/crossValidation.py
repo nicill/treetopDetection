@@ -16,6 +16,7 @@ import os
 
 import numpy as np
 
+from ..data.detections import Detections
 from ..scoring.evaluator import Evaluator
 from ..scoring.reference import AnnotatedCrowns
 from .runset import RunSet, poolFolds
@@ -263,3 +264,14 @@ def printFold(method, fold):
     print("  fold %s: tuned %.3f -> held-out R %.3f P %.3f F1 %.3f  %s"
           % (fold["block"], fold["tuningScore"], fold["recall"],
              fold["precision"], fold["f1"], fold["settings"]))
+
+
+def loadAllDetections(path, crs=None):
+    """saveAllDetections read back: one points Detections per setting."""
+    with np.load(path) as data:
+        out = []
+        for i in range(len(data.files)):
+            rows = data["s%05d" % i]
+            out.append(Detections(rows[:, 0], rows[:, 1], rows[:, 2],
+                                  heights=rows[:, 2], crs=crs))
+        return out

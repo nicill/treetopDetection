@@ -98,7 +98,7 @@ class TestFusionCrossValidation(CrowdedSiteCase):
             os.path.join(output, "box"))
         blocks = {b.name: b.geometry for b in site.blocks}
         surface = SaddleSurface.fromSurface(site.heightSurface(minHeight=1.0))
-        validation = FusionCrossValidation(
+        validation = FusionCrossValidation.pair(
             AnnotatedCrowns(site.annotations), blocks,
             RunSet.load(os.path.join(output, "box")),
             RunSet.load(os.path.join(output, "cc")), surface=surface,

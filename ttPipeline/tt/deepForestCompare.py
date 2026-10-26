@@ -22,30 +22,29 @@ import sys
 import numpy as np
 from scipy.stats import wilcoxon
 
-from .comparison import MethodRun, sharedBlocks
+from .data.annotations import readCrowns
+from .detectors.fusion import Union
 from .dl import dlCommon as dc
 from .dl import dlPrepare as dp
-from .fusion import union
-from .scene import readCrowns
+from .experiments.runset import RunSet, sharedBlocks
+from .scoring import CrownFrame, Evaluator
 
 
-def blockScores(run, blocks, crowns):
-    """{block: result} of a run's held-out predictions, at its own threshold."""
-    return {b: dc.evaluateDetections(
-        [p for p in run.predictions if p["block"] == b], crowns, g)
-        for b, g in blocks.items()}
+def blockScores(run, blocks, evaluator, allBlocks):
+    """{block: result} of a run's held-out detections, at its own threshold."""
+    held = run.heldOut(allBlocks)
+    return {b: evaluator.score(held.subset(held.cache["block"] == b), g)
+            for b, g in blocks.items()}
 
 
-def unionScores(boxRun, pointRun, blocks, crowns):
+def unionScores(boxRun, pointRun, blocks, evaluator):
     """{block: result} of the union at the box run's recorded threshold."""
     scores = {}
     for block, geometry in blocks.items():
-        boxes = dc.predictionsInRegion(boxRun.record(block)["predictions"],
-                                       geometry)
-        points = dc.predictionsInRegion(pointRun.record(block)["predictions"],
-                                        geometry)
-        fused = union(boxes, points, boxRun.threshold(block))
-        scores[block] = dc.evaluateDetections(fused, crowns, geometry)
+        fused = Union().combine(boxRun.fold(block).inRegion(geometry),
+                                pointRun.fold(block).inRegion(geometry),
+                                boxRun.threshold(block))
+        scores[block] = evaluator.score(fused, geometry)
     return scores
 
 
@@ -65,14 +64,16 @@ def row(name, scores):
 def compare(args):
     meta = dp.loadDataset(args.dataset)
     crowns, _ = readCrowns(meta["crownsPath"], meta["crs"])
+    evaluator = Evaluator(CrownFrame(crowns))
     allBlocks = dict(meta["blockGeometries"])
     named = [("deepforest", args.deepforest), ("ccOnDeepforest", args.ccAuto)]
     named += [tuple(r.split("=", 1)) for r in args.reference]
-    runs = {n: MethodRun(n, d, allBlocks) for n, d in named}
+    runs = {n: RunSet.load(d) for n, d in named}
     blocks = sharedBlocks(allBlocks, list(runs.values()))
-    scores = {n: blockScores(r, blocks, crowns) for n, r in runs.items()}
+    scores = {n: blockScores(r, blocks, evaluator, allBlocks)
+              for n, r in runs.items()}
     scores["union"] = unionScores(runs["deepforest"], runs["ccOnDeepforest"],
-                                  blocks, crowns)
+                                  blocks, evaluator)
     rows = [row(n, s) for n, s in scores.items()]
     tests = {other: {k: paired(scores["union"], scores[other], k)
                      for k in ("f1", "weighted")}

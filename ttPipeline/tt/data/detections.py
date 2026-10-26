@@ -74,8 +74,8 @@ class Detections(object):
     def subset(self, keep):
         """The detections selected by a boolean mask or index array."""
         keep = np.asarray(keep)
-        if keep.dtype == bool:
-            keep = np.flatnonzero(keep)
+        keep = np.flatnonzero(keep) if keep.dtype == bool \
+            else keep.astype(np.intp)
         pick = lambda items: None if items is None else [items[i] for i in keep]
         out = Detections(
             self.x[keep], self.y[keep], self.scores[keep],

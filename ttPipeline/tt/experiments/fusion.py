@@ -11,91 +11,108 @@ on the same block would look better than it is by exactly the margin under
 test.
 """
 
-import itertools
 import json
 import os
 
 import numpy as np
 
-from ..detectors.fusion import BY_NAME, HEIGHT_STRATEGIES, STRATEGIES
+from ..detectors.fusion import (BY_NAME, HEIGHT_STRATEGIES, REDUCED,
+                                STRATEGIES, TRIPLE)
 from ..scoring.evaluator import Evaluator
 from .runset import poolFolds, sharedBlocks
 
 
-def expand(parameters):
-    keys = list(parameters)
-    return [dict(zip(keys, values))
-            for values in itertools.product(*[parameters[k] for k in keys])]
-
-
 class FusionCrossValidation(object):
+    """
+    Strategies combining the members' saved runs, tuned per fold on the
+    validation block. runs: the members' RunSets in the order the strategies
+    take them; flooredMembers: the members kept at their own operating point
+    before combining (the point detector: CC's runs record none, so for CC it
+    is everything; a CHM network entering as points is cut at its own).
+    """
 
-    def __init__(self, reference, blocks, boxRun, pointRun, surface=None,
-                 heightSurface=None, strategies=None, objective=None,
-                 verbose=True):
-        """
-        reference: what is scored against (a scoring.Reference); blocks:
-        {name: geometry}; boxRun, pointRun: RunSets; surface: the saddle
-        rule's SaddleSurface; heightSurface: a SaddleSurface over the height
-        model with no minimum height, for the height filter.
-        """
+    def __init__(self, reference, blocks, runs, strategies, flooredMembers=(-1,),
+                 objective=None, verbose=True):
         self.evaluator = Evaluator(reference, objective)
         self.allBlocks = dict(blocks)
-        self.boxRun, self.pointRun = boxRun, pointRun
-        self.blocks = sharedBlocks(blocks, (boxRun, pointRun), verbose)
-        self.surface, self.heightSurface = surface, heightSurface
+        self.runs = list(runs)
+        self.blocks = sharedBlocks(blocks, self.runs, verbose)
+        self.strategies = {s.name: s for s in strategies}
+        self.floored = {i % len(self.runs) for i in flooredMembers}
+        self.verbose = verbose
+        self.outputs = {}
+
+    @classmethod
+    def pair(cls, reference, blocks, boxRun, pointRun, surface=None,
+             heightSurface=None, strategies=None, objective=None,
+             verbose=True):
+        """
+        A box run with a point run: every two-member strategy the given
+        surfaces allow (the saddle ones need `surface`, the height filter
+        `heightSurface`), or the ones named.
+        """
         classes = [s for s in STRATEGIES
                    if surface is not None or not s.needsSurface]
         if heightSurface is not None:
             classes += HEIGHT_STRATEGIES
         if strategies:
             classes = [BY_NAME[name] for name in strategies]
-        self.strategies = {c.name: c(surface, heightSurface) for c in classes}
-        self.verbose = verbose
-        self.outputs = {}
+        return cls(reference, blocks, (boxRun, pointRun),
+                   [c(surface, heightSurface) for c in classes],
+                   objective=objective, verbose=verbose)
+
+    @classmethod
+    def threeWay(cls, reference, blocks, rgbRun, chmRun, ccRun, surface,
+                 reduced=False, objective=None, verbose=True):
+        """The RGB network, the CHM network and CC (Triple, or the reduced
+        versions: the union, unionClean and agreeClean)."""
+        classes = REDUCED if reduced else TRIPLE
+        return cls(reference, blocks, (rgbRun, chmRun, ccRun),
+                   [c(surface) for c in classes], objective=objective,
+                   verbose=verbose)
 
     def _foldInputs(self, block):
-        """Boxes and points on this fold's validation and test blocks."""
-        validationBlock, boxValidation = self.boxRun.validation(
-            block, self.allBlocks)
-        _, pointValidation = self.pointRun.validation(block, self.allBlocks)
-        floor = self.pointRun.threshold(block)
-        pointValidation = pointValidation.aboveScore(floor)
-        pointTest = self.pointRun.fold(block).aboveScore(floor)
-        boxTest = self.boxRun.fold(block)
+        """Every member on this fold's validation and test blocks."""
+        validationBlock = None
+        validation, test = [], []
+        for index, run in enumerate(self.runs):
+            named, detections = run.validation(block, self.allBlocks)
+            validationBlock = validationBlock or named
+            held = run.fold(block)
+            if index in self.floored:
+                floor = run.threshold(block)
+                detections = detections.aboveScore(floor)
+                held = held.aboveScore(floor)
+            validation.append(detections)
+            test.append(held)
         # geometry from every block: a block a model skipped as a test fold
         # can still be another fold's validation block
-        region, test = self.allBlocks[validationBlock], self.allBlocks[block]
+        region, area = self.allBlocks[validationBlock], self.allBlocks[block]
         inputs = {"validationBlock": validationBlock,
-                  "boxThreshold": self.boxRun.threshold(block),
-                  "validation": (boxValidation.inRegion(region),
-                                 pointValidation.inRegion(region)),
-                  "test": (boxTest.inRegion(test), pointTest.inRegion(test))}
-        if self.surface is not None:
+                  "thresholds": [run.threshold(block) for run in self.runs],
+                  "validation": [d.inRegion(region) for d in validation],
+                  "test": [d.inRegion(area) for d in test]}
+        surfaces = {s.surface for s in self.strategies.values()
+                    if s.needsSurface and s.members == 2} - {None}
+        for surface in surfaces:
             # once per fold, before any strategy takes a subset
             for split in ("validation", "test"):
                 for detections in inputs[split]:
-                    self.surface.apexes(detections)
+                    surface.apexes(detections)
         return inputs
 
     def _score(self, detections, block):
         return self.evaluator.score(detections, self.allBlocks[block])
 
-    def tune(self, name, inputs):
+    def tune(self, strategy, inputs):
         """The strategy's setting that scores best on the validation block."""
-        strategy = self.strategies[name]
-        parameters = strategy.parameters
-        if name == "boxes":
-            # the box model alone, at the threshold it chose for itself
-            return {"threshold": inputs["boxThreshold"]}, None
-        if name == "boxesHigh":
-            # the same threshold: only the height filter is tuned
-            parameters = dict(parameters, threshold=[inputs["boxThreshold"]])
-        boxes, points = inputs["validation"]
+        settings = strategy.settings()
+        if not strategy.tuned:
+            return settings[0], None
         best, bestScore = {}, -1.0
-        for setting in expand(parameters):
+        for setting in settings:
             score = self.evaluator.objectiveOf(self._score(
-                strategy.combine(boxes, points, **setting),
+                strategy.combine(*inputs["validation"], **setting),
                 inputs["validationBlock"]))
             if score > bestScore:
                 best, bestScore = setting, score
@@ -104,12 +121,15 @@ class FusionCrossValidation(object):
     def runFold(self, block):
         """Every strategy on one fold: its score, setting and output."""
         inputs = self._foldInputs(block)
-        boxes, points = inputs["test"]
         results = {}
         for name, strategy in self.strategies.items():
-            setting, validationScore = self.tune(name, inputs)
-            output = strategy.combine(boxes, points, **setting)
+            strategy.memberThresholds = inputs["thresholds"]
+            setting, validationScore = self.tune(strategy, inputs)
+            output = strategy.combine(*inputs["test"], **setting)
             result = self._score(output, block)
+            if strategy.infiniteAsNone:
+                setting = {k: (None if not np.isfinite(v) else v)
+                           for k, v in setting.items()}
             result.update(block=block, setting=setting,
                           validationF1=validationScore, output=output)
             results[name] = result

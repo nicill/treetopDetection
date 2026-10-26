@@ -3,6 +3,9 @@ What detections are scored against: the annotated crowns, or crowns that
 stand in for them (pseudo-crowns built from another detector's output).
 """
 
+import geopandas as gpd
+from shapely.geometry import box
+
 from ..data.annotations import crownsInRegion
 
 
@@ -35,6 +38,23 @@ class CrownFrame(Reference):
 
     def __init__(self, frame):
         self.frame = frame
+
+    def crowns(self):
+        return self.frame
+
+
+class BoxCrowns(Reference):
+    """
+    Another detector's boxes standing in for crowns (pseudo-crowns): to tune a
+    detector where no crowns were drawn. They are worth what that detector is
+    worth: a tree it missed counts against a setting that finds it.
+    """
+
+    def __init__(self, detections, crs=None):
+        self.detections = detections
+        self.frame = gpd.GeoDataFrame(
+            geometry=[box(*b) for b in detections.boxesOrPoints()],
+            crs=crs if crs is not None else detections.crs)
 
     def crowns(self):
         return self.frame

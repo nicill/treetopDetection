@@ -1387,16 +1387,21 @@ class TestPseudoTuning(unittest.TestCase):
     """The pseudo scorers pick settings without the crowns; scored with them."""
 
     def testExactlyOneShare(self):
-        from tt.pseudoTuning import exactlyOneShare
+        from tt.data import Detections
+        from tt.experiments.pseudo import exactlyOneShare
         boxes = np.array([[0, 0, 2, 2], [5, 5, 7, 7], [10, 10, 12, 12]], float)
-        points = np.array([[1, 1], [6, 6], [6.5, 6.5]], float)
+        points = Detections([1, 6, 6.5], [1, 6, 6.5])
         self.assertAlmostEqual(exactlyOneShare(points, boxes), 1.0 / 3)
-        self.assertEqual(exactlyOneShare(np.zeros((0, 2)), boxes), 0.0)
+        self.assertEqual(exactlyOneShare(Detections([], []), boxes), 0.0)
 
     def testChosenSettingIsScoredOnTheRealCrowns(self):
-        from tt.pseudoTuning import tuneBlock
+        from tt.experiments.pseudo import BlockScores
+        from tt.scoring import Evaluator, F1
 
-        class Stub(object):
+        class Stub(BlockScores):
+            def __init__(self):
+                self.real = Evaluator(None, F1())
+
             def realScores(self):
                 return [{"crowns": 10, "f1": f, "hits": 0, "predictions": 0,
                          "repeats": 0, "falsePositives": 0, "recall": f,
@@ -1406,7 +1411,7 @@ class TestPseudoTuning(unittest.TestCase):
                 # pseudoF1 prefers setting 2, the zones setting 1
                 return {"pseudoF1": [0.1, 0.2, 0.3], "zones@0.9": [0.2, 0.8, 0.5]}
 
-        rows = tuneBlock(Stub())
+        rows = Stub().tune()
         self.assertEqual(rows["real"]["chosen"], 1)
         self.assertAlmostEqual(rows["pseudoF1"]["f1"], 0.7)
         self.assertAlmostEqual(rows["zones@0.9"]["f1"], 0.9)
@@ -1422,14 +1427,17 @@ class TestPseudoTuning(unittest.TestCase):
         self.assertEqual(HEIGHT_SOURCE["ccAutoP1"], "p1")
 
     def testDetectionsRoundTrip(self):
-        from tt.dl.dlConComp import loadDetections, saveDetections
+        from tt.data import Detections
+        from tt.experiments.crossValidation import (CrossValidation,
+                                                    loadAllDetections)
         path = os.path.join(tempfile.mkdtemp(), "d.npz")
-        detections = [[{"centreX": 1.0, "centreY": 2.0, "score": 3.0}], []]
-        saveDetections(path, detections)
-        back = loadDetections(path)
+        holder = object.__new__(CrossValidation)
+        holder.detections = [Detections([1.0], [2.0], [3.0]), Detections([], [])]
+        holder.saveAllDetections(path)
+        back = loadAllDetections(path)
         self.assertEqual(len(back), 2)
-        self.assertEqual((back[0][0]["centreX"], back[0][0]["score"]), (1.0, 3.0))
-        self.assertEqual(back[1], [])
+        self.assertEqual((back[0].x[0], back[0].scores[0]), (1.0, 3.0))
+        self.assertEqual(len(back[1]), 0)
 
 
 class CurveSite(unittest.TestCase):
@@ -2216,7 +2224,7 @@ class TestHeightFilter(unittest.TestCase):
                                   geometry=[Point(c + 0.5, 60 - r - 0.5).buffer(3)
                                             for r, c in self.trees])
         blocks = {"s_b00": shapeBox(0, 0, 60, 60), "s_b01": shapeBox(0, 0, 60, 60)}
-        validation = FusionCrossValidation(
+        validation = FusionCrossValidation.pair(
             CrownFrame(crowns), blocks,
             Run(self.boxes(self.trees + self.bushes), 0.5),
             Run(Detections([], []), -np.inf),
@@ -2243,17 +2251,20 @@ class TestAutoScorer(unittest.TestCase):
 
     def testEachScorerWritesItsOwnChoices(self):
         import json
+        import types
+        from tt.data import Detections
+        from tt.experiments.pseudo import PseudoTuning
         from tt.pseudoTuning import AUTO_SCORER, parseArguments, writeAutoRun
         d = tempfile.mkdtemp(prefix="ttAuto")
         try:
-            found = [[{"centreX": 1.0, "centreY": 1.0, "score": 1.0}],
-                     [{"centreX": 2.0, "centreY": 2.0, "score": 1.0}]]
+            found = [Detections([1.0], [1.0], [1.0]), Detections([2.0], [2.0], [1.0])]
+            tuning = PseudoTuning.__new__(PseudoTuning)
+            tuning.detections, tuning.data = found, types.SimpleNamespace(name="s")
             row = lambda chosen: {"chosen": chosen, "recall": 1.0}
             perBlock = {"s_b00": {AUTO_SCORER: row(0), "zones@0.7": row(1)}}
             for scorer, expected in ((AUTO_SCORER, 1.0), ("zones@0.7", 2.0)):
                 out = os.path.join(d, scorer)
-                writeAutoRun(os.path.join(d, "ccP1"), perBlock, found, {},
-                             out, scorer)
+                writeAutoRun(tuning, perBlock, {}, out, scorer)
                 saved = json.load(open(os.path.join(out, "predictions_s_b00.json")))
                 self.assertEqual(saved["predictions"][0]["centreX"], expected)
             args = parseArguments(["--ccRun", "a", "--rgbRun", "b", "--dataset",
@@ -2346,106 +2357,121 @@ class TestTreeWeights(unittest.TestCase):
         self.assertEqual(frozen, {"conv1", "layer1"})
 
 
+def fusionBoxes(*items, half=1.5):
+    """Detections from (x, y, score) boxes."""
+    from tt.data import Detections
+    xs = [x for x, _, _ in items]
+    ys = [y for _, y, _ in items]
+    return Detections(xs, ys, [sc for _, _, sc in items], geometry="boxes",
+                      boxes=[[x - half, y - half, x + half, y + half]
+                             for x, y in zip(xs, ys)])
+
+
+def fusionTops(*items):
+    """Point Detections from (x, y, prominence), the prominence given."""
+    from tt.data import Detections
+    tops = Detections([x for x, _, _ in items], [y for _, y, _ in items],
+                      [1.0] * len(items))
+    tops.cache["prominence"] = np.array([p for _, _, p in items], float)
+    return tops
+
+
+def givenProminence(cls):
+    """A three-way strategy reading the prominence the tops carry."""
+
+    class Given(cls):
+        def prominence(self, points):
+            return points.cache["prominence"]
+
+    return Given()
+
+
 class TestTripleFusion(unittest.TestCase):
     """RGB and CHM networks agreeing, CC voting, CC adding prominent tops."""
 
-    @staticmethod
-    def box(x, y, score, half=1.5):
-        return {"box": [x - half, y - half, x + half, y + half], "score": score,
-                "centreX": x, "centreY": y}
-
-    @staticmethod
-    def top(x, y, prominence):
-        return {"box": [x, y, x, y], "score": 1.0, "centreX": x, "centreY": y,
-                "prominence": prominence}
-
     def testAgreementVoteAndAdditions(self):
-        from tt.tripleFusion import triple
-        rgb = [self.box(0, 0, 0.40), self.box(10, 0, 0.80), self.box(30, 0, 0.25)]
-        chm = [self.box(0.2, 0, 0.40), self.box(20, 0, 0.60), self.box(30.1, 0, 0.25),
-               self.box(40, 0, 0.05)]
-        cc = [self.top(20, 0.5, 1.0),                    # inside the lone CHM box at 20
-              self.top(50, 0, 3.0),                      # free, prominent
-              self.top(60, 0, 0.2),                      # free, not prominent
-              self.top(39.5, 0, 3.0), self.top(40.5, 0, 2.5)]   # two in one CHM box
+        from tt.detectors.fusion import Triple
+        triple = givenProminence(Triple)
+        rgb = fusionBoxes((0, 0, 0.40), (10, 0, 0.80), (30, 0, 0.25))
+        chm = fusionBoxes((0.2, 0, 0.40), (20, 0, 0.60), (30.1, 0, 0.25),
+                          (40, 0, 0.05))
+        cc = fusionTops((20, 0.5, 1.0),                  # inside the lone CHM box at 20
+                        (50, 0, 3.0),                    # free, prominent
+                        (60, 0, 0.2),                    # free, not prominent
+                        (39.5, 0, 3.0), (40.5, 0, 2.5))  # two in one CHM box
         off = float("inf")
+        xs = lambda out: sorted(round(x, 1) for x in out.x)
         # agreement only: the pair at 0 (both 0.40 >= low) and the confident RGB box
-        out = triple(rgb, chm, cc, high=0.7, low=0.3, vote=off, prominence=off)
-        self.assertEqual(sorted(round(p["centreX"]) for p in out), [0, 10])
-        # the pair at 30 is too weak for low=0.3
-        self.assertNotIn(30, [round(p["centreX"]) for p in out])
+        out = triple.combine(rgb, chm, cc, high=0.7, low=0.3, vote=off, prominence=off)
+        self.assertEqual(xs(out), [0.0, 10.0])
         # CC's vote rescues the CHM box at 20 (0.60 >= vote) that holds a top
-        out = triple(rgb, chm, cc, high=0.7, low=0.3, vote=0.5, prominence=off)
-        self.assertEqual(sorted(round(p["centreX"]) for p in out), [0, 10, 20])
+        out = triple.combine(rgb, chm, cc, high=0.7, low=0.3, vote=0.5, prominence=off)
+        self.assertEqual(xs(out), [0.0, 10.0, 20.0])
         # prominent free tops are added; of the two in one CHM box, one only
-        out = triple(rgb, chm, cc, high=0.7, low=0.3, vote=off, prominence=2.0)
-        xs = sorted(round(p["centreX"], 1) for p in out)
-        self.assertEqual(xs, [0.0, 10.0, 39.5, 50.0])
+        out = triple.combine(rgb, chm, cc, high=0.7, low=0.3, vote=off, prominence=2.0)
+        self.assertEqual(xs(out), [0.0, 10.0, 39.5, 50.0])
 
     def testOnePerPair(self):
-        from tt.tripleFusion import triple
-        rgb, chm = [self.box(0, 0, 0.9)], [self.box(0.3, 0.2, 0.95)]
-        out = triple(rgb, chm, [], high=0.5, low=0.3, vote=float("inf"),
-                     prominence=float("inf"))
+        from tt.detectors.fusion import Triple
+        out = givenProminence(Triple).combine(
+            fusionBoxes((0, 0, 0.9)), fusionBoxes((0.3, 0.2, 0.95)), fusionTops(),
+            high=0.5, low=0.3, vote=float("inf"), prominence=float("inf"))
         self.assertEqual(len(out), 1)
-        self.assertAlmostEqual(out[0]["score"], 0.95)
+        self.assertAlmostEqual(out.scores[0], 0.95)
 
     def testProminence(self):
         from affine import Affine
-        from tt.fusion import SaddleSurface
-        from tt.tripleFusion import prominenceAt
+        from tt.detectors.fusion import SaddleSurface, prominenceAt
         rows, columns = np.mgrid[0:80, 0:80].astype(float)
         chm = np.maximum(5 * np.clip(1 - np.hypot(rows - 40, columns - 20) / 8, 0, 1),
                          np.maximum(6 * np.clip(1 - np.hypot(rows - 40, columns - 50) / 8, 0, 1),
                                     0.0)).astype(np.float32)
         surface = SaddleSurface(chm, Affine(1, 0, 0, 0, -1, 80), 1.0, dropM=0.5)
-        x, y = 20.5, 80 - 40.5
-        self.assertAlmostEqual(prominenceAt(surface, x, y), 5.0, delta=0.15)
+        self.assertAlmostEqual(prominenceAt(surface, 20.5, 80 - 40.5), 5.0, delta=0.15)
         self.assertAlmostEqual(prominenceAt(surface, 50.5, 80 - 40.5), 6.0, delta=0.15)
+        tops = fusionTops((20.5, 39.5, 0), (50.5, 39.5, 0))
+        np.testing.assert_allclose(surface.prominences(tops), [5.0, 6.0], atol=0.15)
 
 
 class TestReducedFusion(unittest.TestCase):
     """The union plus one idea each: off = the union, cleaning keeps one top per CHM box."""
 
-    box = staticmethod(TestTripleFusion.box)
-    top = staticmethod(TestTripleFusion.top)
-
     def testCleaningKeepsTheMostProminentTopPerChmBox(self):
-        from tt.tripleFusion import cleanedTops
-        chm = [self.box(0, 0, 0.8), self.box(20, 0, 0.15)]
-        tops = [self.top(-0.5, 0, 1.0), self.top(0.6, 0, 3.0), self.top(10, 10, 0.5),
-                self.top(19.5, 0, 2.0), self.top(20.5, 0, 1.0)]
-        xs = lambda out: sorted(round(t["centreX"], 1) for t in out)
+        from tt.detectors.fusion import UnionClean
+        strategy = givenProminence(UnionClean)
+        chm = fusionBoxes((0, 0, 0.8), (20, 0, 0.15))
+        tops = fusionTops((-0.5, 0, 1.0), (0.6, 0, 3.0), (10, 10, 0.5),
+                          (19.5, 0, 2.0), (20.5, 0, 1.0))
+        xs = lambda out: sorted(round(x, 1) for x in out.x)
         # CHM box at 0 (score 0.8) groups the first two; the one at 20 needs cleanAt <= 0.15
-        self.assertEqual(xs(cleanedTops(tops, chm, 0.5)), [0.6, 10, 19.5, 20.5])
-        self.assertEqual(xs(cleanedTops(tops, chm, 0.1)), [0.6, 10, 19.5])
-        self.assertEqual(xs(cleanedTops(tops, chm, float("inf"))), xs(tops))
+        self.assertEqual(xs(strategy.cleanedTops(tops, chm, 0.5)), [0.6, 10, 19.5, 20.5])
+        self.assertEqual(xs(strategy.cleanedTops(tops, chm, 0.1)), [0.6, 10, 19.5])
+        self.assertEqual(xs(strategy.cleanedTops(tops, chm, float("inf"))), xs(tops))
 
     def testOffIsTheUnion(self):
-        from tt.fusion import union
-        from tt.tripleFusion import unionClean
-        rgb = [self.box(0, 0, 0.9), self.box(10, 0, 0.4), self.box(30, 0, 0.7)]
-        chm = [self.box(20, 0, 0.9)]
-        cc = [self.top(0.2, 0, 1.0), self.top(10, 0, 2.0), self.top(19.5, 0, 1.0),
-              self.top(20.5, 0, 3.0), self.top(50, 0, 1.0)]
+        from tt.detectors.fusion import Union, UnionClean
+        rgb = fusionBoxes((0, 0, 0.9), (10, 0, 0.4), (30, 0, 0.7))
+        chm = fusionBoxes((20, 0, 0.9))
+        cc = fusionTops((0.2, 0, 1.0), (10, 0, 2.0), (19.5, 0, 1.0), (20.5, 0, 3.0),
+                        (50, 0, 1.0))
+        clean = givenProminence(UnionClean)
         for threshold in (0.3, 0.5, 0.8):
-            a = union(rgb, cc, threshold)
-            b = unionClean(rgb, chm, cc, threshold, float("inf"))
-            self.assertEqual([(p["centreX"], p["score"]) for p in a],
-                             [(p["centreX"], p["score"]) for p in b])
-        cleaned = unionClean(rgb, chm, cc, 0.5, 0.5)
-        self.assertEqual(len(cleaned), len(union(rgb, cc, 0.5)) - 1)   # 19.5 and 20.5 -> one
+            a = Union().combine(rgb, cc, threshold)
+            b = clean.combine(rgb, chm, cc, threshold, float("inf"))
+            self.assertEqual(list(zip(a.x, a.scores)), list(zip(b.x, b.scores)))
+        cleaned = clean.combine(rgb, chm, cc, 0.5, 0.5)
+        self.assertEqual(len(cleaned), len(Union().combine(rgb, cc, 0.5)) - 1)
 
     def testAgreedBoxesFixedRules(self):
-        from tt.tripleFusion import agreedBoxes
-        rgb = [self.box(0, 0, 0.30), self.box(10, 0, 0.10), self.box(30, 0, 0.60)]
-        chm = [self.box(0.1, 0, 0.30), self.box(10.1, 0, 0.40), self.box(50, 0, 0.55),
-               self.box(60, 0, 0.10)]
-        out = agreedBoxes(rgb, chm, rgbAt=0.5, chmAt=0.5)
-        xs = sorted(round(p["centreX"]) for p in out)
+        from tt.detectors.fusion import AgreeClean
+        strategy = AgreeClean()
+        strategy.memberThresholds = [0.5, 0.5, -np.inf]
+        rgb = fusionBoxes((0, 0, 0.30), (10, 0, 0.10), (30, 0, 0.60))
+        chm = fusionBoxes((0.1, 0, 0.30), (10.1, 0, 0.40), (50, 0, 0.55), (60, 0, 0.10))
+        out = strategy.agreed(rgb, chm)
         # pair at 0: both at 0.30 >= half of 0.5 -> kept; pair at 10: 0.10 < 0.25 and
         # 0.40 < 0.5 -> dropped; lone RGB 30 (0.60) and lone CHM 50 (0.55) kept; lone 60 dropped
-        self.assertEqual(xs, [0, 30, 50])
+        self.assertEqual(sorted(round(x) for x in out.x), [0, 30, 50])
 
 
 class TestCurveRowsOfAnotherNetwork(unittest.TestCase):

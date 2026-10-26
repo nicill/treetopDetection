@@ -96,7 +96,7 @@ class Evidence(object):
         return results
 
     def _fusePair(self, box, height):
-        validation = FusionCrossValidation(
+        validation = FusionCrossValidation.pair(
             CrownFrame(self.scene.crowns), dict(self.blocks),
             RunSet.load(self.runs[box].runDir),
             RunSet.load(self.runs[height].runDir),
