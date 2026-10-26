@@ -1209,17 +1209,26 @@ class TestSiteAnalysis(unittest.TestCase):
                             for x, y in centres]
         self.region = box(-5, -5, 40, 10)
 
+    def analysis(self):
+        import types
+        from tt.analysis import Analysis
+        from tt.scoring import CrownFrame
+        return Analysis(types.SimpleNamespace(area=None, blocks=[]),
+                        surface=False, reference=CrownFrame(self.crowns))
+
+    def detections(self):
+        from tt.data import Detections
+        return Detections.fromPredictions(self.predictions)
+
     def testTheShiftIsFound(self):
-        from tt.siteAnalysis import offsetScan
-        result = offsetScan(self.predictions, self.crowns, self.region)
+        result = self.analysis().offsetScan(self.detections(), self.region)
         self.assertEqual([round(v, 1) for v in result["bestShiftM"]],
                          [-0.5, 0.0])
         self.assertAlmostEqual(result["unshiftedF1"], 0.0)
         self.assertAlmostEqual(result["bestF1"], 1.0)
 
     def testGrowingTheCrownsRecoversEdgeTops(self):
-        from tt.siteAnalysis import tolerance
-        result = tolerance(self.predictions, self.crowns, self.region)
+        result = self.analysis().tolerance(self.detections(), self.region)
         self.assertAlmostEqual(result["0.25"]["f1"], 1.0)   # 0.3 + 0.25 > 0.5
 
 
@@ -1227,14 +1236,11 @@ class TestSharedBlocks(unittest.TestCase):
     """A block a learned model skipped is left out, by name or _bNN suffix."""
 
     def testOnlyBlocksEveryRunHas(self):
-        from tt.comparison import MethodRun, sharedBlocks
-        directory = tempfile.mkdtemp()
-        for name in ("site_b00", "site_b01"):
-            with open(os.path.join(directory, "predictions_%s.json" % name),
-                      "w") as handle:
-                handle.write("{}")
-        run = MethodRun.__new__(MethodRun)
-        run.runDir = directory
+        from tt.data import Detections
+        from tt.experiments import RunSet
+        from tt.experiments.runset import sharedBlocks
+        run = RunSet("m", "site", [], {}, predictions={
+            name: Detections([], []) for name in ("site_b00", "site_b01")})
         self.assertTrue(run.has("site_b00"))
         self.assertTrue(run.has("other_b01"))      # matched by suffix
         self.assertFalse(run.has("site_b02"))

@@ -8,6 +8,7 @@ and the clip to the area are decided once.
 
 import geopandas as gpd
 import numpy as np
+from rasterio.features import geometry_mask
 from shapely import affinity, contains_xy, make_valid
 
 
@@ -101,32 +102,36 @@ class Annotations(object):
         return crownsInRegion(self.crowns, region)
 
     def tops(self, surface):
-        """
-        The highest surface pixel of every crown, as world (x, y, height);
-        NaN for a crown with no canopy under it. Each polygon is rasterised
-        alone: these crowns overlap and a shared label raster loses overlaps.
-        """
-        from rasterio.features import geometry_mask
-        out = np.full((len(self.crowns), 3), np.nan)
-        for index, geometry in enumerate(self.crowns.geometry):
-            if geometry is None or geometry.is_empty:
-                continue
-            minX, minY, maxX, maxY = geometry.bounds
-            c0, r1 = surface.toPixel(minX, minY)
-            c1, r0 = surface.toPixel(maxX, maxY)
-            c0, r0 = max(0, int(np.floor(c0))), max(0, int(np.floor(r0)))
-            c1 = min(surface.shape[1], int(np.ceil(c1)) + 1)
-            r1 = min(surface.shape[0], int(np.ceil(r1)) + 1)
-            if c1 <= c0 or r1 <= r0:
-                continue
-            window = surface.chm[r0:r1, c0:c1]
-            transform = surface.transform @ surface.transform.translation(c0, r0)
-            inside = ~geometry_mask([geometry], out_shape=window.shape,
-                                    transform=transform, all_touched=True)
-            masked = np.where(inside, window, 0.0)
-            if masked.max() <= 0:
-                continue
-            row, column = np.unravel_index(int(masked.argmax()), masked.shape)
-            east, north = surface.toWorld(c0 + column, r0 + row)
-            out[index] = (east, north, masked[row, column])
-        return out
+        """The highest surface pixel of every crown (crownTops)."""
+        return crownTops(self.crowns, surface)
+
+
+def crownTops(crowns, surface):
+    """
+    The highest surface pixel of every crown, as world (x, y, height); NaN
+    for a crown with no canopy under it. Each polygon is rasterised alone:
+    these crowns overlap and a shared label raster loses overlaps.
+    """
+    out = np.full((len(crowns), 3), np.nan)
+    for index, geometry in enumerate(crowns.geometry):
+        if geometry is None or geometry.is_empty:
+            continue
+        minX, minY, maxX, maxY = geometry.bounds
+        c0, r1 = surface.toPixel(minX, minY)
+        c1, r0 = surface.toPixel(maxX, maxY)
+        c0, r0 = max(0, int(np.floor(c0))), max(0, int(np.floor(r0)))
+        c1 = min(surface.shape[1], int(np.ceil(c1)) + 1)
+        r1 = min(surface.shape[0], int(np.ceil(r1)) + 1)
+        if c1 <= c0 or r1 <= r0:
+            continue
+        window = surface.chm[r0:r1, c0:c1]
+        transform = surface.transform @ surface.transform.translation(c0, r0)
+        inside = ~geometry_mask([geometry], out_shape=window.shape,
+                                transform=transform, all_touched=True)
+        masked = np.where(inside, window, 0.0)
+        if masked.max() <= 0:
+            continue
+        row, column = np.unravel_index(int(masked.argmax()), masked.shape)
+        east, north = surface.toWorld(c0 + column, r0 + row)
+        out[index] = (east, north, masked[row, column])
+    return out

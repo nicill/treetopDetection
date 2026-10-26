@@ -17,7 +17,7 @@ import os
 import sys
 
 from .alignment import Alignment
-from .analysis import MissAnalysis
+from .missAnalysis import MissAnalysis
 from .detector import ConCompDetector
 from .evaluation import CrownEvaluator
 from .merging import TopMerger, METRICS

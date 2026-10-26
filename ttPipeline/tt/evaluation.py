@@ -13,10 +13,10 @@ specific claim.
 """
 
 import numpy as np
-from scipy.spatial import cKDTree
 from shapely.geometry import Point
 
-from .scoring.evaluator import assignToCrowns
+from .analysis.statistics import splitBackground
+from .scoring.evaluator import assignToCrowns  # noqa: F401
 from .tops import Tops
 
 
@@ -135,36 +135,3 @@ class CrownEvaluator(object):
         return splitBackground(world[:, 0], world[:, 1], tops.heights,
                                classification.kinds, neighbourhood,
                                canopyFraction)
-
-
-def splitBackground(xs, ys, heights, kinds, neighbourhood=12.0,
-                    canopyFraction=0.7):
-    """
-    Split background detections into canopy-level, low and unknown.
-
-    A detection outside every crown but standing at a height consistent with
-    the confirmed trees around it is most likely a tree nobody drew. One well
-    below the local canopy is scrub, a branch or ground. The reference is the
-    median height of hits within `neighbourhood` metres, so a short tree in a
-    short stand is not penalised for being short. Works on any point set, so a
-    box detector's centres are split by exactly the rule the tops are.
-    """
-    positions = np.column_stack([xs, ys])
-    heights = np.asarray(heights, float)
-    hits = [i for i, k in enumerate(kinds) if k == "hit"]
-    background = [i for i, k in enumerate(kinds) if k == "background"]
-    split = {"canopy": [], "low": [], "unknown": []}
-    if not hits:
-        split["unknown"] = background
-        return split
-
-    tree = cKDTree(positions[hits])
-    for index in background:
-        neighbours = tree.query_ball_point(positions[index], neighbourhood)
-        if not neighbours:
-            split["unknown"].append(index)
-            continue
-        reference = np.median(heights[[hits[j] for j in neighbours]])
-        split["canopy" if heights[index] >= canopyFraction * reference
-              else "low"].append(index)
-    return split

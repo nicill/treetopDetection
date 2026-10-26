@@ -22,11 +22,13 @@ import numpy as np
 from scipy.stats import wilcoxon
 
 from . import reportFigures as figures
-from .comparison import MethodRun, TreeComparison, matchBlock
+from .analysis import Analysis
+from .data.site import Block, TDData
 from .dl import dlCommon as dc
 from .dl import dlPrepare as dp
 from .detectors.fusion import SaddleSurface
 from .experiments import RunSet
+from .experiments.runset import matchBlock
 from .experiments.fusion import FusionCrossValidation
 from .scoring import CrownFrame
 from .odt import OdtDocument
@@ -55,9 +57,13 @@ class Evidence(object):
         self.cv = self._loadCv(args.cv)
         self.sweeps = {spec.split("=", 1)[0]: dc.loadJson(spec.split("=", 1)[1])
                        for spec in args.sweep}
+        self.site = TDData.fromFiles(
+            "site", chm=args.lidarChm, crowns=args.crowns, area=args.boundary,
+            heightSource="LiDAR",
+            blocks=[Block(n, g) for n, g in self.blocks])
         self.runs = self._loadPredictions(args.cv)
-        self.comparison = (TreeComparison(self.scene, self.runs)
-                           if self.runs else None)
+        self.comparison = (Analysis(self.site).treeByTree(
+            self.runs, dict(self.blocks)) if self.runs else None)
         self.fusion = self._fusion()
 
     def _loadCv(self, specs):
@@ -76,9 +82,11 @@ class Evidence(object):
             if name.endswith("Old"):
                 continue
             try:
-                runs[name] = MethodRun(name, runDir, self.blocks)
+                run = RunSet.load(runDir)
             except FileNotFoundError:
-                pass
+                continue
+            if run.predictions:
+                runs[name] = run
         return runs
 
     def _fusion(self):
@@ -98,8 +106,7 @@ class Evidence(object):
     def _fusePair(self, box, height):
         validation = FusionCrossValidation.pair(
             CrownFrame(self.scene.crowns), dict(self.blocks),
-            RunSet.load(self.runs[box].runDir),
-            RunSet.load(self.runs[height].runDir),
+            self.runs[box], self.runs[height],
             surface=self.surfaceFor(height), verbose=False)
         summary = validation.run()
         folder = os.path.join(self.args.output, "fused", "%s_%s" % (box, height))
@@ -161,8 +168,9 @@ class Evidence(object):
         scene = self.p1Scene if (name.endswith("P1") and self.p1Scene) \
             else self.scene
         points = []
-        for p in self.runs[name].predictions:
-            column, row = scene.toPixel(p["centreX"], p["centreY"])
+        held = self.comparison.detections[name]
+        for x, y in zip(held.x, held.y):
+            column, row = scene.toPixel(x, y)
             column, row = int(column), int(row)
             points.append((column, row, float(scene.chm[row, column])))
         crowns = PseudoCrowns(scene, Tops(points), verbose=False)

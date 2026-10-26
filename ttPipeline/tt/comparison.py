@@ -1,4 +1,8 @@
 """
+TRANSITIONAL: MethodRun, kept for blockImages and tt.legacy.calibration only.
+The maintained equivalents are tt.experiments.RunSet (folds by block,
+held-out detections) and tt.analysis.TreeTable (the tree-by-tree comparison).
+
 Tree-by-tree comparison of detectors from their cross-validated predictions.
 
 Pooled F1 says how well each method does; it does not say whether two methods
@@ -20,17 +24,10 @@ import glob
 import os
 
 import numpy as np
-from scipy.spatial import cKDTree
-from shapely.geometry import Polygon, box as shapelyBox
 
-from .evaluation import assignToCrowns, splitBackground
 from .dl import dlCommon as dc
-
-# radius over which a box detector's centre is given a height: the centre of a
-# crown box can fall in a gap between branches, and the top it stands for is
-# the highest point near it
-HEIGHT_RADIUS_M = 0.75
-
+from .experiments.runset import (matchBlock, nextBlock,  # noqa: F401
+                                sharedBlocks)
 
 class MethodRun(object):
     """One method's held-out predictions, stitched across folds."""
@@ -114,206 +111,6 @@ class MethodRun(object):
     @property
     def isBoxDetector(self):
         return any(p["box"][2] - p["box"][0] > 1.01 for p in self.predictions)
-
-
-def sharedBlocks(blocks, runs, verbose=True):
-    """
-    The blocks every run has a fold for. A learned model skips a block it
-    cannot train or test on while connected components scores every block,
-    so a comparison or combination is made on the blocks they share, and the
-    ones left out are named.
-    """
-    blocks = dict(blocks)
-    kept = {b: g for b, g in blocks.items() if all(r.has(b) for r in runs)}
-    if verbose and len(kept) < len(blocks):
-        print("[blocks] left out, not in every run: %s"
-              % ", ".join(sorted(set(blocks) - set(kept))))
-    return kept
-
-
-class TreeComparison(object):
-
-    def __init__(self, scene, runs):
-        self.scene = scene
-        self.runs = runs
-        self.crowns = scene.crowns
-        _, self.crownPeak = scene.crownPeaks()
-        self.crownArea = self.crowns.geometry.area.to_numpy()
-        centroids = np.column_stack([self.crowns.geometry.centroid.x,
-                                     self.crowns.geometry.centroid.y])
-        self.nearest = cKDTree(centroids).query(centroids, k=2)[0][:, 1]
-        self.results = {name: self._classify(run)
-                        for name, run in runs.items()}
-
-    # ------------------------------------------------------------------ #
-
-    def _classify(self, run):
-        predictions = run.predictions
-        xs = np.array([p["centreX"] for p in predictions])
-        ys = np.array([p["centreY"] for p in predictions])
-        scores = np.array([p["score"] for p in predictions])
-        kinds, hitCrowns, assigned = assignToCrowns(xs, ys, scores,
-                                                    self.crowns)
-        primary = {crown: point for point, crown in assigned.items()
-                   if kinds[point] == "hit"}
-        heights = self.heightsAt(xs, ys)
-        return {"xs": xs, "ys": ys, "scores": scores, "kinds": kinds,
-                "heights": heights, "found": set(primary), "primary": primary,
-                "split": splitBackground(xs, ys, heights, kinds)}
-
-    def heightsAt(self, xs, ys):
-        """The highest CHM value within HEIGHT_RADIUS_M of each point."""
-        radius = self.scene.metresToPixels(HEIGHT_RADIUS_M)
-        rows, columns = self.scene.chm.shape
-        heights = np.zeros(len(xs))
-        for index, (x, y) in enumerate(zip(xs, ys)):
-            column, row = self.scene.toPixel(x, y)
-            column, row = int(column), int(row)
-            window = self.scene.chm[max(0, row - radius):row + radius + 1,
-                                    max(0, column - radius):
-                                    column + radius + 1]
-            heights[index] = float(window.max()) if window.size else 0.0
-        return heights
-
-    # ------------------------------------------------------------------ #
-
-    def scores(self, name):
-        result = self.results[name]
-        total = max(len(result["kinds"]), 1)
-        hits = len(result["found"])
-        recall = hits / float(len(self.crowns))
-        precision = hits / float(total)
-        return {"method": name, "detections": len(result["kinds"]),
-                "hits": hits, "recall": recall, "precision": precision,
-                "f1": (2 * recall * precision / (recall + precision)
-                       if recall + precision else 0.0)}
-
-    def errorBreakdown(self, name):
-        """Where the detections that are not hits went, as counts."""
-        result = self.results[name]
-        split = result["split"]
-        return {"detections": len(result["kinds"]),
-                "hits": result["kinds"].count("hit"),
-                "repeats": result["kinds"].count("repeat"),
-                "canopyLevel": len(split["canopy"]),
-                "belowCanopy": len(split["low"]),
-                "noNeighbour": len(split["unknown"])}
-
-    def missedProfile(self, name):
-        """How the crowns a method missed differ from the ones it found."""
-        found = np.zeros(len(self.crowns), bool)
-        found[list(self.results[name]["found"])] = True
-        return {"missed": int((~found).sum()),
-                "found": profile(found, self.crownArea, self.crownPeak,
-                                 self.nearest),
-                "missedCrowns": profile(~found, self.crownArea,
-                                        self.crownPeak, self.nearest)}
-
-    def agreement(self, first, second):
-        """Crowns found by both, by one only, and by neither."""
-        a, b = self.results[first]["found"], self.results[second]["found"]
-        everything = set(range(len(self.crowns)))
-        groups = {"both": a & b, "only " + first: a - b,
-                  "only " + second: b - a, "neither": everything - a - b}
-        out = {}
-        for label, members in groups.items():
-            mask = np.zeros(len(self.crowns), bool)
-            mask[list(members)] = True
-            out[label] = profile(mask, self.crownArea, self.crownPeak,
-                                 self.nearest)
-        return out
-
-    def crownTable(self):
-        """Per crown: size, height, crowding, and which methods found it."""
-        table = {"area": self.crownArea, "peak": self.crownPeak,
-                 "nearest": self.nearest}
-        for name, result in self.results.items():
-            found = np.zeros(len(self.crowns), bool)
-            found[list(result["found"])] = True
-            table["found_" + name] = found
-        return table
-
-    # ------------------------------------------------------------------ #
-
-    def boxQuality(self, name, polygons=None):
-        """
-        How well each hit's shape matches its crown.
-
-        Box IoU compares the detection's box with the crown's bounding box;
-        shape IoU compares its outline, when it has one, with the crown itself.
-        `polygons` supplies outlines for methods that do not produce them, such
-        as pseudo-crowns for the point detector.
-        """
-        result = self.results[name]
-        predictions = self.runs[name].predictions
-        boxIou, shapeIou = [], []
-        for crown, point in result["primary"].items():
-            geometry = self.crowns.geometry.iloc[crown]
-            outline, predictedBox = _shapes(predictions[point], polygons,
-                                            point)
-            if predictedBox is not None:
-                boxIou.append(_iou(predictedBox,
-                                   shapelyBox(*geometry.bounds)))
-            if outline is not None:
-                shapeIou.append(_iou(outline, geometry))
-        return {"boxIou": np.array(boxIou), "shapeIou": np.array(shapeIou)}
-
-
-# ---------------------------------------------------------------------- #
-
-def matchBlock(name, blocks):
-    """The block called `name`, or the one sharing its _bNN suffix."""
-    if name in blocks:
-        return name
-    suffix = name[name.rindex("_b"):]
-    matches = [b for b in blocks if b.endswith(suffix)]
-    if len(matches) != 1:
-        raise KeyError("no block matching %s" % name)
-    return matches[0]
-
-
-def nextBlock(block, blocks):
-    """The validation-block rule of dlCommon.chooseValidationBlock."""
-    others = sorted(name for name in blocks if name != block)
-    later = [name for name in others if name > block]
-    return later[0] if later else others[0]
-
-
-def profile(mask, area, peak, nearest):
-    """Count and medians of area, height and nearest-neighbour distance."""
-    if not mask.any():
-        return {"count": 0, "area": None, "peak": None, "nearest": None}
-    return {"count": int(mask.sum()),
-            "area": float(np.median(area[mask])),
-            "peak": float(np.median(peak[mask])),
-            "nearest": float(np.median(nearest[mask])),
-            "areaQuartiles": np.percentile(area[mask], [25, 75]).tolist(),
-            "peakQuartiles": np.percentile(peak[mask], [25, 75]).tolist()}
-
-
-def _shapes(prediction, polygons, index):
-    """
-    A hit's outline and box. A box detector supplies both itself; a point
-    detector's come from the supplied pseudo-crowns, box being its bounds.
-    """
-    if polygons is None:
-        return _outline(prediction), shapelyBox(*prediction["box"])
-    outline = polygons[index]
-    return outline, (shapelyBox(*outline.bounds) if outline is not None
-                     else None)
-
-
-def _outline(prediction):
-    ring = prediction.get("polygon")
-    if not ring or len(ring) < 3:
-        return None
-    polygon = Polygon(ring)
-    return polygon if polygon.is_valid else polygon.buffer(0)
-
-
-def _iou(first, second):
-    union = first.union(second).area
-    return first.intersection(second).area / union if union > 0 else 0.0
 
 
 def loadRuns(specs, blocks):

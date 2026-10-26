@@ -22,8 +22,8 @@ import json
 import os
 import sys
 
-import numpy as np
-from scipy.stats import wilcoxon
+
+from .analysis.statistics import pairedTest
 
 METHODS = ("cc", "lmvw", "watershed", "mrcnn")   # mrcnn: on the CHM, when run
 KEYS = ("f1", "weighted")
@@ -37,16 +37,6 @@ def loadRun(path):
     with open(path) as handle:
         result = json.load(handle)
     return result["pooled"], {f["block"]: f for f in result["folds"]}
-
-
-def pairedTest(first, second, key):
-    """(mean difference second - first, p, blocks) over the shared blocks."""
-    shared = sorted(set(first) & set(second))
-    difference = np.array([second[b][key] - first[b][key] for b in shared])
-    if len(shared) < 2:
-        return float("nan"), float("nan"), len(shared)
-    p = float(wilcoxon(difference).pvalue) if np.any(difference) else 1.0
-    return float(difference.mean()), p, len(shared)
 
 
 def compareRuns(a, b):
