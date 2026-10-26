@@ -30,131 +30,45 @@ The point with no annotation of the site:
 
 import argparse
 import glob
-import multiprocessing
 import os
 import re
 import sys
 
 import numpy as np
 
-from .comparison import matchBlock
+from .data.annotations import readCrowns
+from .data.patches import PatchSet
+from .data.site import TDData
 from .dl import dlCommon as dc
-from .dl import dlPrepare as dp
-from .dl.dlConComp import expandGrid, loadDetections
+from .experiments import ParameterGrid
+from .experiments.crossValidation import loadAllDetections
+from .experiments.fixed import LearningCurve, poolPoint
 from .pseudoTuning import runGrid
-from .scene import readCrowns
+from .scoring import CrownFrame, Evaluator
 
-_CURVE = None      # the curve being scored, shared with forked workers
-
-
-def _scoreInWorker(task):
-    region, setting = task
-    return dc.objectiveOf(dc.evaluateDetections(
-        _CURVE.detections[setting], _CURVE.crowns, _CURVE.regions[region]))
-
-
-class CcCurve(object):
-    """Connected components' learning curve from one run's saved detections."""
-
-    def __init__(self, args):
-        self.args = args
-        grid, _ = runGrid(args.ccRun)
-        self.settings = expandGrid(grid)
-        self.detections = loadDetections(os.path.join(args.ccRun,
-                                                      "detections.npz"))
-        if len(self.detections) != len(self.settings):
-            raise ValueError("%d saved settings, the grid has %d"
-                             % (len(self.detections), len(self.settings)))
-        meta = dp.loadDataset(args.dataset)
-        self.blocks = meta["blockGeometries"]
-        self.crowns, _ = readCrowns(meta["crownsPath"], meta["crs"])
-        tiles = dp.loadDataset(args.tiles or args.dataset)
-        self.tiles, self.tileBlocks = tiles["tiles"], tiles["blockGeometries"]
-        self.jobs = max(1, args.jobs)
-
-    def draws(self):
-        """(fold, fraction, seed, drawn tiles) for every point of the curve."""
-        seeds = [int(v) for v in self.args.seeds.split(",")]
-        fractions = [float(v) for v in self.args.fractions.split(",")]
-        draws = []
-        for name, _ in self.blocks:
-            held = matchBlock(name, dict(self.tileBlocks))
-            train, _ = dc.foldSplit(self.tiles, self.tileBlocks, held,
-                                    self.args.buffer)
-            for fraction in fractions:
-                for seed in (seeds[:1] if fraction >= 1 else seeds):
-                    draws.append((name, fraction, seed,
-                                  dc.drawTiles(train, fraction, seed, held)))
-        return draws
-
-    def scoreRegions(self):
-        """Every setting's tuning score on every draw, --jobs at a time."""
-        global _CURVE
-        tasks = [(r, s) for r in range(len(self.regions))
-                 for s in range(len(self.settings))]
-        _CURVE = self
-        if self.jobs == 1:
-            results = [_scoreInWorker(t) for t in tasks]
-        else:
-            context = multiprocessing.get_context("fork")
-            with context.Pool(self.jobs) as pool:
-                results = pool.map(_scoreInWorker, tasks, chunksize=max(
-                    1, len(tasks) // (self.jobs * 8)))
-        _CURVE = None
-        return np.array(results).reshape(len(self.regions), len(self.settings))
-
-    def run(self):
-        draws = self.draws()
-        self.regions = [dc.tileRegion(tiles) for _, _, _, tiles in draws]
-        print("[curve] %s: %d settings, %d draws over %d blocks"
-              % (self.args.ccRun, len(self.settings), len(draws),
-                 len(self.blocks)))
-        scores = self.scoreRegions()
-        geometry = dict(self.blocks)
-        points = {}
-        for (name, fraction, seed, tiles), region, row in zip(
-                draws, self.regions, scores):
-            best = int(np.argmax(row))
-            fold = dc.evaluateDetections(self.detections[best], self.crowns,
-                                         geometry[name])
-            fold.update(block=name, chosen=best, tuningScore=float(row[best]),
-                        tiles=len(tiles), crownsUsed=len(
-                            dc.crownsInRegion(self.crowns, region)))
-            points.setdefault((fraction, seed), []).append(fold)
-        return [{"fraction": f, "seed": s, "folds": folds,
-                 "pooled": poolPoint(folds)}
-                for (f, s), folds in sorted(points.items())]
-
-    def transfer(self):
-        """The other site's best setting, applied here with no tuning."""
-        other = dc.loadJson(os.path.join(self.args.transferFrom,
-                                         "results.json"))
-        setting = other["pooled"]["wholeAreaBest"]["settings"]
-        if setting not in self.settings:
-            raise ValueError("the other site's best setting %s is not in "
-                             "this run's grid" % setting)
-        index = self.settings.index(setting)
-        folds = [dict(dc.evaluateDetections(self.detections[index],
-                                            self.crowns, g),
-                      block=n, chosen=index, tiles=0, crownsUsed=0)
-                 for n, g in self.blocks]
-        return {"from": self.args.transferFrom, "settings": setting,
-                "folds": folds, "pooled": poolPoint(folds)}
-
-
-def poolPoint(folds):
-    pooled = dc.averageFolds(folds)
-    pooled["crownsUsedPerFold"] = float(np.mean([f["crownsUsed"]
-                                                 for f in folds]))
-    return pooled
+def ccCurve(args):
+    """The curve of one CC run, from the detections it saved."""
+    grid, _ = runGrid(args.ccRun)
+    site = TDData.fromDataset(args.dataset)
+    # every crown in the file: drawn tiles may reach past the scored area
+    crowns, _ = readCrowns(site.annotations.crownsPath, site.annotations.crs)
+    return LearningCurve(
+        site, ParameterGrid(grid).expand(),
+        loadAllDetections(os.path.join(args.ccRun, "detections.npz")),
+        PatchSet.load(args.tiles or args.dataset), Evaluator(CrownFrame(crowns)),
+        [float(v) for v in args.fractions.split(",")],
+        [int(v) for v in args.seeds.split(",")], args.buffer, args.jobs)
 
 
 def ccCommand(args):
-    curve = CcCurve(args)
+    curve = ccCurve(args)
     record = {"ccRun": args.ccRun, "objective": dc.tuningObjective(),
               "points": curve.run()}
     if args.transferFrom:
-        record["transfer"] = curve.transfer()
+        other = dc.loadJson(os.path.join(args.transferFrom, "results.json"))
+        record["transfer"] = dict(
+            {"from": args.transferFrom},
+            **curve.transfer(other["pooled"]["wholeAreaBest"]["settings"]))
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     dc.saveJson(record, args.output)
     for point in record["points"]:

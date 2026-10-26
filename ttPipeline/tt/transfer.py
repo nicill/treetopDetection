@@ -36,17 +36,12 @@ import sys
 import numpy as np
 from scipy.stats import wilcoxon
 
-from .detector import ConCompDetector
+from .data.site import Block, TDData
+from .detectors.height import CCDetector
 from .dl import dlCommon as dc
 from .dl import dlPrepare as dp
-from .merging import TopMerger
-from .scene import Scene
+from .experiments.fixed import FixedSettings
 
-# the fixed parts, as in the connected-component cross-validation
-WINDOW_M = 40.0
-MIN_TREE_AREA_M2 = 0.5
-MERGE_RADIUS_M = 8.0
-POINT_BOX_M = 0.5
 SETTING_KEYS = ("lowerPercentile", "minTopAreaM2", "topStepM",
                 "erosionIterations", "saddleDropM")
 DEFAULTS = {"lowerPercentile": 10, "minTopAreaM2": 0.12, "topStepM": 0.12,
@@ -65,34 +60,6 @@ def modalSetting(resultsPath):
     return dict(zip(SETTING_KEYS, values)), count, len(folds)
 
 
-def detect(scene, setting):
-    detector = ConCompDetector(
-        windowSizeM=WINDOW_M, minTreeAreaM2=MIN_TREE_AREA_M2,
-        lowerPercentile=setting["lowerPercentile"],
-        minTopAreaM2=setting["minTopAreaM2"], topStepM=setting["topStepM"],
-        erosionIterations=setting["erosionIterations"],
-        merger=TopMerger("saddle", epsM=MERGE_RADIUS_M,
-                         saddleDropM=setting["saddleDropM"]),
-        verbose=False)
-    tops = detector.detect(scene)
-    return [{"centreX": float(x), "centreY": float(y), "score": float(h),
-             "box": [x - POINT_BOX_M, y - POINT_BOX_M,
-                     x + POINT_BOX_M, y + POINT_BOX_M]}
-            for (x, y), h in zip(tops.world(scene), tops.heights)]
-
-
-def writeRun(directory, blocks, predictions, setting, folds, whole):
-    """The fixed setting as a run: the layout every other tool reads."""
-    os.makedirs(directory, exist_ok=True)
-    for name, _ in blocks:
-        dc.saveJson({"block": name, "settings": setting, "region": "area",
-                     "predictions": predictions},
-                    os.path.join(directory, "predictions_%s.json" % name))
-    dc.saveJson({"method": "concomp", "settings": setting, "folds": folds,
-                 "pooled": dc.averageFolds(folds), "wholeArea": whole},
-                os.path.join(directory, "results.json"))
-
-
 def paired(tunedFolds, fixedFolds):
     tuned = {f["block"]: f["f1"] for f in tunedFolds}
     fixed = {f["block"]: f["f1"] for f in fixedFolds}
@@ -105,27 +72,18 @@ def paired(tunedFolds, fixedFolds):
 
 
 class Transfer(object):
+    """Fixed settings scored on a site, each against the site's own tuning."""
 
-    def __init__(self, scene, blocks, tunedDir):
-        self.scene = scene
-        self.blocks = blocks
+    def __init__(self, data, tunedDir):
+        self.data = data
         self.tuned = dc.loadJson(os.path.join(tunedDir, "results.json"))
 
     def score(self, name, setting, outputDir):
-        predictions = detect(self.scene, setting)
-        folds = []
-        for block, geometry in self.blocks:
-            result = dc.evaluateDetections(predictions, self.scene.crowns,
-                                           geometry)
-            result["block"] = block
-            folds.append(result)
-        whole = dc.evaluateDetections(predictions, self.scene.crowns,
-                                      self.scene.boundary)
-        writeRun(os.path.join(outputDir, "runs", name), self.blocks,
-                 predictions, setting, folds, whole)
-        return {"setting": setting, "wholeArea": whole,
-                "pooled": dc.averageFolds(folds), "folds": folds,
-                "vsTuned": paired(self.tuned["folds"], folds)}
+        runSet = FixedSettings(self.data, CCDetector(), setting).run()
+        runSet.save(os.path.join(outputDir, "runs", name))
+        return {"setting": setting, "wholeArea": runSet.extra["wholeArea"],
+                "pooled": runSet.pooled, "folds": runSet.folds,
+                "vsTuned": paired(self.tuned["folds"], runSet.folds)}
 
 
 def printTable(tuned, rows):
@@ -166,10 +124,11 @@ def parseArguments(argv=None):
 
 def main(argv=None):
     args = parseArguments(argv)
-    scene = Scene(args.chm, crownsPath=args.crowns,
-                  boundaryPath=args.boundary, verbose=False)
-    blocks = dp.loadDataset(args.dataset)["blockGeometries"]
-    transfer = Transfer(scene, blocks, args.tuned)
+    data = TDData.fromFiles("site", chm=args.chm, crowns=args.crowns,
+                            area=args.boundary,
+                            blocks=[Block(n, g) for n, g in dp.loadDataset(
+                                args.dataset)["blockGeometries"]])
+    transfer = Transfer(data, args.tuned)
     settings = {"defaults": DEFAULTS}
     for spec in args.modalFrom:
         name, runDir = spec.split("=", 1)
