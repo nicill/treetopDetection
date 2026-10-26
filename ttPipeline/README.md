@@ -25,6 +25,8 @@ print(Analysis(site).errors(tops))
 site.show("site.png", {"CC": tops})
 ```
 
+Tests: `python -m testSuite` (one file per part of the package).
+
 A prepared dataset folder loads with `TDData.fromDataset(path)`, which also
 gives the site its tiles (`site.patchSet`) and cross-validation blocks.
 
