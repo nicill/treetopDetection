@@ -2,7 +2,7 @@
 Crown annotation delivered as a label raster, converted to what the pipeline
 reads: a crown shapefile and a boundary shapefile.
 
-    python -m tt.labelImport --labels Label_image.tif --reference ROI_DEM2.tif \\
+    python -m tt.prepare.labelImport --labels Label_image.tif --reference ROI_DEM2.tif \\
         --output Data/sergi
 
 Each non-zero value of the label raster is one crown. The raster can carry its

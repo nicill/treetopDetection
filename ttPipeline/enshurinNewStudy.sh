@@ -6,7 +6,7 @@
 #
 #   ./enshurinNewStudy.sh
 #
-# N is the site tt.enshurinPrepare --crowns wrote (chm.tif, crowns.shp,
+# N is the site tt.prepare.enshurin --crowns wrote (chm.tif, crowns.shp,
 # scoredArea.shp). The old runs are PROC/enshurin/runs/{cc,lmvw,watershed}P1.
 #   ds/chm             the dataset at the old dataset's resolution, tile size,
 #                      overlap and minimum height, on the new crowns and the

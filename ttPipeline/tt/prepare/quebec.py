@@ -1,7 +1,7 @@
 """
 Quebec Plantations (Lefebvre & Laliberte 2024) as compact per-site products.
 
-    python -m tt.qpPrepare --vectors Data/QuebecPlantations/Dataset/Vector_Data \\
+    python -m tt.prepare.quebec --vectors Data/QuebecPlantations/Dataset/Vector_Data \\
         --pdal ~/anaconda3/envs/pdal/bin/pdal --output Data/qp \\
         --sites 20230609_cbserpentin1
 
@@ -78,6 +78,7 @@ except ImportError:                     # older installations: fiona
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402  (after the backend is chosen)
+from .base import SitePreparer
 
 BASE = ("https://g-154be2.cd4fe.0ec8.data.globus.org/13/published/"
         "publication_974/submitted_data/Dataset/")
@@ -682,29 +683,24 @@ def parseArguments(argv=None):
     return args
 
 
+class QuebecPreparer(SitePreparer):
+    """Quebec Plantations: LiDAR and RGB read from the server per site."""
+
+    tag = "qp"
+
+    def sites(self):
+        return self.args.sites or sitesIn(self.args.vectors)
+
+    def prepareSite(self, site):
+        return prepareSite(site, self.args)
+
+    def recheckSite(self, site):
+        return recheckSite(site, self.args)
+
+
 def main(argv=None):
     args = parseArguments(argv)
-    sites = args.sites or sitesIn(args.vectors)
-    failed = []
-    for site in sites:
-        prepared = os.path.exists(os.path.join(args.output, site,
-                                               "check.json"))
-        if args.recheck:
-            if prepared:
-                recheckSite(site, args)
-            continue
-        if prepared:
-            print("[qp] %s: already prepared, skipped" % site)
-            continue
-        try:
-            prepareSite(site, args)
-        except (RuntimeError, OSError, ValueError) as error:
-            print("[qp] %s: FAILED, skipped: %s" % (site, error), flush=True)
-            failed.append(site)
-    if failed:
-        print("[qp] %d site(s) failed; run the same command again to retry "
-              "them: %s" % (len(failed), " ".join(failed)), flush=True)
-    return 1 if failed else 0
+    return QuebecPreparer(args).run(recheck=args.recheck)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ be left out of the scoring: canopy outside every crown that lies at the border
 of the area (the 'edge' patches of uncovered.shp), as opposed to the interior
 gaps between crowns, which stay scored.
 
-    python -m tt.edgePatches --site Data/sergiOut/koiwainoujo220616 \\
+    python -m tt.annotation.edgePatches --site Data/sergiOut/koiwainoujo220616 \\
         --like Data/sergi/Shapefiles/CanopyMerge.shp \\
         --output Data/sergiOut/edgeForSergi
 

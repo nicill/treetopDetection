@@ -68,7 +68,7 @@ if [ "$ONLY" != sergi ]; then
     # the scored crowns and areas must include the invisible-crown rule, which
     # sites prepared before it lack; a recheck takes seconds and reads nothing
     # from the server
-    python -m tt.qpPrepare --vectors "$QP/Vector_Data" --pdal "$PDAL" \
+    python -m tt.prepare.quebec --vectors "$QP/Vector_Data" --pdal "$PDAL" \
         --output "$QP" --recheck > "$STUDY/recheck.log" 2>&1 \
         && log "quebec: prepared sites rechecked" \
         || log "quebec: recheck FAILED, see recheck.log"

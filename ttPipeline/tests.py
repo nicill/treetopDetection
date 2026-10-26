@@ -344,7 +344,7 @@ class TestQpPrepare(unittest.TestCase):
         shutil.rmtree(self.directory, ignore_errors=True)
 
     def arguments(self):
-        from tt.qpPrepare import parseArguments
+        from tt.prepare.quebec import parseArguments
         fake = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "tests_support", "fakePdal.py")
         args = parseArguments(["--vectors", self.vectors, "--pdal", fake,
@@ -358,7 +358,7 @@ class TestQpPrepare(unittest.TestCase):
         import geopandas as gpd
         import rasterio
         from shapely.geometry import Point
-        from tt.qpPrepare import prepareSite
+        from tt.prepare.quebec import prepareSite
         check = prepareSite(self.site, self.arguments())
         out = os.path.join(self.directory, "out", self.site)
         for name in ("area.shp", "chm.tif", "rgb.tif", "crowns.shp",
@@ -415,7 +415,7 @@ class TestQpPrepare(unittest.TestCase):
 
     def testRecheckRedoesTheChecksOnly(self):
         import json
-        from tt.qpPrepare import main, prepareSite
+        from tt.prepare.quebec import main, prepareSite
         args = self.arguments()
         prepareSite(self.site, args)
         chm = os.path.join(self.directory, "out", self.site, "chm.tif")
@@ -431,7 +431,7 @@ class TestQpPrepare(unittest.TestCase):
 
     def testZeroHeightsArePlaceholders(self):
         import pandas as pd
-        from tt.qpPrepare import NO_SHOOT_HEIGHTS, fieldHeight
+        from tt.prepare.quebec import NO_SHOOT_HEIGHTS, fieldHeight
         trees = pd.DataFrame({"height1_no_shoot_cm": ["0", "250", "NA"],
                               "height2_no_shoot_cm": [0, 240, 0]})
         heights = fieldHeight(trees, NO_SHOOT_HEIGHTS)
@@ -445,7 +445,7 @@ class TestQpPrepare(unittest.TestCase):
         import rasterio
         from affine import Affine
         from shapely.geometry import Point, box
-        from tt.qpPrepare import uncoveredCanopy
+        from tt.prepare.quebec import uncoveredCanopy
         chm = np.zeros((200, 200), np.float32)          # 20 x 20 m at 0.1 m
         rows, columns = np.mgrid[0:200, 0:200]
         chm[np.hypot(rows - 100, columns - 100) < 10] = 3.0   # middle
@@ -470,7 +470,7 @@ class TestQpPrepare(unittest.TestCase):
         self.assertGreater(summary["edgeShare"], 0.1)
 
     def testFlakyTileIsRetried(self):
-        import tt.qpPrepare as qp
+        import tt.prepare.quebec as qp
         args = self.arguments()
         args.retries, args.retryWaitS = 2, 0.0
         calls = []
@@ -494,7 +494,7 @@ class TestQpPrepare(unittest.TestCase):
     def testHungPdalIsKilledAndRetried(self):
         import stat
         import time
-        import tt.qpPrepare as qp
+        import tt.prepare.quebec as qp
         slow = os.path.join(self.directory, "slowPdal.sh")
         with open(slow, "w") as handle:
             handle.write("#!/bin/sh\nsleep 30\n")
@@ -511,7 +511,7 @@ class TestQpPrepare(unittest.TestCase):
         self.assertLess(time.time() - start, 10)
 
     def testFailedSiteDoesNotStopTheRun(self):
-        from tt.qpPrepare import main
+        from tt.prepare.quebec import main
         argv = ["--vectors", self.vectors, "--pdal", "/nonexistent/pdal",
                 "--output", os.path.join(self.directory, "out"),
                 "--retries", "0", "--sites", self.site, "20990101_missing"]
@@ -523,7 +523,7 @@ class TestQpPrepare(unittest.TestCase):
         from affine import Affine
         from rasterio.enums import Resampling
         from shapely.geometry import box
-        from tt.qpPrepare import readRgb
+        from tt.prepare.quebec import readRgb
         path = os.path.join(self.directory, "ov.tif")
         image = np.zeros((4, 800, 800), np.uint8)
         image[:, :, 400:] = 200                   # right half bright
@@ -534,7 +534,7 @@ class TestQpPrepare(unittest.TestCase):
             d.write(image)
             d.build_overviews([2, 4], Resampling.average)
         with rasterio.open(path) as src:
-            from tt.qpPrepare import overviewLevel
+            from tt.prepare.quebec import overviewLevel
             self.assertEqual(overviewLevel(src, 0.02), 0)
             self.assertEqual(overviewLevel(src, 0.045), 1)
             self.assertIsNone(overviewLevel(src, 0.005))
@@ -551,14 +551,14 @@ class TestQpPrepare(unittest.TestCase):
             self.assertTrue((data[:, :, 150:] == 0).all())    # beyond image
 
     def testWholeCellOffsetIsOnTheLattice(self):
-        from tt.qpPrepare import latticeOffset
+        from tt.prepare.quebec import latticeOffset
         self.assertAlmostEqual(latticeOffset(10.05, 10.0, 0.05), 0.0)
         self.assertAlmostEqual(latticeOffset(10.025, 10.0, 0.05), 0.025)
 
     def testAreaFillsHolesAndMergesNeighbours(self):
         import geopandas as gpd
         from shapely.geometry import Point
-        from tt.qpPrepare import annotatedArea
+        from tt.prepare.quebec import annotatedArea
         ring = [Point(np.cos(a) * 5, np.sin(a) * 5).buffer(1.2)
                 for a in np.linspace(0, 2 * np.pi, 16, endpoint=False)]
         area = annotatedArea(gpd.GeoDataFrame(geometry=ring,
@@ -1058,7 +1058,7 @@ class TestEnshurinPrepare(unittest.TestCase):
         import geopandas as gpd
         import rasterio
         from rasterio.transform import from_origin
-        from tt import enshurinPrepare as ep
+        from tt.prepare import enshurin as ep
         d = tempfile.mkdtemp(prefix="ttEnshurin")
         try:
             crs, x0, y0 = "EPSG:32654", 401800.0, 4268500.0
@@ -1185,7 +1185,7 @@ class TestEnshurinPolygons(unittest.TestCase):
         return data, path
 
     def run_(self, d, data, path, extra=()):
-        from tt import enshurinPrepare as ep
+        from tt.prepare import enshurin as ep
         return ep.prepare(ep.parseArguments([
             "--data", data, "--chm", os.path.join(d, "chm.tif"),
             "--output", os.path.join(d, "out"), "--parts", "newtrain", "test",
@@ -1288,7 +1288,7 @@ class TestCrownEdges(unittest.TestCase):
     """Thin canopy edges outside a crown go to it; anything thicker does not."""
 
     def testRimsAddedNeighboursSplitUnannotatedTreeLeft(self):
-        from tt.crownEdges import findEdges
+        from tt.annotation.crownEdges import findEdges
         pixel, size = 0.05, 400
         rows, cols = np.indices((size, size)) * pixel
         chm = np.zeros((size, size), np.float32)
@@ -1317,7 +1317,7 @@ class TestEnshurinShift(unittest.TestCase):
     def testShiftedSourceMovesBoundsKeepsPixels(self):
         import rasterio
         from rasterio.transform import from_origin
-        from tt.enshurinPrepare import parseShifts, shiftedSource
+        from tt.prepare.enshurin import parseShifts, shiftedSource
         d = tempfile.mkdtemp(prefix="ttShift")
         try:
             path = os.path.join(d, "m.tif")
@@ -1827,7 +1827,7 @@ class TestQpPhotogrammetry(unittest.TestCase):
     def setUp(self):
         TestQpPrepare.setUp(self)
         import laspy
-        from tt.qpPrepare import prepareSite
+        from tt.prepare.quebec import prepareSite
         prepareSite(self.site, self.qpArguments())
         cloud = laspy.read(self.lidar)
         z = np.asarray(cloud.z)
@@ -1841,7 +1841,7 @@ class TestQpPhotogrammetry(unittest.TestCase):
         shutil.rmtree(self.directory, ignore_errors=True)
 
     def arguments(self):
-        from tt.qpPhotogrammetry import parseArguments
+        from tt.prepare.quebecPhotogrammetry import parseArguments
         fake = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "tests_support", "fakePdal.py")
         args = parseArguments([
@@ -1854,7 +1854,7 @@ class TestQpPhotogrammetry(unittest.TestCase):
 
     def testStoppedRunReusesFinishedTiles(self):
         import rasterio
-        from tt import qpPhotogrammetry as p1
+        from tt.prepare import quebecPhotogrammetry as p1
         args = self.arguments()
         with mock.patch.object(p1, "finishSite", side_effect=OSError("stop")):
             with self.assertRaises(OSError):
@@ -1872,7 +1872,7 @@ class TestQpPhotogrammetry(unittest.TestCase):
                          [])                # the site's tiles removed when done
 
     def testPartialTileIsNotTakenForAFinishedOne(self):
-        from tt import qpPrepare as qp
+        from tt.prepare import quebec as qp
         args = self.arguments()
         args.chmResolution, args.retries = 0.1, 0
         part = os.path.join(self.directory, "tile0000.tif")
@@ -1888,7 +1888,7 @@ class TestQpPhotogrammetry(unittest.TestCase):
     def testChmOnTheLidarGridWithTheSameCrowns(self):
         import geopandas as gpd
         import rasterio
-        from tt.qpPhotogrammetry import prepareSite
+        from tt.prepare.quebecPhotogrammetry import prepareSite
         check = prepareSite(self.site, self.arguments())
         lidar = os.path.join(self.directory, "out", self.site)
         out = os.path.join(self.directory, "p1", self.site)
@@ -1912,7 +1912,7 @@ class TestQpPhotogrammetry(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(out, name)), name)
 
     def testCloudNameFoundPerSite(self):
-        from tt import qpPhotogrammetry as p1
+        from tt.prepare import quebecPhotogrammetry as p1
         cb = p1.cloudUrl("20230606_cbblackburn5",
                          reachable=lambda url: url.endswith("_p1_pg.copc.laz"))
         self.assertTrue(cb.endswith("20230606_cbblackburn5_p1/"
@@ -1924,7 +1924,7 @@ class TestQpPhotogrammetry(unittest.TestCase):
             p1.cloudUrl("x", reachable=lambda url: False)
 
     def testLocalCloudFoundInEitherLayout(self):
-        from tt import qpPhotogrammetry as p1
+        from tt.prepare import quebecPhotogrammetry as p1
         d = os.path.join(self.directory, "clouds")
         os.makedirs(os.path.join(d, "20230608_cbbernard4_p1"))
         flat = os.path.join(d, "20230606_cbblackburn6_p1_pg.copc.laz")
@@ -1943,7 +1943,7 @@ class TestQpPhotogrammetry(unittest.TestCase):
     def testOffGridChmIsRefused(self):
         import rasterio
         from affine import Affine
-        from tt.qpPhotogrammetry import checkSameGrid
+        from tt.prepare.quebecPhotogrammetry import checkSameGrid
         lidar = os.path.join(self.directory, "out", self.site, "chm.tif")
         moved = os.path.join(self.directory, "moved.tif")
         with rasterio.open(lidar) as src:
@@ -1957,7 +1957,7 @@ class TestQpPhotogrammetry(unittest.TestCase):
             checkSameGrid(lidar, moved)
 
     def testPreparedSiteSkippedAndOutputMustDiffer(self):
-        from tt import qpPhotogrammetry as p1
+        from tt.prepare import quebecPhotogrammetry as p1
         args = self.arguments()
         p1.prepareSite(self.site, args)
         with mock.patch.object(p1, "parseArguments", return_value=args), \
@@ -2065,7 +2065,7 @@ class TestDsmChm(unittest.TestCase):
         from rasterio.transform import from_origin
         from shapely.geometry import Point, box
         from scipy.ndimage import gaussian_filter
-        from tt import dsmChm
+        from tt.prepare import dsmChm
         d = tempfile.mkdtemp(prefix="ttDsm")
         try:
             crs, x0, y0 = "EPSG:32654", 500000.0, 4400000.0
@@ -2139,7 +2139,7 @@ class TestAreaExamples(unittest.TestCase):
         import rasterio
         from rasterio.transform import from_origin
         from shapely.geometry import Point, box
-        from tt import areaExamples as ae
+        from tt.annotation import areaExamples as ae
         d = tempfile.mkdtemp(prefix="ttExamples")
         try:
             crs, x0, y0, side = "EPSG:32654", 401000.0, 4268000.0, 400
@@ -2199,7 +2199,7 @@ class TestUnannotatedTrees(unittest.TestCase):
         import rasterio
         from rasterio.transform import from_origin
         from shapely.geometry import Point, box
-        from tt import unannotatedTrees as ut
+        from tt.annotation import unannotatedTrees as ut
         d = tempfile.mkdtemp(prefix="ttUnann")
         try:
             crs, x0, y0, side, res = "EPSG:32654", 401000.0, 4268000.0, 60, 0.25
@@ -2269,8 +2269,8 @@ class TestCandidateTrees(unittest.TestCase):
         from shapely.affinity import translate
         from rasterio.transform import from_origin
         from shapely.geometry import Point, box
-        from tt import candidateTrees as ct
-        from tt import unannotatedTrees as ut
+        from tt.annotation import candidateTrees as ct
+        from tt.annotation import unannotatedTrees as ut
         d = tempfile.mkdtemp(prefix="ttCand")
         try:
             crs, x0, y0, side, res = "EPSG:32654", 401000.0, 4268000.0, 60, 0.25
@@ -2388,7 +2388,7 @@ class TestCandidateValidation(unittest.TestCase):
         import rasterio
         from rasterio.transform import from_origin
         from shapely.geometry import Point
-        from tt import candidateTrees as ct
+        from tt.annotation import candidateTrees as ct
         d = tempfile.mkdtemp(prefix="ttCandVal")
         try:
             crs, x0, y0, side, res = "EPSG:32654", 401000.0, 4268000.0, 60, 0.25
@@ -2439,8 +2439,8 @@ class TestEdgePatches(unittest.TestCase):
         import rasterio
         from rasterio.transform import from_origin
         from shapely.geometry import Point, box
-        from tt import edgePatches as ep
-        from tt import qpPrepare as qp
+        from tt.annotation import edgePatches as ep
+        from tt.prepare import quebec as qp
         d = tempfile.mkdtemp(prefix="ttEdge")
         try:
             site = os.path.join(d, "site")
@@ -2502,8 +2502,8 @@ class TestEdgeOnlyArea(unittest.TestCase):
         import rasterio
         from rasterio.transform import from_origin
         from shapely.geometry import Point, box
-        from tt import qpPrepare as qp
-        from tt.edgeOnlyArea import main
+        from tt.prepare import quebec as qp
+        from tt.annotation.edgeOnlyArea import main
         d = tempfile.mkdtemp(prefix="ttEdgeOnly")
         try:
             crs, x0, y0, W, H, res = "EPSG:32654", 500000.0, 4400000.0, 40, 40, 0.25

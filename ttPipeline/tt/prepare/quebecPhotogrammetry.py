@@ -1,8 +1,8 @@
 """
 Quebec Plantations: a photogrammetric CHM for sites already prepared by
-tt.qpPrepare, so every method can run on photogrammetry instead of LiDAR.
+tt.prepare.quebec, so every method can run on photogrammetry instead of LiDAR.
 
-    python -m tt.qpPhotogrammetry --prepared "$QP" --output "$QP_P1" \\
+    python -m tt.prepare.quebecPhotogrammetry --prepared "$QP" --output "$QP_P1" \\
         --pdal ~/anaconda3/envs/pdal/bin/pdal
 
 Per site, the dataset's photogrammetric point cloud
@@ -14,7 +14,7 @@ ground, height above the Delaunay ground, highest point per cell, empty cells
 from their nearest neighbour. Ground and heights come from the photographs
 alone, processed as the LiDAR was, so the two CHMs differ by their data and
 not by how they were made. (Ground from the surface model alone,
-tt.groundModel, put the floor between the trees 0.5-2 m above 0 here.)
+tt.prepare.groundModel, put the floor between the trees 0.5-2 m above 0 here.)
 
 With --cloudDir the clouds are read from local copies (a Globus transfer of
 the same files) instead of the server; the CHM is the same.
@@ -53,7 +53,8 @@ import rasterio
 from rasterio.enums import Resampling
 from rasterio.features import geometry_mask
 
-from tt import qpPrepare as qp
+from . import quebec as qp
+from .base import SitePreparer
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402  (after the backend is chosen)
@@ -309,7 +310,7 @@ def parseArguments(argv=None):
     parser = argparse.ArgumentParser(
         description="Quebec Plantations: photogrammetric CHM, built from the "
                     "photogrammetric point cloud as qpPrepare builds the "
-                    "LiDAR one, for sites prepared by tt.qpPrepare.")
+                    "LiDAR one, for sites prepared by tt.prepare.quebec.")
     parser.add_argument("--prepared", required=True,
                         help="The folder of LiDAR sites written by qpPrepare")
     parser.add_argument("--output", required=True,
@@ -345,27 +346,27 @@ def parseArguments(argv=None):
     return args
 
 
+class QuebecPhotogrammetryPreparer(SitePreparer):
+    """The Quebec sites again, with a CHM from the photogrammetric cloud on
+    the LiDAR site's grid."""
+
+    tag = "qpP1"
+
+    def sites(self):
+        return self.args.sites
+
+    def missingInput(self, site):
+        if not os.path.exists(os.path.join(self.args.prepared, site,
+                                           "chm.tif")):
+            return "no LiDAR site in %s" % self.args.prepared
+        return None
+
+    def prepareSite(self, site):
+        return prepareSite(site, self.args)
+
+
 def main(argv=None):
-    args = parseArguments(argv)
-    failed = []
-    for site in args.sites:
-        if os.path.exists(os.path.join(args.output, site, "check.json")):
-            print("[qpP1] %s: already prepared, skipped" % site)
-            continue
-        if not os.path.exists(os.path.join(args.prepared, site, "chm.tif")):
-            print("[qpP1] %s: no LiDAR site in %s, skipped" % (site,
-                                                               args.prepared))
-            failed.append(site)
-            continue
-        try:
-            prepareSite(site, args)
-        except (RuntimeError, OSError, ValueError) as error:
-            print("[qpP1] %s: FAILED, skipped: %s" % (site, error), flush=True)
-            failed.append(site)
-    if failed:
-        print("[qpP1] %d site(s) not done; run the same command again to "
-              "retry them: %s" % (len(failed), " ".join(failed)), flush=True)
-    return 1 if failed else 0
+    return QuebecPhotogrammetryPreparer(parseArguments(argv)).run()
 
 
 if __name__ == "__main__":

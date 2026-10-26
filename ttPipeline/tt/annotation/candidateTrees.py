@@ -2,7 +2,7 @@
 Candidate crowns for the trees nobody annotated, for the annotator to check
 and correct instead of drawing from nothing.
 
-    python -m tt.candidateTrees \\
+    python -m tt.annotation.candidateTrees \\
         --chm Data/vlad/enshurin_chm025.tif \\
         --unannotated Data/enshurinNewOut/unannotated/unannotated.shp \\
         --polygons Data/enshurinNewOut/enshurin_all_shifted.shp \\
@@ -12,7 +12,7 @@ and correct instead of drawing from nothing.
         --like Data/vlad/enshurinAnnotations/enshurin_all.shp \\
         --output Data/enshurinNewOut/candidates
 
-Inside the unannotated tree canopy (tt.unannotatedTrees), a crown is proposed
+Inside the unannotated tree canopy (tt.annotation.unannotatedTrees), a crown is proposed
 for every top that rises --minProminenceM above where it joins higher ground
 on the CHM smoothed over --smoothM, grown over its own patch by a marker
 watershed (the CHM turned upside down, flooded from the tops), so the crowns
@@ -69,8 +69,8 @@ from scipy import ndimage
 from shapely.geometry import shape
 from shapely.ops import unary_union
 
-from tt.enshurinPrepare import parseShifts
-from tt.unannotatedTrees import footprint, mosaicImage
+from tt.prepare.enshurin import parseShifts
+from tt.annotation.unannotatedTrees import footprint, mosaicImage
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402  (after the backend is chosen)
@@ -260,7 +260,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--chm", required=True)
     parser.add_argument("--unannotated", default=None,
-                        help="unannotated.shp from tt.unannotatedTrees "
+                        help="unannotated.shp from tt.annotation.unannotatedTrees "
                              "(not needed with --validate)")
     parser.add_argument("--validate", action="store_true",
                         help="run the method inside the annotated crowns "
@@ -277,7 +277,7 @@ def main(argv=None):
                         help="the annotated crowns, in the CHM's frame")
     parser.add_argument("--mosaics", nargs="+", required=True)
     parser.add_argument("--shift", action="append", default=None,
-                        help="PART=DX,DY, as given to tt.enshurinPrepare")
+                        help="PART=DX,DY, as given to tt.prepare.enshurin")
     parser.add_argument("--like", default=None,
                         help="the annotator's own file: the candidates are "
                              "also written in its coordinate system")

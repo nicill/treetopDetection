@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # quebecP1Study.sh — CC and the two height baselines (local maxima, watershed)
-# on the Quebec photogrammetric CHMs (tt.qpPhotogrammetry), exactly as they
+# on the Quebec photogrammetric CHMs (tt.prepare.quebecPhotogrammetry), exactly as they
 # were run on the LiDAR CHMs, so the two can be compared site by site.
 #
 #   ./quebecP1Study.sh

@@ -4,7 +4,7 @@ interior gaps between crowns are scored again (a detection there is a false
 positive), the canopy at the area's border stays don't-care, and the 'other'
 and invisible crowns stay cut out as before.
 
-    python -m tt.edgeOnlyArea Data/sergiOut/koiwainoujo220616 \\
+    python -m tt.annotation.edgeOnlyArea Data/sergiOut/koiwainoujo220616 \\
         "$DROP"/Quebec2/20230606_cbblackburn5 ...
 
 For each prepared site folder (area.shp, ignored.shp, uncovered.shp with its
@@ -19,7 +19,7 @@ import sys
 import geopandas as gpd
 import numpy as np
 
-from tt.edgePatches import isEdge
+from tt.annotation.edgePatches import isEdge
 
 
 def edgeOnlyRegion(siteDir):

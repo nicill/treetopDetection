@@ -39,7 +39,7 @@ pooled() { grep -h "pooled over" "$1" 2>/dev/null | tail -1 | sed 's/^ *//'; }
 buildChm() {   # buildChm SITE: the photogrammetric CHM from the local cloud
     if [ -f "$QP1/$1/check.json" ]; then log "$1: CHM already built"; return 0; fi
     log "$1: CHM started"
-    if python -m tt.qpPhotogrammetry --prepared "$DROP/Quebec2" --output "$QP1" \
+    if python -m tt.prepare.quebecPhotogrammetry --prepared "$DROP/Quebec2" --output "$QP1" \
             --pdal "$PDAL" --cloudDir "$CLOUDS" --sites "$1" --jobs 8 \
             --tileTimeoutMin 120 > "$OUTQ/chm_$1.log" 2>&1; then
         log "$1: CHM done  $(grep -h "floor" "$OUTQ/chm_$1.log" | tail -1 | cut -c1-120)"
@@ -52,7 +52,7 @@ waitForCloud() {   # waitForCloud SITE: until its cloud exists and stops growing
     local path size last="" still=0
     log "$1: waiting for its point cloud to finish arriving in $CLOUDS"
     while [ "$still" -lt "$STABLE_MIN" ]; do
-        path=$(python -c "from tt.qpPhotogrammetry import localCloud; print(localCloud('$1', '$CLOUDS'))" 2>/dev/null)
+        path=$(python -c "from tt.prepare.quebecPhotogrammetry import localCloud; print(localCloud('$1', '$CLOUDS'))" 2>/dev/null)
         size=$( [ -n "$path" ] && stat -c %s "$path" 2>/dev/null || echo none)
         if [ "$size" != none ] && [ "$size" = "$last" ]; then still=$((still + 1)); else still=0; fi
         last=$size

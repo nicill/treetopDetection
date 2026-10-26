@@ -2,12 +2,12 @@
 #
 # koiwaiDsmStudy.sh — CC and the two height baselines (local maxima,
 # watershed) on Koiwai's CHM built from Sergi's finer surface model
-# (tt.dsmChm), with the settings of the current CHM's runs, and the two CHMs
+# (tt.prepare.dsmChm), with the settings of the current CHM's runs, and the two CHMs
 # compared block by block.
 #
 #   N=Data/sergiDsm/koiwainoujo220616_dsm0.25 ./koiwaiDsmStudy.sh
 #
-# N is a site folder tt.dsmChm wrote (chm.tif and the site's layers, copied
+# N is a site folder tt.prepare.dsmChm wrote (chm.tif and the site's layers, copied
 # unchanged from the current site: the same crowns, the same scored area). The
 # current runs are PROC/<REF>/runs/{cc,lmvw,watershed}P1.
 #   ds/chm             the dataset at the current dataset's resolution, tile
@@ -34,7 +34,7 @@ cd "$(dirname "$0")" || exit 1
 DROP=${DROP:-"$HOME/Yago Lab Dropbox/Meetings/2026TreeDet"}
 PROC=${PROC:-"$DROP/study_procedure"}
 REF=${REF:-koiwainoujo220616}
-N=${N:?"set N to the tt.dsmChm site folder, e.g. Data/sergiDsm/koiwainoujo220616_dsm0.25"}
+N=${N:?"set N to the tt.prepare.dsmChm site folder, e.g. Data/sergiDsm/koiwainoujo220616_dsm0.25"}
 OUT=${OUT:-"$DROP/study_koiwaiDsm_$(basename "$N")"}
 JOBS=${JOBS:-16}
 export TT_OBJECTIVE=${TT_OBJECTIVE:-weighted} PYTHONUNBUFFERED=1

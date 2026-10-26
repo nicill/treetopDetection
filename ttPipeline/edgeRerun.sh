@@ -6,7 +6,7 @@
 #
 #   nohup ./edgeRerun.sh > edgeRerun.log 2>&1 &
 #
-#  0. scoredAreaEdge.shp for every site (tt.edgeOnlyArea), once
+#  0. scoredAreaEdge.shp for every site (tt.annotation.edgeOnlyArea), once
 #  1. per site the datasets on that area: the CHM of each height source and
 #     the RGB, each at its old dataset's resolution, tile size, overlap and
 #     minimum height, with the old dataset's name
@@ -131,7 +131,7 @@ log "edge-only rerun started (JOBS=$JOBS; order:$ORDER)"
 for site in $ORDER; do
     setSite "$site"
     if [ ! -f "$SITE_DIR/scoredAreaEdge.shp" ]; then
-        python -m tt.edgeOnlyArea "$SITE_DIR" | tee -a "$STATUS"
+        python -m tt.annotation.edgeOnlyArea "$SITE_DIR" | tee -a "$STATUS"
     fi
 done
 

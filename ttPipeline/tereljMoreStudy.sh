@@ -71,7 +71,7 @@ if [ -z "$AREA" ]; then
         python - "$CROWNS" "$AREA" "$AREA_BUFFER_M" <<'PY' || { log "ERROR: could not derive the area"; exit 1; }
 import sys
 import geopandas as gpd
-from tt.qpPrepare import annotatedArea
+from tt.prepare.quebec import annotatedArea
 crowns = gpd.read_file(sys.argv[1])
 area = annotatedArea(crowns, float(sys.argv[3]))
 area.to_file(sys.argv[2])

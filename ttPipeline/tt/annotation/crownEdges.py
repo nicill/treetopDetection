@@ -4,7 +4,7 @@ of a crown. Some manual masks stop short of the canopy: the tree's rim shows
 in the CHM as a thin band just outside the outline. Scored as it is, a top on
 that rim lands in no crown.
 
-    python -m tt.crownEdges --site Data/qpOut/20230712_afcagauthmelpin_itrf20 \\
+    python -m tt.annotation.crownEdges --site Data/qpOut/20230712_afcagauthmelpin_itrf20 \\
         --output Data/qpOutEdges/20230712_afcagauthmelpin_itrf20
 
 Rule, from the CHM and the annotation only (no detector is involved):

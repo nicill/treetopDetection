@@ -2,7 +2,7 @@
 Koiwainoujo (Sergi) as the same per-site products qpPrepare writes, so the
 rest of the pipeline can treat it as one more site.
 
-    python -m tt.sergiPrepare --data Data/sergi --output Data/sergiOut \\
+    python -m tt.prepare.sergi --data Data/sergi --output Data/sergiOut \\
         --pdal ~/anaconda3/envs/pdal/bin/pdal
 
 What differs from the Quebec data, and what this does about it:
@@ -45,7 +45,8 @@ from rasterio.features import geometry_mask
 from rasterio.merge import merge
 from scipy import ndimage
 
-from tt import qpPrepare as qp
+from . import quebec as qp
+from .base import SitePreparer
 
 NODATA = -9999.0
 TOP_PERCENTILES = (5, 25, 50, 75, 95)
@@ -301,19 +302,20 @@ def parseArguments(argv=None):
     return parser.parse_args(argv)
 
 
+class SergiPreparer(SitePreparer):
+    """Koiwai (Sergi's site): a photogrammetric cloud, its own ground."""
+
+    tag = "sergi"
+
+    def sites(self):
+        return [self.args.site]
+
+    def prepareSite(self, site):
+        return prepare(self.args)
+
+
 def main(argv=None):
-    args = parseArguments(argv)
-    done = os.path.exists(os.path.join(args.output, args.site, "check.json"))
-    if done and not args.redo:
-        print("[sergi] %s: already prepared, skipped (--redo to redo)"
-              % args.site)
-        return 0
-    try:
-        prepare(args)
-    except (RuntimeError, OSError, ValueError) as error:
-        print("[sergi] %s: FAILED: %s" % (args.site, error), flush=True)
-        return 1
-    return 0
+    return SergiPreparer(parseArguments(argv)).run()
 
 
 if __name__ == "__main__":

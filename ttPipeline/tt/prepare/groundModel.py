@@ -1,7 +1,7 @@
 """
 Height above ground from a surface model alone, for sites with no ground model.
 
-    python -m tt.groundModel --dsm ROI_DEM2.tif --output chm.tif
+    python -m tt.prepare.groundModel --dsm ROI_DEM2.tif --output chm.tif
 
 Ground is taken to be the low points the surface model reaches through gaps in
 the canopy: the 2nd percentile of the surface in 10 m windows, on a grid of

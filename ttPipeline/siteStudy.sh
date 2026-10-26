@@ -7,7 +7,7 @@
 #
 #   ./siteStudy.sh SITE_DIR OUT_DIR
 #
-# SITE_DIR is a folder written by tt.qpPrepare or tt.sergiPrepare: chm.tif,
+# SITE_DIR is a folder written by tt.prepare.quebec or tt.prepare.sergi: chm.tif,
 # rgb.tif, crowns.shp (the crowns to score) and scoredArea.shp (the area to
 # score in, don't-care parts already cut out). OUT_DIR gets ds/, runs/,
 # report/, calibration/, logs/ and STATUS.txt.

@@ -12,7 +12,7 @@
 #       Quebec, each site (photogrammetric CHM): local maxima, watershed, the
 #         CHM network, and the RGB network (unchanged, from study_procedure)
 #       Koiwai (the DSM CHM): local maxima, watershed, the RGB network
-#  2. tt.candidateTrees --validate: the proposal method inside Vlad's own
+#  2. tt.annotation.candidateTrees --validate: the proposal method inside Vlad's own
 #     crowns, where the answer is known, at prominences 0.5, 0.75 and 1 m
 #  3. a summary of both, then waits for Dropbox to finish syncing (at most
 #     30 minutes) and switches the computer off (NO_SHUTDOWN=1 to keep it on)
@@ -63,7 +63,7 @@ done
 sed -i 's#'"$DB"'/##g' "$OUT/compare.txt"   # shorter paths in the table
 
 for p in 0.5 0.75 1.0; do
-    if python -m tt.candidateTrees --validate --chm "$CHM" --polygons "$POLYGONS" \
+    if python -m tt.annotation.candidateTrees --validate --chm "$CHM" --polygons "$POLYGONS" \
             --mosaics "$MOSAICS" --minProminenceM "$p" \
             --output "$OUT/validate_p$p" > "$OUT/validate_p$p.log" 2>&1; then
         log "validation, prominence $p m: $(grep -h '\[validate\]' "$OUT/validate_p$p.log" | cut -c12-)"

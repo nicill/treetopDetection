@@ -4,7 +4,7 @@ annotation is missing trees. As a shapefile, an overview image over the RGB,
 and a georeferenced RGB with the mask burned in (for QGIS or for someone
 without it).
 
-    python -m tt.unannotatedTrees \\
+    python -m tt.annotation.unannotatedTrees \\
         --chm Data/vlad/enshurin_chm025.tif \\
         --polygons Data/enshurinNewOut/enshurin_all_shifted.shp \\
         --mosaics "Data/enshurinNewOut/enshurin/shifted/*.vrt" \\
@@ -45,7 +45,6 @@ import numpy as np
 import rasterio
 from rasterio.features import rasterize, shapes
 from rasterio.merge import merge
-from rasterio.transform import from_origin
 from scipy import ndimage
 from shapely.geometry import shape
 from shapely.ops import unary_union
@@ -60,7 +59,7 @@ def footprint(mosaics):
     them), not the rectangles around them: a rotated mosaic has empty corners
     where the CHM may still show canopy that is not in any image.
     """
-    from tt.enshurinPrepare import footprint as validData
+    from tt.prepare.enshurin import footprint as validData
     return unary_union([validData(m) for m in mosaics])
 
 

@@ -4,7 +4,7 @@ they show more of the annotated trees than the CHM in use. A check made before
 any detector is run: if the new CHM shows no more crowns with a peak of their
 own, rerunning the detectors is not worth it.
 
-    python -m tt.dsmChm --site Data/sergiOut/koiwainoujo220616 \\
+    python -m tt.prepare.dsmChm --site Data/sergiOut/koiwainoujo220616 \\
         --dsm ROI_DEM.tif --output Data/sergiDsm
 
 Per resolution (--resolutions), a site folder <output>/<site>_dsm<res>/ in
@@ -46,8 +46,8 @@ from rasterio.transform import from_origin
 from rasterio.warp import reproject
 from scipy import ndimage
 
-from tt import qpPrepare as qp
-from tt.qpPhotogrammetry import copySite
+from . import quebec as qp
+from .quebecPhotogrammetry import copySite
 
 
 def onGrid(path, transform, shape, crs, resampling):

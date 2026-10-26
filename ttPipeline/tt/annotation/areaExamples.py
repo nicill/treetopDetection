@@ -3,7 +3,7 @@ Example images of the parts of a site that were left out of the scored area
 because they are not annotated enough (Enshurin: cells with under 90% of their
 canopy annotated), next to parts that were used.
 
-    python -m tt.areaExamples \\
+    python -m tt.annotation.areaExamples \\
         --mosaics Data/enshurinNewOut/shifted/*.vrt \\
         --chm Data/vlad/enshurin_chm025.tif \\
         --polygons Data/enshurinNewOut/enshurin_all_shifted.shp \\
@@ -60,7 +60,7 @@ def footprint(mosaics):
     finds them (not the rectangles around them: a rotated mosaic has empty
     corners, where the CHM may still show canopy).
     """
-    from tt.enshurinPrepare import footprint as validData
+    from tt.prepare.enshurin import footprint as validData
     return unary_union([validData(m) for m in mosaics])
 
 

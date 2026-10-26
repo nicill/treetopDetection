@@ -2,8 +2,8 @@
 Enshurin (Vlad's broadleaf site) as the same per-site products qpPrepare
 writes, so the rest of the pipeline treats it as one more site.
 
-    python -m tt.groundModel --dsm enshurin_dsm025.tif --output enshurin_chm025.tif
-    python -m tt.enshurinPrepare --data "Data Vlad's Publication" \\
+    python -m tt.prepare.groundModel --dsm enshurin_dsm025.tif --output enshurin_chm025.tif
+    python -m tt.prepare.enshurin --data "Data Vlad's Publication" \\
         --chm enshurin_chm025.tif --output Data/enshurinOut
 
 What differs from the other sites, and what this does about it:
@@ -28,7 +28,7 @@ What differs from the other sites, and what this does about it:
            thresholds are fixed before any detection is scored.
            Within that area, the usual don't-care cut-outs apply
            (qpPrepare.scoredRegion): uncovered canopy, invisible crowns.
-  CHM      from the full-site surface model (tt.groundModel on the whole
+  CHM      from the full-site surface model (tt.prepare.groundModel on the whole
            DEM, so the ground estimate does not degrade at part edges),
            cropped to the area's grid, 0 outside the area.
   RGB      the three part mosaics of the same date, merged at
@@ -69,7 +69,8 @@ from scipy.ndimage import binary_dilation
 from shapely.geometry import box, shape
 from shapely.ops import unary_union
 
-from tt import qpPrepare as qp
+from . import quebec as qp
+from .base import SitePreparer
 
 PARTS = ("newtrain", "val", "test")
 TOP_PERCENTILES = (5, 25, 50, 75, 95)
@@ -514,7 +515,7 @@ def parseArguments(argv=None):
     parser.add_argument("--data", required=True,
                         help="folder with <date>_<part>.tif and mask*<part>.tif")
     parser.add_argument("--chm", required=True,
-                        help="full-site CHM (tt.groundModel on the whole DEM)")
+                        help="full-site CHM (tt.prepare.groundModel on the whole DEM)")
     parser.add_argument("--output", default="Data/enshurinOut")
     parser.add_argument("--site", default="enshurin")
     parser.add_argument("--date", default="08_22")
@@ -551,9 +552,21 @@ def parseArguments(argv=None):
     return parser.parse_args(argv)
 
 
+class EnshurinPreparer(SitePreparer):
+    """Enshurin: the full-site CHM cut to the annotated parts."""
+
+    tag = "enshurin"
+    skipPrepared = False       # always rebuilt: the parts and shifts change
+
+    def sites(self):
+        return [self.args.site]
+
+    def prepareSite(self, site):
+        return prepare(self.args)
+
+
 def main(argv=None):
-    prepare(parseArguments(argv))
-    return 0
+    return EnshurinPreparer(parseArguments(argv)).run()
 
 
 if __name__ == "__main__":
