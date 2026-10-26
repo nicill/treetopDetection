@@ -9,7 +9,8 @@ LearningCurve — how much annotation a tuned detector needs: for every held-out
 block, the annotation is cut down to a fraction of each training block's tiles
 (PatchSet.draw: whole tiles, at random, the same fraction from every block),
 drawn with fixed seeds; the setting is chosen on the crowns of the drawn tiles
-only and scored on the whole held-out block. Every setting's detections are
+only (those inside the scored area: a drawn tile may reach past it) and
+scored on the whole held-out block. Every setting's detections are
 given (a cross-validation's saved detections), so only the choice changes.
 """
 

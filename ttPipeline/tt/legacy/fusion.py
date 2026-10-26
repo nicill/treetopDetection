@@ -1,8 +1,6 @@
 """
-TRANSITIONAL: the dict-based strategies, kept only for tripleFusion,
-calibration and deepForestCompare until they move to tt.detectors.fusion
-(which holds the strategies as classes) and tt.experiments.fusion (the
-cross-validation). Nothing new should import this module.
+LEGACY: the dict-based strategies, kept only for tt.legacy.calibration.
+The maintained strategies are the classes in tt.detectors.fusion.
 
 Combining a box detector (Mask R-CNN, YOLO) with the point detector
 (connected components), evaluated under the same cross-validation as each part.
@@ -52,7 +50,7 @@ from rasterio.features import geometry_mask
 from scipy.spatial import cKDTree
 from shapely.geometry import Polygon
 
-from .merging import saddleDrop
+from ..merging import saddleDrop
 
 THRESHOLDS = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 # minimum CHM height under an RGB box (m), tuned per fold; 0 = no filter

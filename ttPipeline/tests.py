@@ -360,6 +360,16 @@ class TestInvariants(Fixture):
         self.assertAlmostEqual(world["polygon"][0][1], world["box"][3])
 
 
+def asBoxes(dicts):
+    from tt.data import Detections
+    return Detections.fromPredictions(dicts, "boxes")
+
+
+def asPoints(dicts):
+    from tt.data import Detections
+    return Detections.fromPredictions(dicts, "points")
+
+
 class TestFusion(unittest.TestCase):
     """The combination strategies, on hand-built boxes and points."""
 
@@ -374,14 +384,14 @@ class TestFusion(unittest.TestCase):
                 "box": [x, y, x, y]}
 
     def setUp(self):
-        self.boxes = [self.box(0, 0, 4, 4, 0.9),     # holds two points
-                      self.box(10, 0, 14, 4, 0.6),   # holds none
-                      self.box(20, 0, 24, 4, 0.3)]   # holds one, low score
-        self.points = [self.point(1, 1, 12.0), self.point(3, 3, 15.0),
-                       self.point(21, 1), self.point(40, 40)]
+        self.boxes = asBoxes([self.box(0, 0, 4, 4, 0.9),     # holds two points
+                              self.box(10, 0, 14, 4, 0.6),   # holds none
+                              self.box(20, 0, 24, 4, 0.3)])  # holds one, low score
+        self.points = asPoints([self.point(1, 1, 12.0), self.point(3, 3, 15.0),
+                                self.point(21, 1), self.point(40, 40)])
 
     def testContainment(self):
-        from tt.fusion import containment
+        from tt.detectors.fusion import containment
         inside = containment(self.points, self.boxes)
         self.assertEqual(inside.tolist(),
                          [[True, False, False], [True, False, False],
@@ -389,24 +399,24 @@ class TestFusion(unittest.TestCase):
 
     def testWeakBoxClearOfStrongOnesMerges(self):
         """A weak box overlapping no stronger box merges the points in it."""
-        from tt.fusion import weakBoxMergedPoints
-        boxes = [self.box(0, 0, 4, 4, 0.9), self.box(30, 0, 34, 4, 0.1)]
-        points = [self.point(1, 1, 12.0), self.point(31, 1, 9.0),
-                  self.point(33, 3, 11.0)]
-        result = weakBoxMergedPoints(boxes, points, threshold=0.5)
-        self.assertEqual(sorted(p["centreX"] for p in result), [1, 33])
+        from tt.detectors.fusion import WeakBoxMergedPoints
+        boxes = asBoxes([self.box(0, 0, 4, 4, 0.9), self.box(30, 0, 34, 4, 0.1)])
+        points = asPoints([self.point(1, 1, 12.0), self.point(31, 1, 9.0),
+                           self.point(33, 3, 11.0)])
+        result = WeakBoxMergedPoints().combine(boxes, points, threshold=0.5)
+        self.assertEqual(sorted(result.x), [1, 33])
 
     def testWeakBoxOverlappingTooMuchIsIgnored(self):
         """Half of the weak box lies in a strong one: more than 25%."""
-        from tt.fusion import weakBoxMergedPoints
-        boxes = [self.box(0, 0, 4, 4, 0.9), self.box(2, 0, 6, 4, 0.1)]
-        points = [self.point(5, 1, 9.0), self.point(5.5, 3, 11.0)]
-        result = weakBoxMergedPoints(boxes, points, threshold=0.5)
-        self.assertEqual(len(result), 2)
+        from tt.detectors.fusion import WeakBoxMergedPoints
+        boxes = asBoxes([self.box(0, 0, 4, 4, 0.9), self.box(2, 0, 6, 4, 0.1)])
+        points = asPoints([self.point(5, 1, 9.0), self.point(5.5, 3, 11.0)])
+        self.assertEqual(len(WeakBoxMergedPoints().combine(boxes, points,
+                                                           threshold=0.5)), 2)
 
     def testOverlapIsMeasuredAgainstTheSmallerBox(self):
         """A small box inside a big one overlaps fully, whatever the IoU."""
-        from tt.fusion import overlapOverSmaller
+        from tt.detectors.fusion import overlapOverSmaller
         share = overlapOverSmaller([1, 1, 2, 2], np.array([[0, 0, 10, 10]]))
         self.assertAlmostEqual(float(share[0]), 1.0)
         share = overlapOverSmaller([0, 0, 4, 4], np.array([[3, 0, 7, 4]]))
@@ -414,37 +424,37 @@ class TestFusion(unittest.TestCase):
 
     def testWeakBoxesBlockEachOther(self):
         """Taken strongest first, an accepted weak box blocks a weaker one."""
-        from tt.fusion import weakBoxMergedPoints
-        boxes = [self.box(0, 0, 4, 4, 0.3), self.box(2, 0, 6, 4, 0.2)]
-        points = [self.point(1, 1, 9.0), self.point(3, 3, 11.0),
-                  self.point(5, 1, 8.0), self.point(5.5, 3, 7.0)]
-        result = weakBoxMergedPoints(boxes, points, threshold=0.5)
+        from tt.detectors.fusion import WeakBoxMergedPoints
+        boxes = asBoxes([self.box(0, 0, 4, 4, 0.3), self.box(2, 0, 6, 4, 0.2)])
+        points = asPoints([self.point(1, 1, 9.0), self.point(3, 3, 11.0),
+                           self.point(5, 1, 8.0), self.point(5.5, 3, 7.0)])
+        result = WeakBoxMergedPoints().combine(boxes, points, threshold=0.5)
         # the 0.3 box is accepted and merges its two points to x=3; the 0.2
         # box overlaps it by half and is refused, so its points both survive
-        self.assertEqual(sorted(p["centreX"] for p in result), [3, 5, 5.5])
+        self.assertEqual(sorted(result.x), [3, 5, 5.5])
 
     def testConfirmedUsesTwoThresholds(self):
-        from tt.fusion import confirmed
-        kept = confirmed(self.boxes, self.points, confirmedAt=0.2,
-                         unconfirmedAt=0.5)
-        self.assertEqual([b["score"] for b in kept], [0.9, 0.6, 0.3])
-        kept = confirmed(self.boxes, self.points, confirmedAt=0.5,
-                         unconfirmedAt=0.7)
-        self.assertEqual([b["score"] for b in kept], [0.9])
+        from tt.detectors.fusion import Confirmed
+        kept = Confirmed().combine(self.boxes, self.points, confirmedAt=0.2,
+                                   unconfirmedAt=0.5)
+        self.assertEqual(list(kept.scores), [0.9, 0.6, 0.3])
+        kept = Confirmed().combine(self.boxes, self.points, confirmedAt=0.5,
+                                   unconfirmedAt=0.7)
+        self.assertEqual(list(kept.scores), [0.9])
 
     def testUnionAddsOnlyUncoveredPoints(self):
-        from tt.fusion import union
-        result = union(self.boxes, self.points, threshold=0.5)
+        from tt.detectors.fusion import Union
+        result = Union().combine(self.boxes, self.points, threshold=0.5)
         # boxes 0.9 and 0.6 kept; the points in box 0.9 are covered
         self.assertEqual(len(result), 2 + 2)
-        self.assertEqual(sorted(p["centreX"] for p in result[2:]), [21, 40])
+        self.assertEqual(sorted(result.x[2:]), [21, 40])
 
     def testBoxMergesPointsItHolds(self):
-        from tt.fusion import boxMergedPoints
-        result = boxMergedPoints(self.boxes, self.points, threshold=0.2)
-        xs = sorted(p["centreX"] for p in result)
+        from tt.detectors.fusion import BoxMergedPoints
+        result = BoxMergedPoints().combine(self.boxes, self.points,
+                                           threshold=0.2)
         # the two points in the first box collapse to the higher (x=3)
-        self.assertEqual(xs, [3, 21, 40])
+        self.assertEqual(sorted(result.x), [3, 21, 40])
 
 
 class TestSaddleUnion(unittest.TestCase):
@@ -456,7 +466,7 @@ class TestSaddleUnion(unittest.TestCase):
 
     def setUp(self):
         from affine import Affine
-        from tt.fusion import SaddleSurface
+        from tt.detectors.fusion import SaddleSurface
         rows, columns = np.mgrid[0:40, 0:40]
         chm = np.zeros((40, 40), np.float32)
         for row, column, height in ((20, 10, 16.0), (20, 25, 14.0)):
@@ -468,54 +478,55 @@ class TestSaddleUnion(unittest.TestCase):
     @staticmethod
     def at(row, column, score=10.0):
         x, y = column + 0.5, 40 - row - 0.5
-        return {"centreX": x, "centreY": y, "score": score,
-                "box": [x, y, x, y]}
+        return asPoints([{"centreX": x, "centreY": y, "score": score,
+                          "box": [x, y, x, y]}])
 
     @staticmethod
     def box(c0, c1, r0, r1, score):
         return {"box": [c0, 40 - r1, c1, 40 - r0], "score": score,
                 "centreX": (c0 + c1) / 2.0, "centreY": 40 - (r0 + r1) / 2.0}
 
+    def cross(self):
+        from tt.detectors.fusion import UnionSaddleCross
+        return UnionSaddleCross(self.surface)
+
+    def pool(self):
+        from tt.detectors.fusion import UnionSaddlePool
+        return UnionSaddlePool(self.surface)
+
     def testBoxContainmentLosesTheNeighbour(self):
-        from tt.fusion import union
-        wide = self.box(3, 27, 13, 27, 0.9)
-        self.assertEqual(len(union([wide], [self.at(20, 25)], 0.5)), 1)
+        from tt.detectors.fusion import Union
+        wide = asBoxes([self.box(3, 27, 13, 27, 0.9)])
+        self.assertEqual(len(Union().combine(wide, self.at(20, 25), 0.5)), 1)
 
     def testSaddleKeepsTheNeighbour(self):
-        from tt.fusion import unionSaddleCross
-        wide = self.box(3, 27, 13, 27, 0.9)
-        result = unionSaddleCross([wide], [self.at(20, 25)], 0.5,
-                                  self.surface)
-        self.assertEqual(len(result), 2)
+        wide = asBoxes([self.box(3, 27, 13, 27, 0.9)])
+        self.assertEqual(len(self.cross().combine(wide, self.at(20, 25), 0.5)), 2)
 
     def testSaddleDropsTheTopOfTheBoxesOwnTree(self):
-        from tt.fusion import unionSaddleCross
-        wide = self.box(3, 27, 13, 27, 0.9)
-        result = unionSaddleCross([wide], [self.at(20, 10)], 0.5,
-                                  self.surface)
-        self.assertEqual(len(result), 1)
+        wide = asBoxes([self.box(3, 27, 13, 27, 0.9)])
+        self.assertEqual(len(self.cross().combine(wide, self.at(20, 10), 0.5)), 1)
 
     def testPoolMergesASplitCrownButCrossDoesNot(self):
-        from tt.fusion import unionSaddleCross, unionSaddlePool
-        halves = [self.box(3, 11, 13, 27, 0.9), self.box(11, 17, 13, 27, 0.6)]
-        self.assertEqual(len(unionSaddlePool(halves, [], 0.5,
-                                             self.surface)), 1)
-        self.assertEqual(len(unionSaddleCross(halves, [], 0.5,
-                                              self.surface)), 2)
+        halves = asBoxes([self.box(3, 11, 13, 27, 0.9),
+                          self.box(11, 17, 13, 27, 0.6)])
+        none = asPoints([])
+        self.assertEqual(len(self.pool().combine(halves, none, 0.5)), 1)
+        self.assertEqual(len(self.cross().combine(halves, none, 0.5)), 2)
 
     def testApexFollowsTheMaskOutline(self):
         """Box over both cones; the outline around B puts the apex on B."""
         wide = self.box(3, 32, 13, 27, 0.9)
-        self.assertEqual(self.surface.apex(dict(wide)), (20, 10))
+        self.assertEqual(tuple(self.surface.apexes(asBoxes([wide]))[0]),
+                         (20, 10))
         ring = [[19, 40 - 16], [31, 40 - 16], [31, 40 - 24], [19, 40 - 24]]
-        self.assertEqual(self.surface.apex(dict(wide, polygon=ring)),
-                         (20, 25))
+        self.assertEqual(tuple(self.surface.apexes(
+            asBoxes([dict(wide, polygon=ring)]))[0]), (20, 25))
 
     def testPoolKeepsTwoTreesApart(self):
-        from tt.fusion import unionSaddlePool
-        boxes = [self.box(3, 17, 13, 27, 0.9), self.box(18, 32, 13, 27, 0.8)]
-        self.assertEqual(len(unionSaddlePool(boxes, [], 0.5,
-                                             self.surface)), 2)
+        boxes = asBoxes([self.box(3, 17, 13, 27, 0.9),
+                         self.box(18, 32, 13, 27, 0.8)])
+        self.assertEqual(len(self.pool().combine(boxes, asPoints([]), 0.5)), 2)
 
 
 class TestCalibration(Fixture):
@@ -525,7 +536,7 @@ class TestCalibration(Fixture):
     """
 
     def zones(self, extra=()):
-        from tt.calibration import ConfidentZones
+        from tt.legacy.calibration import ConfidentZones
         scene = self.scene()
         predictions = [{"box": list(g.bounds), "score": 0.95,
                         "centreX": g.centroid.x, "centreY": g.centroid.y}
@@ -546,7 +557,7 @@ class TestCalibration(Fixture):
         self.assertEqual(len(zones), 9)
 
     def testProposalIsWithinItsBounds(self):
-        from tt.calibration import (ParameterProposal, EROSION_MAX,
+        from tt.legacy.calibration import (ParameterProposal, EROSION_MAX,
                                     TOP_STEP_CAP_M)
         _, zones = self.zones()
         original = ParameterProposal(zones, "original").settings()
@@ -561,14 +572,14 @@ class TestCalibration(Fixture):
         self.assertLessEqual(corrected["topStepM"], TOP_STEP_CAP_M + 1e-9)
 
     def testCrownBaseCutIsNeverAboveTheApexCut(self):
-        from tt.calibration import ParameterProposal
+        from tt.legacy.calibration import ParameterProposal
         _, zones = self.zones()
         self.assertLessEqual(
             ParameterProposal(zones, "corrected").lowerPercentile(),
             ParameterProposal(zones, "original").lowerPercentile())
 
     def testMinTreeAreaReachesTheDetector(self):
-        from tt.calibration import CalibratedDetector, buildDetector
+        from tt.legacy.calibration import CalibratedDetector, buildDetector
         scene, zones = self.zones()
         self.assertAlmostEqual(CalibratedDetector(scene, zones, 0.1)
                                .minTreeAreaM2, 0.1)
@@ -578,7 +589,7 @@ class TestCalibration(Fixture):
         self.assertAlmostEqual(detector.minTreeAreaM2, 0.1)
 
     def testCheckCountsCoverageAndMultiplicity(self):
-        from tt.calibration import ZoneCheck
+        from tt.legacy.calibration import ZoneCheck
         scene, zones = self.zones()
         points, _ = scene.crownPeaks()
         tops = []
@@ -595,7 +606,7 @@ class TestCalibration(Fixture):
         self.assertAlmostEqual(check.multiplicity, 1 / 9.0)
 
     def testFinalMergeLeavesOneTopPerZone(self):
-        from tt.calibration import ZoneCheck, finalMerge
+        from tt.legacy.calibration import ZoneCheck, finalMerge
         scene, zones = self.zones()
         points, _ = scene.crownPeaks()
         tops = []
@@ -611,7 +622,7 @@ class TestCalibration(Fixture):
 
     def testCalibratedRunFindsEveryTree(self):
         from tt import CrownEvaluator
-        from tt.calibration import CalibratedDetector
+        from tt.legacy.calibration import CalibratedDetector
         from shapely.geometry import box as shapelyBox
         from tt.dl import dlCommon as dc
         scene, zones = self.zones()
@@ -667,11 +678,10 @@ class TestFusionOutputs(unittest.TestCase):
     """Each strategy's output is kept apart from its score."""
 
     def testOutputDoesNotReplaceTheDetectionCount(self):
-        from tt.fusion import slim
-        full = {"centreX": 1.0, "centreY": 2.0, "score": 0.5,
-                "box": [0, 0, 2, 4], "polygon": [[0, 0]], "apex": (1, 1)}
-        self.assertEqual(sorted(slim(full)), ["box", "centreX", "centreY",
-                                              "score"])
+        full = asBoxes([{"centreX": 1.0, "centreY": 2.0, "score": 0.5,
+                         "box": [0, 0, 2, 4], "polygon": [[0, 0]]}])
+        self.assertEqual(sorted(full.slim()[0]), ["box", "centreX", "centreY",
+                                                  "score"])
 
 
 class TestTransfer(unittest.TestCase):
@@ -1290,7 +1300,7 @@ class TestProminence(unittest.TestCase):
     def testCalibrationDipIsTheMergeLevel(self):
         """Apex T and branch tip P2: the straight line crosses the ground
         (dip 7.4 m); through the branch they join at 9.0 m (dip 0.4 m)."""
-        from tt.calibration import ConfidentZones
+        from tt.legacy.calibration import ConfidentZones
         from tt.scene import Scene
         scene = Scene(self.path, resolution=0.1, minHeight=1.0, verbose=False)
         zones = ConfidentZones.__new__(ConfidentZones)

@@ -32,13 +32,13 @@ import numpy as np
 from scipy.spatial import cKDTree
 from scipy.stats import wilcoxon
 
-from .comparison import MethodRun, sharedBlocks
-from .detector import ConCompDetector
-from .dl import dlCommon as dc
-from .dl import dlPrepare as dp
+from ..comparison import MethodRun, sharedBlocks
+from ..detector import ConCompDetector
+from ..dl import dlCommon as dc
+from ..dl import dlPrepare as dp
 from .fusion import mergeWithin, overlapOverSmaller
-from .merging import TopMerger, saddleDrop
-from .scene import Scene
+from ..merging import TopMerger, saddleDrop
+from ..scene import Scene
 
 # --- the rules' constants, fixed in advance -------------------------------- #
 APEX_COVER = 0.95          # zone apexes the percentile cut must keep

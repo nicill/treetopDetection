@@ -36,7 +36,6 @@ import sys
 
 import numpy as np
 
-from .data.annotations import readCrowns
 from .data.patches import PatchSet
 from .data.site import TDData
 from .dl import dlCommon as dc
@@ -44,18 +43,19 @@ from .experiments import ParameterGrid
 from .experiments.crossValidation import loadAllDetections
 from .experiments.fixed import LearningCurve, poolPoint
 from .pseudoTuning import runGrid
-from .scoring import CrownFrame, Evaluator
+from .scoring import AnnotatedCrowns, Evaluator
 
 def ccCurve(args):
     """The curve of one CC run, from the detections it saved."""
     grid, _ = runGrid(args.ccRun)
     site = TDData.fromDataset(args.dataset)
-    # every crown in the file: drawn tiles may reach past the scored area
-    crowns, _ = readCrowns(site.annotations.crownsPath, site.annotations.crs)
+    # only the crowns inside the scored area count, as everywhere: drawn
+    # tiles may reach past it
     return LearningCurve(
         site, ParameterGrid(grid).expand(),
         loadAllDetections(os.path.join(args.ccRun, "detections.npz")),
-        PatchSet.load(args.tiles or args.dataset), Evaluator(CrownFrame(crowns)),
+        PatchSet.load(args.tiles or args.dataset),
+        Evaluator(AnnotatedCrowns(site.annotations)),
         [float(v) for v in args.fractions.split(",")],
         [int(v) for v in args.seeds.split(",")], args.buffer, args.jobs)
 

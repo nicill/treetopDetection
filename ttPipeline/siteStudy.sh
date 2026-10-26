@@ -137,7 +137,7 @@ stage "$CC" "$OUT/runs/$CC/results.json" python -m tt.dl concomp \
 
 train mrcnnRgb "$OUT/ds/rgb"
 if [ -f "$OUT/runs/mrcnnRgb/results.json" ] && [ -f "$OUT/runs/$CC/results.json" ]; then
-    stage calibration "$OUT/calibration/calibration.json" python -m tt.calibration \
+    stage calibration "$OUT/calibration/calibration.json" python -m tt.legacy.calibration \
         --chm "$CHM" --crowns "$CROWNS" --boundary "$AREA" \
         --dataset "$OUT/ds/chm" --rgbRun "$OUT/runs/mrcnnRgb" \
         --ccRun "$OUT/runs/$CC" --resolution "$CCRES" --minHeight "$MINH" \
