@@ -13,35 +13,33 @@ tt align   --chm CHM.tif --layer photo=ortho.tif --layer crowns=crowns.shp
 Or from Python, which is the same objects:
 
 ```python
-from tt import Scene, ConCompDetector, CrownEvaluator, TopMerger
+from tt import TDData, CCDetector, Evaluator, AnnotatedCrowns, Analysis
 
-scene = Scene("CHM.tif", crownsPath="crowns.shp", boundaryPath="area.shp")
-detector = ConCompDetector(lowerPercentile=10, minTopAreaM2=0.12,
-                           topStepM=0.12, erosionIterations=1,
-                           merger=TopMerger("saddle", epsM=8.0,
-                                            saddleDropM=0.5))
-tops = detector.detect(scene)
-print(CrownEvaluator(scene).score(tops))
+site = TDData.fromFiles("site", chm={"LiDAR": "chm.tif"}, rgb="ortho.tif",
+                        crowns="crowns.shp", area="area.shp")
+detector = CCDetector(lowerPercentile=10, minTopAreaM2=0.12, topStepM=0.12,
+                      erosionIterations=1, saddleDropM=0.5)
+tops = detector.detect(site)
+print(Evaluator(AnnotatedCrowns(site.annotations)).score(tops))
+print(Analysis(site).errors(tops))
+site.show("site.png", {"CC": tops})
 ```
 
-## The modules
+A prepared dataset folder loads with `TDData.fromDataset(path)`, which also
+gives the site its tiles (`site.patchSet`) and cross-validation blocks.
 
-| module | holds |
+## The packages
+
+| package | holds |
 |---|---|
-| `scene.py` | `Scene` — CHM, crowns and boundary on one grid |
-| `detector.py` | `ConCompDetector` — detection, and nothing else |
-| `merging.py` | `TopMerger` — every decision about whether two tops are one tree |
-| `evaluation.py` | `CrownEvaluator`, `Classification` — crown-level scoring |
-| `analysis.py` | `MissAnalysis` — what it gets wrong and why |
-| `render.py` | `TileRenderer` — the diagnostic images |
-| `sweeps.py` | `Sweep` — trying many settings |
-| `alignment.py` | `Alignment` — offsets between CHM, photo and crowns |
-| `tops.py` | `Tops` — a set of treetops and how they leave the program |
-| `comparison.py` | `MethodRun`, `TreeComparison` — which trees each method finds, from saved predictions |
-| `fusion.py` | `FusionCrossValidation` — box detector + point detector combinations, tuned on validation blocks |
-| `report.py`, `reportText.py`, `reportFigures.py`, `odt.py` | the ODT results report |
-| `cli.py` | the subcommands |
-| `dl/` | the YOLO / Mask R-CNN benchmark, moved but not yet rewritten |
+| `data/` | `TDData` (a site: layers by kind and source, annotations, blocks, `show`), `HeightModel`, `RGBMosaic`, `HeightSurface`, `Annotations`, `Detections` (any detector's output, and the run-file format), `PatchSet` (tiles), `Alignment` |
+| `detectors/` | `Detector` with its postprocessors (`NMS`); `CCDetector`, `LocalMaximaDetector`, `WatershedDetector`; `TopMerger`; the fusion strategies and `CombinedDetector`; `dl/`: `TorchvisionDetector`, `YOLODetector`, `PretrainedDetector` (DeepForest) |
+| `scoring/` | `Evaluator` (the one scorer, and the operating point), references (`AnnotatedCrowns`, `BoxCrowns`, `CrownFrame`), objectives (`F1`, `Weighted`), `PseudoCrowns` |
+| `experiments/` | `ParameterGrid`, `CrossValidation`, `TrainedCrossValidation`, `TrainedTransfer`, `FixedRun`, `FixedSettings`, `GridSearch`, `LearningCurve`, `PseudoTuning`, `FusionCrossValidation`, `RunSet` (a saved run) |
+| `analysis/` | `Analysis` (site statistics, a result's errors, alignment diagnostics), `TreeTable` (methods crown by crown), the shared statistics |
+| `report/` | the ODT results report (`python -m tt.report`), its text and figures, `TileRenderer`, block images, the study summary and the experiments report |
+| `legacy/` | calibration, kept for reference; it no longer runs |
+| `cli.py`, `dl/`, top-level modules | commands: they parse arguments and call the classes above |
 
 ## Overnight run
 

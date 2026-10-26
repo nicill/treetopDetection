@@ -29,6 +29,10 @@ class SiteCase(unittest.TestCase):
                                 crowns=self.crownsPath, area=self.areaPath,
                                 heightSource="LiDAR", **keywords)
 
+    @property
+    def boundaryPath(self):
+        return self.areaPath
+
     def dataset(self):
         return buildDataset(self.directory, self.chmPath, self.crownsPath,
                             self.areaPath)

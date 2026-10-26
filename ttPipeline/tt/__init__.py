@@ -2,17 +2,14 @@
 
 import warnings
 
-from .data import Annotations, Detections, HeightModel, RGBMosaic, TDData
-from .detector import ConCompDetector
+from .analysis import Analysis
+from .data import (Annotations, Detections, HeightModel, PatchSet, RGBMosaic,
+                   TDData)
 from .detectors import (CCDetector, Detector, LocalMaximaDetector, NMS,
-                        PostProcessor, WatershedDetector)
+                        PostProcessor, TopMerger, WatershedDetector)
 from .experiments import CrossValidation, ParameterGrid, RunSet
 from .scoring import AnnotatedCrowns, Evaluator, F1, Weighted
-from .evaluation import CrownEvaluator, Classification
-from .merging import TopMerger
 from .scoring.pseudoCrowns import PseudoCrowns
-from .scene import Scene, readCrowns
-from .tops import Tops
 
 # affine 3.0 deprecates * on Affine in favour of @. This package uses @
 # throughout; rasterio still uses * inside its own windowed-read code, which
@@ -23,11 +20,8 @@ warnings.filterwarnings("ignore", category=PendingDeprecationWarning,
 
 
 __all__ = [
-    # the redesigned classes
     "TDData", "HeightModel", "RGBMosaic", "Annotations", "Detections",
-    "Detector", "CCDetector", "LocalMaximaDetector", "WatershedDetector",
-    "PostProcessor", "NMS", "Evaluator", "AnnotatedCrowns", "F1", "Weighted",
-    "ParameterGrid", "CrossValidation", "RunSet",
-    # still used by modules not yet moved to them
-    "Scene", "Tops", "ConCompDetector", "CrownEvaluator", "Classification",
-    "TopMerger", "PseudoCrowns", "readCrowns"]
+    "PatchSet", "Detector", "CCDetector", "LocalMaximaDetector",
+    "WatershedDetector", "TopMerger", "PostProcessor", "NMS", "Evaluator",
+    "AnnotatedCrowns", "F1", "Weighted", "ParameterGrid", "CrossValidation",
+    "RunSet", "Analysis", "PseudoCrowns"]

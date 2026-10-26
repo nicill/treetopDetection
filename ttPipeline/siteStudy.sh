@@ -136,13 +136,7 @@ stage "$CC" "$OUT/runs/$CC/results.json" python -m tt.dl concomp \
     --saveDetections $CCGRID
 
 train mrcnnRgb "$OUT/ds/rgb"
-if [ -f "$OUT/runs/mrcnnRgb/results.json" ] && [ -f "$OUT/runs/$CC/results.json" ]; then
-    stage calibration "$OUT/calibration/calibration.json" python -m tt.legacy.calibration \
-        --chm "$CHM" --crowns "$CROWNS" --boundary "$AREA" \
-        --dataset "$OUT/ds/chm" --rgbRun "$OUT/runs/mrcnnRgb" \
-        --ccRun "$OUT/runs/$CC" --resolution "$CCRES" --minHeight "$MINH" \
-        --minTreeArea "$MINTREE" --output "$OUT/calibration"
-fi
+# (the calibration stage was removed: tt.legacy.calibration no longer runs)
 # CC tuned on the RGB Mask R-CNN's boxes instead of the crowns (no crown of
 # the held-out block is used), against CC tuned on the real crowns
 if [ -f "$OUT/runs/mrcnnRgb/results.json" ] && [ -f "$OUT/runs/$CC/results.json" ]; then

@@ -27,16 +27,6 @@ class TestTDData(SiteCase):
             site.layer("CHM")
         self.assertEqual(site.layer("CHM", "P1").source, "P1")
 
-    def testSurfaceMatchesTheOldScene(self):
-        from tt import Scene
-        old = Scene(self.chmPath, crownsPath=self.crownsPath,
-                    boundaryPath=self.areaPath, verbose=False, minHeight=3.0,
-                    smoothM=0.2)
-        new = self.site().heightSurface(minHeight=3.0, smoothM=0.2)
-        np.testing.assert_array_equal(old.chm, new.chm)
-        self.assertEqual(old.pixelSize, new.pixelSize)
-        self.assertEqual(old.toWorld(10, 20), new.toWorld(10, 20))
-
     def testSurfacesAreBuiltOnce(self):
         site = self.site()
         self.assertIs(site.heightSurface(minHeight=1.0),

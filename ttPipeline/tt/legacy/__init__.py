@@ -1,9 +1,16 @@
 """
-Kept as they were, not maintained: modules from earlier experiments that the
-redesigned classes do not replace. They run against the old interfaces that
-remain (MethodRun, ConCompDetector, Scene, the dict-based fusion helpers in
-fusion.py, which only calibration uses); when those go, so does this.
+Kept as they were, not maintained and no longer runnable: the classes they
+were written against (Scene, ConCompDetector, MethodRun, the dict-based
+fusion helpers' callers) have been removed in the redesign. Kept for
+reference and so their results can be traced.
 
-    calibration   CC calibrated from the RGB Mask R-CNN's confident zones,
-                  superseded by pseudo-tuning (tt.experiments.pseudo)
+    calibration   CC's settings proposed from the RGB Mask R-CNN's confident
+                  zones by rules fixed in advance, checked and adjusted inside
+                  the zones (no grid search). An alternative to pseudo-tuning
+                  (tt.experiments.pseudo), which instead chooses among CC's
+                  grid by scoring against the network's boxes. Its results
+                  (calibration/calibration.json) are still read by
+                  tt.report.studySummary.
+    fusion        the dict-based combination helpers calibration used; the
+                  maintained strategies are tt.detectors.fusion.
 """

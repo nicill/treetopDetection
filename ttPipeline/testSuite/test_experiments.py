@@ -1,6 +1,5 @@
 """Parameter grids, cross-validation and run sets."""
 
-import os
 import tempfile
 import unittest
 
@@ -35,25 +34,18 @@ class TestCrossValidation(CrowdedSiteCase):
                                      verbose=False, jobs=jobs)
         return validation, validation.run()
 
-    def testSameAsTheOldCrossValidation(self):
-        """Folds, pooled scores and saved predictions, number for number."""
-        from tt.dl.dlConComp import ConCompCrossValidation
-        output = tempfile.mkdtemp()
-        old = ConCompCrossValidation(self.dataset(), grid=dict(self.grid),
-                                     minHeight=2.0, verbose=False,
-                                     output=output)
-        folds, pooled = old.run()
-        _, runSet = self.crossValidate(jobs=2)
-        self.assertEqual(plain(folds), plain(runSet.folds))
-        self.assertEqual(plain(pooled), plain(runSet.pooled))
-        newOutput = tempfile.mkdtemp()
-        runSet.save(newOutput)
-        for name, _ in old.blocks:
-            fileName = "predictions_%s.json" % name
-            with open(os.path.join(output, fileName)) as a, \
-                    open(os.path.join(newOutput, fileName)) as b:
-                self.assertEqual(plain(__import__("json").load(a)),
-                                 plain(__import__("json").load(b)))
+    def testHeightAndTreeAreaAreTunedLikeTheRest(self):
+        validation, _ = self.crossValidate(grid={
+            "lowerPercentile": [10], "minTopAreaM2": [0.12], "topStepM": [0.25],
+            "erosionIterations": [1], "saddleDropM": [0.5],
+            "minHeight": [1.0, 3.0], "minTreeAreaM2": [0.5, 40.0]})
+        self.assertEqual(len(validation.settings), 4)
+        self.assertEqual(sorted({key[3] for key in
+                                 validation.data._surfaces}), [1.0, 3.0])
+        counts = {(s["minHeight"], s["minTreeAreaM2"]): len(d)
+                  for s, d in zip(validation.settings, validation.detections)}
+        # a 40 m2 minimum tree area leaves none of the small cones
+        self.assertLess(counts[(1.0, 40.0)], counts[(1.0, 0.5)])
 
     def testComparedAxesAreTunedSeparately(self):
         _, runSet = self.crossValidate()
@@ -83,22 +75,6 @@ class TestCrossValidation(CrowdedSiteCase):
         self.assertEqual(len(back.predictions[block]),
                          len(runSet.predictions[block]))
 
-    def testBaselinesSameAsBefore(self):
-        from tt.data import TDData
-        from tt.detectors import LocalMaximaDetector, WatershedDetector
-        from tt.dl.dlBaselines import BaselineCrossValidation
-        from tt.experiments import CrossValidation, ParameterGrid
-        site = TDData.fromDataset(self.dataset())
-        for method, cls in (("lmvw", LocalMaximaDetector),
-                            ("watershed", WatershedDetector)):
-            grid = dict(cls.defaultGrid, minHeight=[1.0, 2.0])
-            folds, pooled = BaselineCrossValidation(
-                method, self.dataset(), grid=dict(grid), minHeight=2.0,
-                verbose=False).run()
-            runSet = CrossValidation(site, cls(), ParameterGrid(grid),
-                                     verbose=False).run()
-            self.assertEqual(plain(folds), plain(runSet.folds), method)
-            self.assertEqual(plain(pooled), plain(runSet.pooled), method)
 
 
 if __name__ == "__main__":

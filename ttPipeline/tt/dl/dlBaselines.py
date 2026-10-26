@@ -28,70 +28,17 @@ import argparse
 import os
 import sys
 
-from ..detectors.height import (LocalMaximaDetector, WatershedDetector,
-                               localMaxima, markerWatershed)
+from ..detectors.height import LocalMaximaDetector, WatershedDetector
 from ..data.site import TDData
 from ..experiments import CrossValidation, ParameterGrid
 from . import dlCommon as dc
-from .dlConComp import ConCompCrossValidation, SCENE_KEY, SMOOTH_KEY
+from .dlConComp import SCENE_KEY, SMOOTH_KEY
 
 GRIDS = {"lmvw": LocalMaximaDetector.defaultGrid,
          "watershed": WatershedDetector.defaultGrid}
 
 
-class Tops(object):
-    """What the cross-validation reads from a detector: (x, y, height)."""
-
-    def __init__(self, points):
-        self.points = points
-
-
-class LocalMaximaVariableWindow(object):
-
-    def __init__(self, windowBaseM, windowSlope):
-        self.base, self.slope = windowBaseM, windowSlope
-
-    def detect(self, scene):
-        return Tops(localMaxima(scene.chm, scene.pixelSize, self.base,
-                                self.slope))
-
-
-class MarkerWatershed(object):
-
-    def __init__(self, markerWindowM, minCrownAreaM2):
-        self.window, self.minArea = markerWindowM, minCrownAreaM2
-
-    def detect(self, scene):
-        return Tops(markerWatershed(scene.chm, scene.pixelSize, self.window,
-                                    self.minArea))
-
-
 BASELINES = {"lmvw": LocalMaximaDetector, "watershed": WatershedDetector}
-
-DETECTORS = {
-    "lmvw": lambda s: LocalMaximaVariableWindow(s["windowBaseM"],
-                                                s["windowSlope"]),
-    "watershed": lambda s: MarkerWatershed(s["markerWindowM"],
-                                           s["minCrownAreaM2"]),
-}
-
-
-class BaselineCrossValidation(ConCompCrossValidation):
-    """CC's cross-validation with a classical detector in its place."""
-
-    def __init__(self, method, *args, **keywords):
-        self.method = method
-        super().__init__(*args, **keywords)
-
-    def _detector(self, setting):
-        return DETECTORS[self.method](setting)
-
-    @staticmethod
-    def _printFold(fold):
-        print("  fold %s: tuned %.3f -> held-out R %.3f P %.3f F1 %.3f  %s"
-              % (fold["block"], fold["tuningScore"], fold["recall"],
-                 fold["precision"], fold["f1"], fold["settings"]))
-
 
 OVERRIDES = {"windowBaseM": "windowBases", "windowSlope": "windowSlopes",
              "markerWindowM": "markerWindows", "minCrownAreaM2": "minCrownAreas"}
@@ -142,7 +89,7 @@ def crossValidate(args):
 def parseArguments(argv=None):
     parser = argparse.ArgumentParser(
         description="Classical CHM tree-top baselines, leave-one-block-out.")
-    parser.add_argument("--method", choices=sorted(DETECTORS), required=True)
+    parser.add_argument("--method", choices=sorted(BASELINES), required=True)
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--resolution", type=float, default=0.25)

@@ -1,7 +1,6 @@
 """Analysis: the site, a result, and methods tree by tree."""
 
 import os
-import tempfile
 import unittest
 
 import numpy as np
