@@ -12,7 +12,6 @@ inside several overlapping crowns are assigned to the smallest, the most
 specific claim.
 """
 
-import geopandas as gpd
 import numpy as np
 from scipy.spatial import cKDTree
 from shapely.geometry import Point

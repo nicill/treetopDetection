@@ -17,6 +17,10 @@ import numpy as np
 
 from .objective import Objective, f1Of, weightedOf
 
+# the score thresholds a network's operating point is chosen among
+THRESHOLD_CANDIDATES = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40,
+                        0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80]
+
 
 def assignToCrowns(xs, ys, scores, crowns):
     """
@@ -127,3 +131,60 @@ class Evaluator(object):
 
     def objectiveOf(self, scores):
         return self.objective.value(scores)
+
+    # ------------------------------------------------------------------ #
+    # operating points
+    # ------------------------------------------------------------------ #
+
+    def thresholdCurve(self, detections, region=None,
+                       candidates=THRESHOLD_CANDIDATES):
+        """
+        [(threshold, objective)] for every candidate that keeps at least one
+        detection. Which crown a centre belongs to does not depend on the
+        threshold, so centres are assigned once: a crown is hit at threshold t
+        exactly when the best score among its centres clears t.
+        """
+        crowns = self.reference.crownsIn(region)
+        kept = detections if region is None else detections.inRegion(region)
+        if not len(kept) or not len(crowns):
+            return []
+        _, _, assigned = assignToCrowns(kept.x, kept.y, kept.scores, crowns)
+        bestPerCrown = {}
+        for point, crown in assigned.items():
+            bestPerCrown[crown] = max(bestPerCrown.get(crown, -np.inf),
+                                      kept.scores[point])
+        crownBest = np.array(list(bestPerCrown.values()))
+        curve = []
+        for threshold in candidates:
+            count = int((kept.scores >= threshold).sum())
+            if not count:
+                continue
+            hits = int((crownBest >= threshold).sum())
+            recall, precision = hits / float(len(crowns)), hits / float(count)
+            curve.append((threshold, self.objective.value({
+                "recall": recall, "precision": precision,
+                "f1": f1Of(recall, precision),
+                "weighted": weightedOf(recall, precision)})))
+        return curve
+
+    def chooseThreshold(self, detections, region=None,
+                        candidates=THRESHOLD_CANDIDATES, verbose=True):
+        """
+        The score threshold that maximises the objective in `region` (a
+        validation block, never the block then scored), and its value there.
+        Without one, the comparison would be between the networks' default
+        confidence scales, not between the networks. Falls back to the lowest
+        candidate, with 0.0, when nothing is kept at any threshold.
+        """
+        curve = self.thresholdCurve(detections, region, candidates)
+        if not curve:
+            if verbose:
+                print("    no predictions on the validation block at any "
+                      "threshold; falling back to %.2f" % candidates[0])
+            return candidates[0], 0.0
+        best, bestScore = max(curve, key=lambda item: item[1])
+        if verbose:
+            print("    operating point chosen on the validation block: "
+                  "score >= %.2f (%s %.3f there)"
+                  % (best, self.objective.name, bestScore))
+        return best, bestScore

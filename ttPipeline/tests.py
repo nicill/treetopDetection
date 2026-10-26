@@ -1533,8 +1533,9 @@ class TestLearningCurve(CurveSite):
         module.main = types.SimpleNamespace(deepforest=StandIn)
         with mock.patch.dict(sys.modules, {"deepforest": module}):
             from tt import deepForestCompare, deepForestDetect, pseudoTuning
+            from tt.detectors.dl import deepForest
         # the stand-in even where the real DeepForest is installed
-        deepForestDetect.dfMain = module.main
+        deepForest.dfMain = module.main
         boxes = self.path("df", "deepforestRgb")
         auto = self.path("df", "ccAutoDf")
         deepForestDetect.main(["--dataset", self.path("rgb"),
@@ -1554,73 +1555,82 @@ class TestLearningCurve(CurveSite):
         self.assertEqual(set(tests), {"deepforest", "ccOnDeepforest", "ccP1"})
 
 
+class TileBoxes(object):
+    """A stand-in network: one box per tile, covering it (no torch)."""
+
+    @staticmethod
+    def make(**params):
+        from tt.detectors.dl.base import DLDetector
+
+        class Boxes(DLDetector):
+            method = "boxes"
+
+            def reset(self, patchSet):
+                pass
+
+            def fit(self, patchSet, patches, validation=None):
+                pass
+
+            def release(self):
+                pass
+
+            def predictPatches(self, patchSet, patches):
+                return [{"box": [p.record["west"], p.record["south"],
+                                 p.record["east"], p.record["north"]],
+                         "centreX": p.record["centreX"],
+                         "centreY": p.record["centreY"], "score": 0.9}
+                        for p in patches]
+
+        return Boxes(**params)
+
+
 class TestNetworkSubsets(CurveSite):
-    """Mask R-CNN's annotated subset and transfer, without training (torch)."""
+    """The networks' annotated subset and transfer, without training."""
 
-    def setUp(self):
-        try:
-            from tt.dl import dlMaskRcnn
-        except ImportError:
-            self.skipTest("torch not installed")
-        self.mr = dlMaskRcnn
-
-        def boxesOnTiles(model, tiles, root, device, transform, **keywords):
-            return [{"box": [t["west"], t["south"], t["east"], t["north"]],
-                     "centreX": t["centreX"], "centreY": t["centreY"],
-                     "score": 0.9} for t in tiles]
-        self.patches = [mock.patch.object(dlMaskRcnn, name, value)
-                        for name, value in (
-                            ("predictTiles", boxesOnTiles),
-                            ("buildModel", lambda *a, **k: object()),
-                            ("trainFold", lambda *a, **k: None))]
-        for p in self.patches:
-            p.start()
-
-    def tearDown(self):
-        for p in getattr(self, "patches", []):
-            p.stop()
+    def crossValidation(self, dataset, drawFrom=None, fraction=0.5,
+                        bufferM=10.0):
+        from tt.data import PatchSet, TDData
+        from tt.experiments.trained import TrainedCrossValidation
+        return TrainedCrossValidation(
+            TDData.fromDataset(dataset), TileBoxes.make(), bufferM=bufferM,
+            trainFraction=fraction, subsetSeed=2,
+            drawFrom=PatchSet.load(drawFrom) if drawFrom else None)
 
     def testSubsetFoldUsesTheDrawnTiles(self):
         from tt.dl import dlCommon as dc
-        args = self.mr.parseArguments([
-            "--dataset", self.path("rgb"), "--output", self.path("mr"),
-            "--trainFraction", "0.25", "--subsetSeed", "2", "--buffer", "2",
-            "--device", "cpu"])
-        os.makedirs(args.output, exist_ok=True)
-        run = self.mr.MaskRcnnCrossValidation(args)
-        name, geometry = run.blocks[0]
-        fit, val, validationBlock, _ = run.splitFold(name)
-        train, _ = dc.foldSplit(run.meta["tiles"], run.blocks, name, 2.0)
-        drawn = dc.drawTiles(train, 0.25, 2, name)
-        self.assertEqual(sorted(t["stem"] for t in fit + val),
+        run = self.crossValidation(self.path("rgb"), fraction=0.25,
+                                   bufferM=2.0)
+        block = run.data.blocks[0]
+        fit, val, validationBlock, _ = run.splitFold(block.name)
+        meta = run.patchSet.meta
+        train, _ = dc.foldSplit(meta["tiles"], run.patchSet.blocks,
+                                block.name, 2.0)
+        drawn = dc.drawTiles(train, 0.25, 2, block.name)
+        self.assertEqual(sorted(p.stem for p in fit + val),
                          sorted(t["stem"] for t in drawn))
         region = run.validationRegion(validationBlock, val)
-        self.assertLess(region.area, dict(run.blocks)[validationBlock].area)
-        result = run.runFold(name, geometry)
+        self.assertLess(region.area,
+                        run.data.block(validationBlock).geometry.area)
+        result, _ = run.runFold(block)
         self.assertEqual((result["fitTiles"], result["trainFraction"]),
                          (len(fit), 0.25))
 
     def testTransferScoresEveryBlock(self):
-        args = self.mr.parseArguments([
-            "--dataset", self.path("rgb"), "--output", self.path("mrT"),
-            "--transferFrom", self.path("rgb"), "--device", "cpu"])
-        os.makedirs(args.output, exist_ok=True)
-        folds, _ = self.mr.TransferRun(args).run()
-        self.assertEqual(len(folds), 4)
+        from tt.data import TDData
+        from tt.experiments.trained import TrainedTransfer
+        runSet = TrainedTransfer(TDData.fromDataset(self.path("rgb")),
+                                 TileBoxes.make(),
+                                 TDData.fromDataset(self.path("rgb"))).run()
+        self.assertEqual(len(runSet.folds), 4)
+        output = self.path("mrT")
+        runSet.save(output)
         self.assertTrue(os.path.exists(os.path.join(
-            args.output, "predictions_%s.json" % folds[0]["block"])))
-
-    def crossValidation(self, dataset, *extra):
-        args = self.mr.parseArguments(["--dataset", dataset, "--output",
-                                       self.path("out"), "--device", "cpu",
-                                       "--trainFraction", "0.5", "--subsetSeed", "2"]
-                                      + list(extra))
-        return self.mr.MaskRcnnCrossValidation(args)
+            output, "predictions_%s.json" % runSet.folds[0]["block"])))
 
     @staticmethod
     def keys(fold):
         fit, val, _, _ = fold
-        return {(t["block"], t["r0"], t["c0"]) for t in fit + val}
+        return {(p.block, p.record["r0"], p.record["c0"]) for p in fit + val}
 
     def reducedDataset(self):
         """The CHM dataset's list without the RGB list's busiest tile."""
@@ -1635,21 +1645,22 @@ class TestNetworkSubsets(CurveSite):
 
     def testIdenticalDatasetsDrawAsBefore(self):
         plain = self.crossValidation(self.path("chm"))
-        drawn = self.crossValidation(self.path("chm"), "--drawFrom", self.path("rgb"))
-        for block, _ in plain.blocks:
-            a, b = plain.splitFold(block), drawn.splitFold(block)
-            self.assertEqual(self.keys(a) if a else None, self.keys(b) if b else None)
+        drawn = self.crossValidation(self.path("chm"), self.path("rgb"))
+        for block in plain.data.blocks:
+            a, b = plain.splitFold(block.name), drawn.splitFold(block.name)
+            self.assertEqual(self.keys(a) if a else None,
+                             self.keys(b) if b else None)
 
     def testAMissingTileLeavesTheRestOfTheDrawAlone(self):
         folder, victim = self.reducedDataset()
         reference = self.crossValidation(self.path("rgb"))
-        reduced = self.crossValidation(folder, "--drawFrom", self.path("rgb"))
-        for block, _ in reference.blocks:
-            want, got = reference.splitFold(block), reduced.splitFold(block)
+        reduced = self.crossValidation(folder, self.path("rgb"))
+        for block in reference.data.blocks:
+            want = reference.splitFold(block.name)
+            got = reduced.splitFold(block.name)
             if want is None or got is None:
                 continue
             self.assertEqual(self.keys(got), self.keys(want) - {victim})
-
 
 
 class TestBaselines(unittest.TestCase):

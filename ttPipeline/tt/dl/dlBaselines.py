@@ -33,8 +33,7 @@ from ..detectors.height import (LocalMaximaDetector, WatershedDetector,
 from ..data.site import TDData
 from ..experiments import CrossValidation, ParameterGrid
 from . import dlCommon as dc
-from .dlConComp import (ConCompCrossValidation, SCENE_KEY, SMOOTH_KEY,
-                        saveDetections)
+from .dlConComp import ConCompCrossValidation, SCENE_KEY, SMOOTH_KEY
 
 GRIDS = {"lmvw": LocalMaximaDetector.defaultGrid,
          "watershed": WatershedDetector.defaultGrid}

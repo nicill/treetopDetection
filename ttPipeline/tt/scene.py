@@ -20,8 +20,7 @@ from rasterio.features import rasterize
 
 
 from .data.annotations import readCrowns
-from .data.raster import (LOCAL_HEIGHT_M, RESAMPLING, SMOOTH_STEP_PX,
-                          heightSmoothed)
+from .data.raster import LOCAL_HEIGHT_M, RESAMPLING, heightSmoothed
 
 
 class Scene(object):

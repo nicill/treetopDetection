@@ -44,6 +44,10 @@ class Detections(object):
         self.detector = detector
         self.params = dict(params or {})
         self.block = block
+        # what a run file holds besides the block and the predictions
+        # (settings, threshold, validation predictions, ...); None writes
+        # the settings and region as the tuned detectors' files always had
+        self.fileFields = None
 
     def __len__(self):
         return len(self.x)
@@ -106,7 +110,8 @@ class Detections(object):
                                "centreX": float(self.x[i]),
                                "centreY": float(self.y[i]),
                                "score": float(self.scores[i])})
-            if self.polygons is not None and self.polygons[i] is not None:
+            if self.polygons is not None:
+                # a mask model writes the key even when no outline was traced
                 prediction["polygon"] = self.polygons[i]
             if self.heights is not None and self.geometry != "points":
                 prediction["height"] = float(self.heights[i])
@@ -126,9 +131,10 @@ class Detections(object):
         boxes = (np.array([p["box"] for p in predictions],
                           np.float64).reshape(-1, 4)
                  if all("box" in p for p in predictions) else None)
-        hasPolygons = any(p.get("polygon") for p in predictions)
+        hasPolygons = any("polygon" in p for p in predictions)
         if geometry is None:
-            geometry = ("masks" if hasPolygons else
+            geometry = ("masks" if any(p.get("polygon") for p in predictions)
+                        else
                         "points" if boxes is None or _arePointBoxes(boxes, x, y)
                         else "boxes")
         heights = None
@@ -138,19 +144,29 @@ class Detections(object):
             heights = [p["height"] for p in predictions]
         extra = [{k: v for k, v in p.items() if k not in _KNOWN}
                  for p in predictions]
+        if hasPolygons and geometry == "boxes":
+            geometry = "masks"
         return cls(x, y, scores, heights,
                    None if geometry == "points" else boxes,
                    [p.get("polygon") for p in predictions]
                    if hasPolygons else None,
                    geometry, extra=extra if any(extra) else None, **keywords)
 
-    def save(self, path, settings=None, region="area"):
-        """predictions_<block>.json, as runs have always written it."""
+    def save(self, path):
+        """
+        predictions_<block>.json: the block, the file fields (by default the
+        settings and region), and the predictions. Detections among the file
+        fields are written as prediction lists.
+        """
         directory = os.path.dirname(os.path.abspath(path))
         os.makedirs(directory, exist_ok=True)
-        content = {"block": self.block,
-                   "settings": self.params if settings is None else settings,
-                   "region": region, "predictions": self.toPredictions()}
+        fields = (self.fileFields if self.fileFields is not None
+                  else {"settings": self.params, "region": "area"})
+        content = {"block": self.block}
+        for key, value in fields.items():
+            content[key] = (value.toPredictions()
+                            if isinstance(value, Detections) else value)
+        content["predictions"] = self.toPredictions()
         with open(path, "w") as handle:
             json.dump(content, handle, indent=2, default=float)
         return path
@@ -159,9 +175,12 @@ class Detections(object):
     def load(cls, path, geometry=None):
         with open(path) as handle:
             content = json.load(handle)
-        return cls.fromPredictions(content["predictions"], geometry,
-                                   params=content.get("settings"),
-                                   block=content.get("block"))
+        detections = cls.fromPredictions(content["predictions"], geometry,
+                                         params=content.get("settings"),
+                                         block=content.get("block"))
+        detections.fileFields = {k: v for k, v in content.items()
+                                 if k not in ("block", "predictions")}
+        return detections
 
 
 def _arePointBoxes(boxes, x, y):

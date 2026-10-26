@@ -41,7 +41,7 @@ def poolFolds(folds, objective=None):
 class RunSet(object):
 
     def __init__(self, method, dataset, folds, pooled, source=None,
-                 settings=None, predictions=None):
+                 settings=None, predictions=None, extra=None):
         self.method = method
         self.dataset = dataset
         self.source = source
@@ -49,6 +49,7 @@ class RunSet(object):
         self.folds = folds
         self.pooled = pooled
         self.predictions = dict(predictions or {})   # block -> Detections
+        self.extra = dict(extra or {})     # more top-level results.json keys
 
     def __repr__(self):
         return "RunSet(%s on %s: F1 %.3f over %d folds)" % (
@@ -62,10 +63,12 @@ class RunSet(object):
                                          "predictions_%s.json" % block))
         path = os.path.join(directory, "results.json")
         with open(path, "w") as handle:
-            json.dump({"method": self.method, "dataset": self.dataset,
-                       "source": self.source, "settings": self.settings,
-                       "folds": self.folds, "pooled": self.pooled},
-                      handle, indent=2, default=float)
+            content = {"method": self.method, "dataset": self.dataset,
+                       "source": self.source}
+            content.update(self.extra)
+            content.update({"settings": self.settings, "folds": self.folds,
+                            "pooled": self.pooled})
+            json.dump(content, handle, indent=2, default=float)
         return path
 
     @classmethod
@@ -79,7 +82,9 @@ class RunSet(object):
                 detections = Detections.load(path)
                 block = detections.block or os.path.basename(path)[12:-5]
                 predictions[block] = detections
+        known = ("method", "dataset", "source", "settings", "folds", "pooled")
         return cls(content.get("method"), content.get("dataset"),
                    content.get("folds", []), content.get("pooled", {}),
                    content.get("source"), content.get("settings"),
-                   predictions)
+                   predictions, {k: v for k, v in content.items()
+                                 if k not in known})

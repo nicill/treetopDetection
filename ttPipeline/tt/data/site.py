@@ -17,6 +17,7 @@ from shapely import wkt
 from shapely.ops import unary_union
 
 from .annotations import Annotations
+from .patches import ChannelSpec, PatchSet, makeBlocks
 from .raster import HeightModel, LOCAL_HEIGHT_M, RGBMosaic
 
 
@@ -51,6 +52,7 @@ class TDData(object):
         self.blocks = list(blocks or [])
         self.source = source           # provenance text, kept for run files
         self.runs = []
+        self.patchSet = None           # the site cut into tiles, if it has been
         self._surfaces = {}
 
     def __repr__(self):
@@ -107,7 +109,7 @@ class TDData(object):
         data = cls(meta["name"], layers, annotations, blocks,
                    source=meta.get("source"))
         data.datasetPath = path
-        data.datasetMeta = meta
+        data.patchSet = PatchSet(path, meta)
         return data
 
     # ------------------------------------------------------------------ #
@@ -179,6 +181,32 @@ class TDData(object):
         """Every block but the held-out one."""
         return unary_union([b.geometry for b in self.blocks
                             if b.name != heldOut])
+
+    def makeBlocks(self, columns, rows):
+        """Cut the area into a grid of cross-validation blocks."""
+        self.blocks = [Block(name, geometry) for name, geometry in
+                       makeBlocks(self.area, columns, rows, areaName=self.name)]
+        return self.blocks
+
+    def patches(self, output, layers, resolution=0.05, tileSize=512,
+                overlap=0.5, blockCols=4, blockRows=2, minHeight=2.0,
+                minInsideFraction=0.5):
+        """
+        Cut the site into tiles of these layers, stacked in the order given
+        (e.g. [("RGB", None), ("CHM", "LiDAR")] for the four-channel input),
+        write them to `output` and keep them as this site's PatchSet. The
+        blocks are cut with them.
+        """
+        specs = [ChannelSpec("rgb" if kind == "RGB" else "chm",
+                             self.layer(kind, source).path)
+                 for kind, source in layers]
+        self.patchSet = PatchSet.build(
+            output, specs, self.annotations.crownsPath,
+            self.annotations.areaPath, self.name, resolution, tileSize,
+            overlap, blockCols, blockRows, minHeight, minInsideFraction)
+        self.blocks = [Block(name, geometry)
+                       for name, geometry in self.patchSet.blocks]
+        return self.patchSet
 
     def addRun(self, detections):
         self.runs.append(detections)
