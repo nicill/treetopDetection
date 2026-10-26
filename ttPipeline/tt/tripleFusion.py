@@ -42,13 +42,13 @@ def height(site):
 
 def fuseSite(site, ccName=None, verbose=True):
     h = height(site)
-    meta, scene, surface = siteInputs(site)
+    meta, crowns, surface = siteInputs(site)
     blocks = meta["blockGeometries"]
     ccName = ccName or "cc" + h
     runs = [RunSet.load(os.path.join(site, "runs", n))
             for n in ("mrcnnRgb", "mrcnn" + h, ccName)]
     validation = FusionCrossValidation.threeWay(
-        CrownFrame(scene.crowns), dict(blocks), *runs, surface=surface,
+        CrownFrame(crowns), dict(blocks), *runs, surface=surface,
         verbose=verbose)
     summary = validation.run()
     folder = os.path.join(site, "report", "fused", "mrcnnRgb_triple")
@@ -71,13 +71,13 @@ def fuseSiteReduced(site, ccName=None, verbose=True):
     """The reduced versions at one site, into report/fused/mrcnnRgb_lite; the
     union scored here must match the report's, so the rows compare like with like."""
     h = height(site)
-    meta, scene, surface = siteInputs(site)
+    meta, crowns, surface = siteInputs(site)
     blocks = meta["blockGeometries"]
     ccName = ccName or "cc" + h
     runs = [RunSet.load(os.path.join(site, "runs", n))
             for n in ("mrcnnRgb", "mrcnn" + h, ccName)]
     validation = FusionCrossValidation.threeWay(
-        CrownFrame(scene.crowns), dict(blocks), *runs, surface=surface,
+        CrownFrame(crowns), dict(blocks), *runs, surface=surface,
         reduced=True, verbose=verbose)
     summary = validation.run()
     saved = os.path.join(site, "report", "fused", "mrcnnRgb_" + ccName, "summary.json")

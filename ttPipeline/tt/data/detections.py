@@ -13,6 +13,7 @@ list of prediction dicts), so existing results load unchanged.
 import json
 import os
 
+import cv2
 import numpy as np
 from shapely import contains_xy
 
@@ -234,6 +235,33 @@ class Detections(object):
         detections.fileFields = {k: v for k, v in content.items()
                                  if k not in ("block", "predictions")}
         return detections
+
+
+def writeList(detections, path, surface):
+    """
+    tops.txt: per detection its pixel column and row on the surface, its
+    height (its score when it has none), easting and northing.
+    """
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    heights = detections.heights if detections.heights is not None \
+        else detections.scores
+    with open(path, "w") as handle:
+        handle.write("# x y height easting northing\n")
+        for x, y, h in zip(detections.x, detections.y, heights):
+            column, row = (int(np.floor(v)) for v in surface.toPixel(x, y))
+            handle.write("%d %d %.3f %.3f %.3f\n" % (column, row, h, x, y))
+    return path
+
+
+def writeMask(detections, path, surface, radius=5):
+    """A white image of the surface's shape, a black disc per detection."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    mask = 255 * np.ones(surface.shape, np.uint8)
+    for x, y in zip(detections.x, detections.y):
+        column, row = (int(np.floor(v)) for v in surface.toPixel(x, y))
+        cv2.circle(mask, (column, row), int(radius), 0, -1)
+    cv2.imwrite(path, mask)
+    return path
 
 
 def _arePointBoxes(boxes, x, y):

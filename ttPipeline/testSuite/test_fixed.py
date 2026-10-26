@@ -54,5 +54,22 @@ class TestFixedAndCurve(CrowdedSiteCase):
                          ["chosen"], 0)
 
 
+class TestGridSearch(CrowdedSiteCase):
+
+    def testEverySettingScoredOnAllCrowns(self):
+        from tt.detectors import CCDetector
+        from tt.experiments import ParameterGrid
+        from tt.experiments.fixed import GridSearch
+        search = GridSearch(self.site(), CCDetector(minHeight=1.0),
+                            ParameterGrid({"saddleDropM": [0.3, 1.0],
+                                           "mergeMetric": ["saddle"]}),
+                            verbose=False)
+        rows = search.run()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["label"], "metric=saddle drop=0.3")
+        self.assertEqual(rows[0]["crowns"], len(self.trees))
+        self.assertIs(search.best(), max(rows, key=lambda r: r["f1"]))
+
+
 if __name__ == "__main__":
     unittest.main()

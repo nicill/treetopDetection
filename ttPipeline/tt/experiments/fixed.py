@@ -14,7 +14,9 @@ scored on the whole held-out block. Every setting's detections are
 given (a cross-validation's saved detections), so only the choice changes.
 """
 
+import json
 import multiprocessing
+import time
 
 import numpy as np
 
@@ -49,6 +51,98 @@ class FixedSettings(Experiment):
                       settings=self.setting, predictions=predictions,
                       extra={"wholeArea": self.evaluator.score(
                           detections, self.data.area)})
+
+
+class GridSearch(Experiment):
+    """
+    Every setting of a grid scored on all of a site's crowns: what to try,
+    not a figure to quote (the crowns that score a setting also chose it;
+    use CrossValidation for that).
+    """
+
+    def run(self):
+        """One row per setting: its scores, its setting and a label."""
+        rows = []
+        started = time.time()
+        if self.verbose:
+            print("%d crowns, %d settings" % (len(self.evaluator.reference
+                                                  .crowns()),
+                                              len(self.settings)))
+        for index, setting in enumerate(self.settings):
+            detections = self.detectOne(index)
+            matching = self.evaluator.match(detections)
+            total = float(max(len(detections), 1))
+            row = dict(matching.scores(), detections=len(detections),
+                       background=matching.count("background"),
+                       repeatShare=matching.count("repeat") / total,
+                       backgroundShare=matching.count("background") / total)
+            row.update(setting)
+            row["label"] = label(setting)
+            rows.append(row)
+            if self.verbose and (index + 1) % 10 == 0:
+                elapsed = time.time() - started
+                print("  %d/%d (%.0fs elapsed, ~%.0fs left)"
+                      % (index + 1, len(self.settings), elapsed,
+                         elapsed / (index + 1)
+                         * (len(self.settings) - index - 1)))
+        self.rows = rows
+        return rows
+
+    def best(self, minimumRecall=None):
+        candidates = [r for r in self.rows
+                      if minimumRecall is None or r["recall"] >= minimumRecall]
+        return max(candidates, key=lambda r: r["f1"]) if candidates else None
+
+    def table(self, sortBy="f1", limit=20):
+        """The best rows, showing only the axes that vary."""
+        keys = self.grid.varying()
+        rows = sorted(self.rows, key=lambda r: -r[sortBy])[:limit]
+        width = max(24, min(56, sum(len(shortName(k)) + 8 for k in keys)))
+        print("%-*s %6s %7s %7s %7s %8s"
+              % (width, "setting", "dets", "recall", "prec", "F1", "repeat%"))
+        print("-" * (width + 42))
+        for row in rows:
+            label = " ".join("%s=%s" % (shortName(k), row[k]) for k in keys)
+            print("%-*s %6d %6.1f%% %6.1f%% %6.1f%% %7.1f%%"
+                  % (width, label[:width], row["detections"],
+                     100 * row["recall"], 100 * row["precision"],
+                     100 * row["f1"], 100 * row["repeatShare"]))
+        return rows
+
+    def save(self, path):
+        with open(path, "w") as handle:
+            json.dump(self.rows, handle, indent=1, default=float)
+        return path
+
+
+SHORT = {"lowerPercentile": "pct", "minTopAreaM2": "minTop",
+         "topStepM": "step", "erosionIterations": "erode",
+         "saddleDropM": "drop", "heightWeight": "w", "saddleEpsM": "eps",
+         "mergeMetric": "metric", "windowSizeM": "window",
+         "minTreeAreaM2": "minTree", "minTopAreaSlope": "minTopSlope",
+         "saddleDropSlope": "dropSlope"}
+
+
+# the merge parameters, ordered as labels have always listed them
+MERGE_ORDER = {"saddleEpsM": "epsM", "heightWeight": "heightWeight",
+               "mergeMetric": "metric", "saddleDropM": "saddleDropM",
+               "saddleDropSlope": "saddleDropSlope"}
+
+
+def shortName(key):
+    return SHORT.get(key, key)
+
+
+def label(setting):
+    """
+    A setting in short form: detector parameters first, then the merge
+    ones, each group alphabetical (the labels of existing sweep files).
+    """
+    detector = sorted(k for k in setting if k not in MERGE_ORDER)
+    merge = sorted((k for k in setting if k in MERGE_ORDER),
+                   key=lambda k: MERGE_ORDER[k])
+    return " ".join("%s=%s" % (shortName(k), setting[k])
+                    for k in detector + merge)
 
 
 def _scoreInWorker(task):

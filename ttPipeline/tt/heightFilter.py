@@ -29,7 +29,7 @@ from tt.dl import dlPrepare as dp
 from tt.detectors.fusion import BOX_MIN_HEIGHTS, SaddleSurface
 from tt.experiments import RunSet
 from tt.experiments.fusion import FusionCrossValidation
-from tt.scene import Scene
+from tt.data.site import TDData
 from tt.scoring import CrownFrame
 
 STRATEGIES = ["boxes", "union", "boxesHigh", "unionHigh"]
@@ -37,13 +37,14 @@ CHECKED = ("boxes", "union")
 
 
 def siteInputs(site):
+    """
+    (dataset metadata, the site's crowns as the report scores them, and the
+    CHM unclipped and with no minimum height, for heights).
+    """
     meta = dp.loadDataset(os.path.join(site, "ds", "chm"))
-    chm = next(c["path"] for c in meta["channels"] if c["kind"] == "chm")
-    # the report's scene (its crowns), and the same CHM unclipped for heights
-    scene = Scene(chm, crownsPath=meta["crownsPath"],
-                  boundaryPath=meta["boundaryPath"], verbose=False)
-    heights = Scene(chm, minHeight=0.0, verbose=False)
-    return meta, scene, SaddleSurface.fromScene(heights, dropM=0.0)
+    data = TDData.fromDataset(os.path.join(site, "ds", "chm"))
+    heights = data.heightSurface(minHeight=0.0, restrict=False)
+    return meta, data.crowns, SaddleSurface.fromSurface(heights, dropM=0.0)
 
 
 def pairs(site):
@@ -64,7 +65,7 @@ def chosenHeights(summary, name):
 
 
 def filterSite(site, verbose=True):
-    meta, scene, surface = siteInputs(site)
+    meta, crowns, surface = siteInputs(site)
     blocks = meta["blockGeometries"]
     report = []
     for box, height, folder in pairs(site):
@@ -75,7 +76,7 @@ def filterSite(site, verbose=True):
             report.append("%s_%s: skipped (%s)" % (box, height, error))
             continue
         validation = FusionCrossValidation.pair(
-            CrownFrame(scene.crowns), dict(blocks), boxRun, pointRun,
+            CrownFrame(crowns), dict(blocks), boxRun, pointRun,
             strategies=STRATEGIES, verbose=False,
             heightSurface=surface)
         summary = validation.run()

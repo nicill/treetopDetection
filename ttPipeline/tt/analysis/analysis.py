@@ -11,6 +11,9 @@ a found crown, detections at canopy level that are probably undrawn trees,
 and detections below the canopy). treeByTree compares methods crown by crown.
 """
 
+import json
+import os
+
 import numpy as np
 from shapely.affinity import translate
 from shapely.geometry import Point
@@ -24,6 +27,7 @@ from ..scoring.reference import AnnotatedCrowns, CrownFrame
 from .statistics import (nearestDistances, profile, quantiles,
                          splitBackground)
 from .trees import TreeTable
+from ..report.render import TileRenderer
 
 HEIGHT_CLASSES_M = (5.0, 10.0, 20.0)
 NEAR_M = 0.5               # an outside top this close to a crown is "near"
@@ -158,6 +162,57 @@ class Analysis(object):
                     missed=int((~found).sum()),
                     foundCrowns=profile(found, area, peaks, nearest),
                     missedCrowns=profile(~found, area, peaks, nearest))
+
+    def fates(self, detections, region=None, neighbourhood=12.0,
+              canopyFraction=0.7):
+        """
+        Each detection (of those in region) as hit, repeat, canopy (outside
+        every crown at canopy height) or low (outside, below the canopy);
+        None for an outside one with no found tree near.
+        """
+        matching = self.evaluator.match(detections, region)
+        kept = matching.detections
+        heights = (kept.heights if kept.heights is not None
+                   else self.surface.heightAt(kept.x, kept.y))
+        split = splitBackground(kept.x, kept.y, heights, matching.kinds,
+                                neighbourhood, canopyFraction)
+        canopy, low = set(split["canopy"]), set(split["low"])
+        return kept, matching, [
+            kind if kind != "background" else
+            ("canopy" if i in canopy else "low" if i in low else None)
+            for i, kind in enumerate(matching.kinds)]
+
+    def writeErrors(self, outputDir, detections, detector=None, images=True,
+                    neighbourhood=12.0, canopyFraction=0.7):
+        """
+        analysis.json (errors, and the missed crowns below their window's cut
+        when the CC detector is given), missedCrowns.shp, and one image per
+        tile of the result.
+        """
+        os.makedirs(outputDir, exist_ok=True)
+        summary = self.errors(detections, None, neighbourhood, canopyFraction)
+        kept, matching, fates = self.fates(detections, None, neighbourhood,
+                                           canopyFraction)
+        missed = matching.missed
+        if detector is not None and missed:
+            below = self.belowWindowCut(detector)
+            summary["missedBelowWindowCut"] = int(below[missed].sum())
+        with open(os.path.join(outputDir, "analysis.json"), "w") as handle:
+            json.dump(summary, handle, indent=2, default=float)
+        if missed:
+            m = self.crownMeasures()
+            frame = self.crowns.iloc[missed].copy()
+            frame["peak"] = m["peak"][missed]
+            frame["nnDist"] = m["nearest"][missed]
+            frame.to_file(os.path.join(outputDir, "missedCrowns.shp"))
+        if images:
+            paths = TileRenderer(self.surface, self.crowns).writeTiles(
+                os.path.join(outputDir, "images"), kept, fates,
+                missedCrowns=missed,
+                label="green hit | orange repeat | blue unannotated? | "
+                      "red low | yellow missed")
+            print("  wrote %d tile images" % len(paths))
+        return summary
 
     def belowWindowCut(self, detector):
         """

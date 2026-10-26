@@ -26,11 +26,11 @@ STRATEGIES = ["boxes", "union"]
 
 
 def fuse(site, box, points, name, verbose=True):
-    meta, scene, _ = siteInputs(site)
+    meta, crowns, _ = siteInputs(site)
     blocks = meta["blockGeometries"]
     boxRun = RunSet.load(os.path.join(site, "runs", box))
     pointRun = RunSet.load(points)
-    validation = FusionCrossValidation.pair(CrownFrame(scene.crowns), dict(blocks),
+    validation = FusionCrossValidation.pair(CrownFrame(crowns), dict(blocks),
                                        boxRun, pointRun,
                                        strategies=STRATEGIES, verbose=False)
     summary = validation.run()

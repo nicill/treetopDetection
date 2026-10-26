@@ -9,25 +9,27 @@ duplicated argument parsing.
     tt merge       search merge metrics and thresholds
     tt align       measure offsets between CHM, photo and crowns
 
-Every subcommand takes the same scene arguments, declared once.
+Every subcommand takes the same site arguments, declared once. The work is
+done by the classes (TDData, CCDetector, Analysis, GridSearch, PseudoCrowns,
+Alignment); this module only parses arguments.
 """
 
 import argparse
 import os
 import sys
 
-from .alignment import Alignment
-from .missAnalysis import MissAnalysis
-from .detector import ConCompDetector
-from .evaluation import CrownEvaluator
-from .merging import TopMerger, METRICS
-from .data.detections import Detections
+from .analysis import Analysis
+from .data.alignment import Alignment
+from .data.detections import writeList, writeMask
+from .data.site import TDData
+from .detectors.height import CCDetector
+from .detectors.merging import METRICS
+from .experiments import ParameterGrid
+from .experiments.fixed import GridSearch
 from .scoring.pseudoCrowns import PseudoCrowns
-from .scene import Scene
-from .sweeps import Sweep
 
 
-def addSceneArguments(parser):
+def addSiteArguments(parser):
     parser.add_argument("--chm", required=True)
     parser.add_argument("--crowns", default=None)
     parser.add_argument("--boundary", default=None)
@@ -68,12 +70,9 @@ def addMergerArguments(parser):
 
 def checkPaths(args):
     """
-    Fail on a missing input with one line, not a GDAL traceback.
-
-    Also catches the commonest paste error: copying a command out of
-    documentation with the placeholder left in.
+    Fail on a missing input with one line, not a GDAL traceback. Also
+    catches the commonest paste error: a documentation placeholder left in.
     """
-
     for name in ("chm", "crowns", "boundary"):
         path = getattr(args, name, None)
         if path is None:
@@ -85,143 +84,168 @@ def checkPaths(args):
             raise SystemExit("--%s not found: %s" % (name, path))
 
 
-def buildScene(args, restrict=True):
+def buildSite(args):
     checkPaths(args)
-    return Scene(args.chm, crownsPath=args.crowns,
-                 boundaryPath=args.boundary, resolution=args.resolution,
-                 minHeight=args.minHeight,
-                 crownShiftEast=args.crownShift[0],
-                 crownShiftSouth=args.crownShift[1], restrict=restrict)
+    return TDData.fromFiles("site", chm=args.chm, crowns=args.crowns,
+                            area=args.boundary,
+                            crownShiftEastM=args.crownShift[0],
+                            crownShiftSouthM=args.crownShift[1])
+
+
+def heightParams(args):
+    return {"resolution": args.resolution, "minHeight": args.minHeight}
+
+
+def detectorParams(args):
+    return {"windowSizeM": args.windowSize, "windowOverlap": args.windowOverlap,
+            "lowerPercentile": args.lowerPercentile,
+            "minTreeAreaM2": args.minTreeArea, "minTopAreaM2": args.minTopArea,
+            "topStepM": args.topStep, "minTopAreaSlope": args.minTopAreaSlope,
+            "erosionIterations": args.erosionIterations,
+            "erosionKernelSize": args.erosionKernel}
+
+
+def mergerParams(args):
+    return {"mergeMetric": args.metric, "saddleEpsM": args.eps,
+            "heightWeight": args.heightWeight, "saddleDropM": args.saddleDrop,
+            "saddleDropSlope": args.saddleDropSlope}
 
 
 def buildDetector(args):
-    return ConCompDetector(
-        windowSizeM=args.windowSize, windowOverlap=args.windowOverlap,
-        lowerPercentile=args.lowerPercentile, minTreeAreaM2=args.minTreeArea,
-        minTopAreaM2=args.minTopArea, topStepM=args.topStep,
-        minTopAreaSlope=args.minTopAreaSlope,
-        erosionIterations=args.erosionIterations,
-        erosionKernelSize=args.erosionKernel, merger=buildMerger(args))
+    return CCDetector(**dict(heightParams(args), **detectorParams(args),
+                             **mergerParams(args)))
 
 
-def buildMerger(args):
-    return TopMerger(metric=args.metric, epsM=args.eps,
-                     heightWeight=args.heightWeight,
-                     saddleDropM=args.saddleDrop,
-                     saddleDropSlope=args.saddleDropSlope)
+def analysisOf(site, detector):
+    return Analysis(site, detector.surface(site))
 
 
 # ---------------------------------------------------------------------- #
 
 def commandDetect(args):
-    scene = buildScene(args)
+    site = buildSite(args)
     detector = buildDetector(args)
-    tops = detector.detect(scene)
-
+    detections = detector.detect(site)
+    surface = detector.surface(site)
     os.makedirs(args.output, exist_ok=True)
-    tops.writeList(os.path.join(args.output, "tops.txt"), scene)
-    tops.writeMask(os.path.join(args.output, "tops_mask.png"), scene.shape)
-    if scene.crowns is not None:
-        result = CrownEvaluator(scene).score(tops)
+    writeList(detections, os.path.join(args.output, "tops.txt"), surface)
+    writeMask(detections, os.path.join(args.output, "tops_mask.png"), surface)
+    if args.crowns:
+        result = analysisOf(site, detector).errors(detections)
         print("R %.3f  P %.3f  F1 %.3f  (%d detections, %d repeats, "
               "%d background)"
               % (result["recall"], result["precision"], result["f1"],
-                 result["detections"], result["repeats"],
-                 result["background"]))
+                 result["predictions"], result["repeats"],
+                 result["falsePositives"]))
     print("wrote %s" % args.output)
     return 0
 
 
 def commandAnalyse(args):
-
-    scene = buildScene(args)
+    site = buildSite(args)
     detector = buildDetector(args)
-    tops = detector.detect(scene)
-    evaluator = CrownEvaluator(scene)
-    analysis = MissAnalysis(scene, tops, evaluator,
-                            neighbourhood=args.neighbourhood,
-                            canopyFraction=args.canopyFraction)
-    analysis.report(detector)
-    analysis.writeOutputs(args.output, detector, images=not args.noImages)
+    summary = analysisOf(site, detector).writeErrors(
+        args.output, detector.detect(site), detector,
+        images=not args.noImages, neighbourhood=args.neighbourhood,
+        canopyFraction=args.canopyFraction)
+    printErrors(summary)
+    return 0
+
+
+def printErrors(s):
+    total = max(s["predictions"], 1)
+    print("=" * 70)
+    print("%d crowns, %d detections | recall %.1f%% | precision %.1f%%"
+          % (s["crowns"], s["predictions"], 100 * s["recall"],
+             100 * s["precision"]))
+    print("=" * 70)
+    print("WHERE THE DETECTIONS GO")
+    for label, key, note in (
+            ("in a crown, primary", "hits", ""),
+            ("in a crown, repeat", "repeats", "over-segmented trees"),
+            ("outside, canopy-level", "backgroundCanopy",
+             "probably unannotated trees"),
+            ("outside, below canopy", "backgroundLow",
+             "the real false positives"),
+            ("outside, no neighbours", "backgroundUnknown", "")):
+        if s[key] or key in ("hits", "repeats"):
+            print("  %-24s %5d  %5.1f%%   %s"
+                  % (label, s[key], 100.0 * s[key] / total, note))
+    print("\nMISSED CROWNS: %d of %d (%.1f%%)"
+          % (s["missed"], s["crowns"], 100.0 * s["missed"]
+             / max(s["crowns"], 1)))
+    for name, key, unit in (("height", "peak", "m"), ("area", "area", "m2"),
+                            ("nn distance", "nearest", "m")):
+        found, missed = s["foundCrowns"].get(key), s["missedCrowns"].get(key)
+        print("  %-14s found %7.2f %-3s   missed %7.2f %s"
+              % (name, found if found is not None else float("nan"), unit,
+                 missed if missed is not None else float("nan"), unit))
+    if "missedBelowWindowCut" in s:
+        print("  %d of the missed have their apex below their window's "
+              "percentile cut" % s["missedBelowWindowCut"])
+    print("\n  precision as scored                          %.1f%%"
+          % (100 * s["precision"]))
+    print("  precision if canopy-level ones are real      %.1f%%"
+          % (100 * s["precisionIfCanopyAreTrees"]))
+
+
+def runSearch(args, detector, grid):
+    search = GridSearch(buildSite(args), detector, ParameterGrid(grid))
+    search.run()
+    search.table(sortBy=args.sortBy, limit=args.limit)
+    best = search.best(minimumRecall=args.minRecall)
+    if best:
+        print("\nbest: %s -> R %.1f%% P %.1f%% F1 %.1f%%"
+              % (best["label"], 100 * best["recall"],
+                 100 * best["precision"], 100 * best["f1"]))
+    search.save(args.output)
+    print("wrote %s" % args.output)
     return 0
 
 
 def commandSweep(args):
-
-    scene = buildScene(args)
-    sweep = Sweep(scene, base=dict(windowSizeM=args.windowSize,
-                                   minTreeAreaM2=args.minTreeArea))
-    # The merge is swept alongside the detector, not left at a default. The
-    # two interact: a base that over-detects less needs a gentler merge, so
-    # tuning them separately finds the best of neither.
-    mergerGrid = {"metric": [args.metric],
-                  "epsM": [args.eps]}
-    if args.metric == "saddle":
-        mergerGrid["saddleDropM"] = _numbers(args.saddleDrops, float)
-        _addSlopes(mergerGrid, "saddleDropSlope", args.saddleDropSlopes)
-    elif args.metric == "composite":
-        mergerGrid["heightWeight"] = [args.heightWeight]
-
-    grid = {
-        "lowerPercentile": _numbers(args.percentiles, int),
-        "minTopAreaM2": _numbers(args.minTopAreas, float),
-        "topStepM": _numbers(args.topSteps, float),
-        "erosionIterations": _numbers(args.erosions, int),
-    }
+    detector = CCDetector(windowSizeM=args.windowSize,
+                          minTreeAreaM2=args.minTreeArea,
+                          **heightParams(args))
+    # the merge is swept with the detector, not left at a default: a base
+    # that over-detects less needs a gentler merge
+    grid = {"lowerPercentile": _numbers(args.percentiles, int),
+            "minTopAreaM2": _numbers(args.minTopAreas, float),
+            "topStepM": _numbers(args.topSteps, float),
+            "erosionIterations": _numbers(args.erosions, int)}
     _addSlopes(grid, "minTopAreaSlope", args.minTopAreaSlopes)
-    sweep.run(grid, mergerGrid=mergerGrid)
-    sweep.table(sortBy=args.sortBy, limit=args.limit)
-    best = sweep.best(minimumRecall=args.minRecall)
-    if best:
-        print("\nbest: %s -> R %.1f%% P %.1f%% F1 %.1f%%"
-              % (best["label"], 100 * best["recall"],
-                 100 * best["precision"], 100 * best["f1"]))
-    sweep.save(args.output)
-    print("wrote %s" % args.output)
-    return 0
+    grid.update({"mergeMetric": [args.metric], "saddleEpsM": [args.eps]})
+    if args.metric == "saddle":
+        grid["saddleDropM"] = _numbers(args.saddleDrops, float)
+        _addSlopes(grid, "saddleDropSlope", args.saddleDropSlopes)
+    elif args.metric == "composite":
+        grid["heightWeight"] = [args.heightWeight]
+    return runSearch(args, detector, grid)
 
 
 def commandMerge(args):
-
-    scene = buildScene(args)
-    sweep = Sweep(scene, base=dict(
-        windowSizeM=args.windowSize, lowerPercentile=args.lowerPercentile,
-        minTopAreaM2=args.minTopArea, topStepM=args.topStep,
-        erosionIterations=args.erosionIterations,
-        minTreeAreaM2=args.minTreeArea))
-    grid = {"metric": [m.strip() for m in args.metrics.split(",")],
-            "epsM": _numbers(args.epsilons, float)}
-    if "saddle" in grid["metric"]:
+    detector = CCDetector(**dict(heightParams(args), **detectorParams(args)))
+    grid = {"mergeMetric": [m.strip() for m in args.metrics.split(",")],
+            "saddleEpsM": _numbers(args.epsilons, float)}
+    if "saddle" in grid["mergeMetric"]:
         grid["saddleDropM"] = _numbers(args.saddleDrops, float)
         _addSlopes(grid, "saddleDropSlope", args.saddleDropSlopes)
-    if "composite" in grid["metric"]:
+    if "composite" in grid["mergeMetric"]:
         grid["heightWeight"] = _numbers(args.weights, float)
-    sweep.run({}, mergerGrid=grid)
-    sweep.table(sortBy=args.sortBy, limit=args.limit)
-    best = sweep.best(minimumRecall=args.minRecall)
-    if best:
-        print("\nbest: %s -> R %.1f%% P %.1f%% F1 %.1f%%"
-              % (best["label"], 100 * best["recall"],
-                 100 * best["precision"], 100 * best["f1"]))
-    sweep.save(args.output)
-    print("wrote %s" % args.output)
-    return 0
+    return runSearch(args, detector, grid)
 
 
 def commandCrowns(args):
-
-    scene = buildScene(args)
-    tops = buildDetector(args).detect(scene)
-
-    crowns = PseudoCrowns(scene, Detections.fromPixels(tops.points, scene),
+    site = buildSite(args)
+    detector = buildDetector(args)
+    crowns = PseudoCrowns(detector.surface(site), detector.detect(site),
                           percentile=args.crownPercentile,
                           windowSizeM=args.windowSize, many=args.many,
                           lots=args.lots, voronoiWeight=args.voronoiWeight)
     crowns.build()
     crowns.write(args.output)
-
-    if scene.crowns is not None:
-        comparison = crowns.compareWith(scene.crowns)
+    if args.crowns:
+        comparison = crowns.compareWith(site.crowns)
         if comparison:
             print("\nagainst the real crowns: %d of %d matched, "
                   "median IoU %.3f, %.1f%% above 0.5, %.1f%% above 0.25"
@@ -235,7 +259,6 @@ def commandCrowns(args):
 
 
 def commandAlign(args):
-
     checkPaths(args)
     for spec in args.layer:
         if "=" not in spec:
@@ -243,7 +266,6 @@ def commandAlign(args):
         path = spec.split("=", 1)[1].strip()
         if not os.path.exists(path):
             raise SystemExit("--layer path not found: %s" % path)
-
     alignment = Alignment(args.chm, resolution=args.resolution,
                           boundaryPath=args.boundary)
     for spec in args.layer:
@@ -274,7 +296,7 @@ def _addSlopes(grid, key, text):
 
 def addDetectCommand(subparsers):
     detect = subparsers.add_parser("detect", help="run the detector")
-    addSceneArguments(detect)
+    addSiteArguments(detect)
     addDetectorArguments(detect)
     addMergerArguments(detect)
     detect.add_argument("--output", default="output/detect")
@@ -283,7 +305,7 @@ def addDetectCommand(subparsers):
 
 def addAnalyseCommand(subparsers):
     analyse = subparsers.add_parser("analyse", help="what it gets wrong")
-    addSceneArguments(analyse)
+    addSiteArguments(analyse)
     addDetectorArguments(analyse)
     addMergerArguments(analyse)
     analyse.add_argument("--output", default="output/analysis")
@@ -295,7 +317,7 @@ def addAnalyseCommand(subparsers):
 
 def addSweepCommand(subparsers):
     sweep = subparsers.add_parser("sweep", help="search detector parameters")
-    addSceneArguments(sweep)
+    addSiteArguments(sweep)
     sweep.add_argument("--windowSize", type=float, default=40.0)
     sweep.add_argument("--minTreeArea", type=float, default=0.5)
     sweep.add_argument("--percentiles", default="10,20,30")
@@ -323,7 +345,7 @@ def addSweepCommand(subparsers):
 
 def addMergeCommand(subparsers):
     merge = subparsers.add_parser("merge", help="search merge settings")
-    addSceneArguments(merge)
+    addSiteArguments(merge)
     addDetectorArguments(merge)
     merge.add_argument("--metrics", default="saddle")
     merge.add_argument("--epsilons", default="5,8,12")
@@ -341,7 +363,7 @@ def addMergeCommand(subparsers):
 def addCrownsCommand(subparsers):
     crowns = subparsers.add_parser(
         "crowns", help="pseudo-crowns and boxes from the detected tops")
-    addSceneArguments(crowns)
+    addSiteArguments(crowns)
     addDetectorArguments(crowns)
     addMergerArguments(crowns)
     crowns.add_argument("--output", default="output/crowns")

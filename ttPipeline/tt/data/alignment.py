@@ -25,7 +25,8 @@ from rasterio.enums import Resampling
 from rasterio.features import rasterize
 from rasterio.windows import from_bounds
 
-from .scene import Scene, readCrowns
+from .annotations import readArea, readCrowns
+from .raster import HeightModel
 
 
 def nccShift(a, b, pixelSize, maxShiftM=4.0):
@@ -148,23 +149,24 @@ class Alignment(object):
 
     def __init__(self, referencePath, resolution=0.10, minHeight=2.0,
                  boundaryPath=None, verbose=True):
-        self.scene = Scene(referencePath, boundaryPath=boundaryPath,
-                           resolution=resolution, minHeight=minHeight,
-                           restrict=False, verbose=verbose)
+        self.surface = HeightModel(referencePath).surface(resolution,
+                                                          minHeight)
+        self.regionMask = (self.surface.grid.mask(readArea(
+            boundaryPath, self.surface.crs)) if boundaryPath else None)
         self.readers = {"reference": LayerReader("reference", referencePath,
-                                                 self.scene.crs, minHeight,
+                                                 self.surface.crs, minHeight,
                                                  verbose)}
         self.minHeight = minHeight
         self.verbose = verbose
         self.results = {}
 
     def add(self, name, path):
-        self.readers[name] = LayerReader(name, path, self.scene.crs,
+        self.readers[name] = LayerReader(name, path, self.surface.crs,
                                          self.minHeight, self.verbose)
         return self
 
     def measure(self, tileM=40.0, maxShiftM=4.0):
-        scene = self.scene
+        scene = self.surface
         tile = scene.metresToPixels(tileM, 32)
         rows, columns = scene.chm.shape
         pairs = list(itertools.combinations(self.readers, 2))
@@ -172,8 +174,8 @@ class Alignment(object):
 
         for r0 in range(0, rows - tile + 1, tile):
             for c0 in range(0, columns - tile + 1, tile):
-                if scene.regionMask is not None and \
-                        np.count_nonzero(scene.regionMask[r0:r0 + tile,
+                if self.regionMask is not None and \
+                        np.count_nonzero(self.regionMask[r0:r0 + tile,
                                                           c0:c0 + tile]) \
                         < 0.5 * tile * tile:
                     continue
