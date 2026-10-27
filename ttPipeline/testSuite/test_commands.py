@@ -658,7 +658,7 @@ class TestTreeWeights(unittest.TestCase):
     def testSameScoresAndBoxesAsTheTreeModel(self):
         import torch
         import torchvision
-        from tt.dl import dlModels as dm
+        from tt.detectors.dl import models as dm
         tree = self.treeModel()
         self.assertFalse(any(k.endswith("num_batches_tracked") for k in tree.state_dict()))
         d = tempfile.mkdtemp(prefix="ttTree")
@@ -695,7 +695,7 @@ class TestTreeWeights(unittest.TestCase):
         and the first two backbone stages frozen, as torchvision builds a
         pretrained RetinaNet."""
         from torchvision.ops import misc as misc_nn_ops
-        from tt.dl import dlModels as dm
+        from tt.detectors.dl import models as dm
         model = dm._retinanetV1(None, 2)
         norms = [m for m in model.modules() if isinstance(m, misc_nn_ops.FrozenBatchNorm2d)]
         self.assertTrue(norms)
