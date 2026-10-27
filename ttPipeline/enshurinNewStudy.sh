@@ -22,11 +22,23 @@
 # finished step is skipped when the script is run again.
 #
 # OVERRIDES="minHeights=4.0 minHeight=4.0" replaces those options of every
-# replayed run (and only those): Vlad's rule that a tree is at least 4 m tall,
-# for the height methods, whose minimum height is otherwise a tuned grid.
+# replayed run that has them (and only those): Vlad's rule that a tree is at
+# least 4 m tall, for the height methods, whose minimum height is otherwise a
+# tuned grid.
+#
+# PART chooses what runs:
+#   height     (the default) the CHM dataset, CC and the two baselines, on CPU
+#   networks   the RGB dataset and every network run of the old study
+#              (PROC/enshurin/runs/mrcnn*, yolo*), each with its own settings,
+#              on the RGB or the CHM dataset as before; on the GPU. It waits
+#              for the CHM dataset the height part makes, so the two can run
+#              at the same time into the same OUT.
+#   all        both, one after the other
+# Runs of the old study made for other experiments (a transfer, or a subset
+# of the annotation) are not replayed.
 #
 # Settings from the environment: DROP, PROC, N, OUT, JOBS (default 16),
-# OVERRIDES (default none).
+# OVERRIDES (default none), PART (default height).
 
 set -u
 cd "$(dirname "$0")" || exit 1
@@ -36,6 +48,7 @@ PROC=${PROC:-"$DROP/study_procedure"}
 N=${N:-Data/enshurinNewOut/enshurin}
 OUT=${OUT:-"$DROP/study_enshurinNew"}
 JOBS=${JOBS:-16}
+PART=${PART:-height}
 export TT_OBJECTIVE=${TT_OBJECTIVE:-weighted} PYTHONUNBUFFERED=1
 
 mkdir -p "$OUT/logs" "$OUT/runs"
@@ -43,7 +56,7 @@ STATUS="$OUT/STATUS.txt"
 log() { printf '%s  %s\n' "$(date '+%F %T')" "$*" | tee -a "$STATUS"; }
 pooled() { grep -h "pooled over" "$1" 2>/dev/null | tail -1 | sed 's/^ *//'; }
 
-for f in "$N/chm.tif" "$N/crowns.shp" "$N/scoredArea.shp" "$PROC/enshurin/runs/ccP1/results.json"; do
+for f in "$N/chm.tif" "$N/rgb.tif" "$N/crowns.shp" "$N/scoredArea.shp" "$PROC/enshurin/runs/ccP1/results.json"; do
     [ -e "$f" ] || { log "ERROR: $f missing; stopping"; exit 1; }
 done
 
@@ -54,12 +67,18 @@ import os
 settings = json.load(open(sys.argv[1]))["settings"]
 for pair in os.environ.get("OVERRIDES", "").split():
     key, value = pair.split("=", 1)
-    settings[key] = value
+    if key in settings:          # only the options this run has
+        settings[key] = value
 helpText = subprocess.run([sys.executable, "-m"] + sys.argv[2:] + ["--help"],
                           capture_output=True, text=True).stdout
-skip = {"dataset", "output", "log", "jobs", "progress"}
+skip = {"dataset", "output", "log", "jobs", "progress", "folds"}
+negated = {"pretrained": "noPretrained"}       # store_false options
 words = []
 for key, value in settings.items():
+    if key in negated:
+        if value is False:
+            words.append("--" + negated[key])
+        continue
     if key in skip or value is None or value is False:
         continue
     if "--" + key not in helpText:
@@ -86,35 +105,100 @@ step() {   # step NAME DONE_FILE COMMAND...: run unless DONE_FILE exists
     fi
 }
 
-# the old dataset, from the old CC run's own record
-refDs=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['settings']['dataset'])" "$PROC/enshurin/runs/ccP1/results.json")
-[ -f "$refDs/dataset.json" ] || refDs="$PROC/enshurin/ds/chm"
-[ -f "$refDs/dataset.json" ] || { log "ERROR: the old Enshurin dataset not found ($refDs)"; exit 1; }
-log "old dataset: $refDs"
-
-step dataset "$OUT/ds/chm/dataset.json" python -m tt.dl prepare \
-    --source "chm:$N/chm.tif" --crowns "$N/crowns.shp" \
-    --boundary "$N/scoredArea.shp" --output "$OUT/ds/chm" --name enshurin \
-    --resolution "$(datasetValue "$refDs" resolution)" \
-    --tileSize "$(datasetValue "$refDs" tileSize)" \
-    --overlap "$(datasetValue "$refDs" overlap)" \
-    --minHeight "$(datasetValue "$refDs" minHeight)" || exit 1
-oldBlocks=$(datasetValue "$refDs" blocks); newBlocks=$(datasetValue "$OUT/ds/chm" blocks)
-[ "$oldBlocks" = "$newBlocks" ] || log "NOTE: the old dataset had $oldBlocks blocks, the new one $newBlocks"
-
-replay() {   # replay NAME MODULE...: the old run again on the new dataset
-    local name=$1; shift
+replay() {   # replay NAME DATASET EXTRA MODULE...: an old run on a new dataset
+    local name=$1 dataset=$2 extra=$3; shift 3
     local ref="$PROC/enshurin/runs/$name" args
     [ -f "$ref/results.json" ] || { log "$name: no $ref; skipped"; return 0; }
     args=$(replayArgs "$ref/results.json" "$@") || { log "$name: FAILED to read $ref"; return 1; }
-    eval "set -- \"\$@\" $args"
+    eval "set -- \"\$@\" $args $extra"
     step "$name" "$OUT/runs/$name/results.json" python -m "$@" \
-        --dataset "$OUT/ds/chm" --output "$OUT/runs/$name" --jobs "$JOBS"
+        --dataset "$dataset" --output "$OUT/runs/$name"
 }
 
-replay ccP1 tt.dl concomp
-replay lmvwP1 tt.dl.dlBaselines
-replay watershedP1 tt.dl.dlBaselines
+oldDataset() {   # oldDataset KIND: the old study's dataset of that kind: the
+                 # one its main run recorded (ccP1, mrcnnRgb), else any run's,
+                 # else PROC/enshurin/ds/KIND
+    local d
+    while IFS= read -r d; do
+        [ -f "$d/dataset.json" ] && { echo "$d"; return 0; }
+    done < <(python - "$PROC/enshurin" "$1" <<'PY'
+import glob, json, os, sys
+root, kind = sys.argv[1:]
+main = {"chm": "ccP1", "rgb": "mrcnnRgb"}[kind]
+paths = sorted(glob.glob(root + "/runs/*/results.json"),
+               key=lambda p: os.path.basename(os.path.dirname(p)) != main)
+for path in paths:
+    d = json.load(open(path)).get("settings", {}).get("dataset") or ""
+    if os.path.basename(os.path.normpath(d)) == kind:
+        print(d)
+print(os.path.join(root, "ds", kind))
+PY
+)
+    return 1
+}
+
+newDataset() {   # newDataset KIND SOURCE: the dataset on the new crowns, with
+                 # the old one's resolution, tile size, overlap, minimum height
+    local kind=$1 source=$2 ref
+    ref=$(oldDataset "$kind") || { log "ERROR: the old Enshurin $kind dataset not found"; return 1; }
+    log "old $kind dataset: $ref"
+    step "dataset_$kind" "$OUT/ds/$kind/dataset.json" python -m tt.dl prepare \
+        --source "$kind:$source" --crowns "$N/crowns.shp" \
+        --boundary "$N/scoredArea.shp" --output "$OUT/ds/$kind" --name enshurin \
+        --resolution "$(datasetValue "$ref" resolution)" \
+        --tileSize "$(datasetValue "$ref" tileSize)" \
+        --overlap "$(datasetValue "$ref" overlap)" \
+        --minHeight "$(datasetValue "$ref" minHeight)" || return 1
+    local old new
+    old=$(datasetValue "$ref" blocks); new=$(datasetValue "$OUT/ds/$kind" blocks)
+    [ "$old" = "$new" ] || log "NOTE: the old $kind dataset had $old blocks, the new one $new"
+}
+
+heightPart() {
+    newDataset chm "$N/chm.tif" || exit 1
+    replay ccP1 "$OUT/ds/chm" "--jobs $JOBS" tt.dl concomp
+    replay lmvwP1 "$OUT/ds/chm" "--jobs $JOBS" tt.dl.dlBaselines
+    replay watershedP1 "$OUT/ds/chm" "--jobs $JOBS" tt.dl.dlBaselines
+}
+
+networkRuns() {   # the old study's network runs: NAME KIND MODULE per line
+    python - "$PROC/enshurin/runs" <<'PY'
+import glob, json, os, re, sys
+for path in sorted(glob.glob(sys.argv[1] + "/*/results.json")):
+    name = os.path.basename(os.path.dirname(path))
+    if not re.match(r"(mrcnn|yolo)", name):
+        continue
+    settings = json.load(open(path)).get("settings", {})
+    if settings.get("transferFrom") or float(settings.get("trainFraction", 1)) < 1:
+        continue                          # another experiment's run
+    kind = os.path.basename(os.path.normpath(settings.get("dataset", "")))
+    if kind not in ("rgb", "chm"):
+        continue
+    print(name, kind, "yolo" if name.startswith("yolo") else "maskrcnn")
+PY
+}
+
+networkPart() {
+    newDataset rgb "$N/rgb.tif" || exit 1
+    local waited=0
+    until [ -f "$OUT/ds/chm/dataset.json" ]; do      # the height part makes it
+        [ "$PART" = networks ] || break
+        [ $waited -ge 7200 ] && { log "ERROR: no CHM dataset after 2 h; is the height part running?"; exit 1; }
+        sleep 60; waited=$((waited + 60))
+    done
+    [ -f "$OUT/ds/chm/dataset.json" ] || newDataset chm "$N/chm.tif" || exit 1
+    local name kind module
+    while read -r name kind module; do
+        replay "$name" "$OUT/ds/$kind" "" tt.dl "$module"
+    done < <(networkRuns)
+}
+
+case "$PART" in
+    height) heightPart ;;
+    networks) networkPart ;;
+    all) heightPart; networkPart ;;
+    *) log "ERROR: PART must be height, networks or all"; exit 1 ;;
+esac
 
 python - "$PROC/enshurin/runs" "$OUT/runs" <<'PY' | tee "$OUT/old_vs_new.txt"
 import json, os, sys
@@ -127,7 +211,9 @@ def pooled(root, name):
     return p["recall"], p["precision"], p["f1"]
 print("%-14s %-20s %-20s" % ("", "old annotation", "new annotation"))
 print("%-14s %6s %6s %6s   %6s %6s %6s" % ("method", "R", "P", "F1", "R", "P", "F1"))
-for name in ("ccP1", "lmvwP1", "watershedP1"):
+names = sorted(n for n in os.listdir(new)
+               if os.path.exists(os.path.join(new, n, "results.json")))
+for name in names:
     a, b = pooled(old, name), pooled(new, name)
     fmt = lambda v: "%6.3f %6.3f %6.3f" % v if v else "%20s" % "-"
     print("%-14s %s   %s" % (name, fmt(a), fmt(b)))
