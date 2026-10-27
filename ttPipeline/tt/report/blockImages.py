@@ -28,7 +28,7 @@ import sys
 
 import cv2
 import numpy as np
-from shapely import contains_xy
+from shapely import contains_xy, prepare
 
 from ..analysis import Analysis
 from ..analysis.trees import heightsNear
@@ -68,6 +68,7 @@ class BlockRenderer(object):
 
     def classify(self, detections, block):
         """Fates of the block's detections, and the block's missed crowns."""
+        prepare(self.blocks[block])
         inBlock = np.nonzero(contains_xy(self.blocks[block], self.centroidX,
                                          self.centroidY))[0]
         crowns = self.analysis.crowns.iloc[inBlock].reset_index(drop=True)

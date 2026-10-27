@@ -9,7 +9,7 @@ and the clip to the area are decided once.
 import geopandas as gpd
 import numpy as np
 from rasterio.features import geometry_mask
-from shapely import affinity, contains_xy, make_valid
+from shapely import affinity, contains_xy, make_valid, prepare
 
 
 def readCrowns(path, crs, boundary=None, shiftEastM=0.0, shiftSouthM=0.0):
@@ -58,6 +58,7 @@ def readArea(path, crs):
 def crownsInRegion(crowns, region):
     """Crowns whose centroid lies in `region`, re-indexed from zero."""
     centroids = crowns.geometry.centroid
+    prepare(region)       # once per region; older shapely does not do it
     inside = contains_xy(region, centroids.x.to_numpy(), centroids.y.to_numpy())
     return crowns[inside].reset_index(drop=True)
 

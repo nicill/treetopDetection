@@ -40,7 +40,7 @@ import os
 import sys
 
 import numpy as np
-from shapely import contains_xy
+from shapely import contains_xy, prepare
 
 # Re-exported for the modules not yet moved to the new classes; the code lives
 # in tt.data, tt.scoring and tt.experiments.
@@ -121,6 +121,7 @@ def predictionsInRegion(predictions, region):
     """Predictions whose centre lies in `region`, tested in one vectorised call."""
     if not predictions:
         return []
+    prepare(region)
     inside = contains_xy(region,
                          np.array([p["centreX"] for p in predictions]),
                          np.array([p["centreY"] for p in predictions]))

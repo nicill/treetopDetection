@@ -15,7 +15,7 @@ import os
 
 import cv2
 import numpy as np
-from shapely import contains_xy
+from shapely import contains_xy, prepare
 
 GEOMETRIES = ("points", "boxes", "masks")
 POINT_BOX_M = 0.5          # half-width of the box written round a point
@@ -139,6 +139,7 @@ class Detections(object):
         """Those whose centre lies in `region`."""
         if not len(self):
             return self.subset(np.zeros(0, int))
+        prepare(region)   # once per region; older shapely does not do it
         return self.subset(contains_xy(region, self.x, self.y))
 
     def aboveScore(self, threshold):
