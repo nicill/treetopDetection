@@ -461,6 +461,22 @@ class TestEnshurinPolygons(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    def testNotTreesAreLeftOutOfTheCrowns(self):
+        """Polygons named SHRUB are not crowns; the rest are kept."""
+        d = tempfile.mkdtemp(prefix="ttEnsShrub")
+        try:
+            data, path = self.build(d)
+            everything = self.run_(d, data, path, ["--wholeMosaics"])
+            larch = self.run_(d, data, path, ["--wholeMosaics",
+                                              "--notTrees", "larch",
+                                              "--output",
+                                              os.path.join(d, "out2")])
+            left = larch["polygons"]["notTrees"]
+            self.assertEqual(list(left), ["LARCH"])
+            self.assertEqual(larch["crowns"], everything["crowns"] - left["LARCH"])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
     def testWholeMosaicsScoresEverythingAndCutsNothing(self):
         import geopandas as gpd
         d = tempfile.mkdtemp(prefix="ttEnsWhole")

@@ -159,7 +159,7 @@ def maskCrowns(mask, names, minCrownM2, part):
     return gpd.GeoDataFrame(rows, crs=crs), dropped
 
 
-def polygonCrowns(path, footprints, shifts, crs, minCrownM2):
+def polygonCrowns(path, footprints, shifts, crs, minCrownM2, notTrees=()):
     """
     Crowns from a polygon annotation drawn on the part mosaics: each polygon
     goes to the part whose (unshifted) mosaic holds it, and is moved with that
@@ -169,9 +169,17 @@ def polygonCrowns(path, footprints, shifts, crs, minCrownM2):
     converted to the mosaics' (reported); the datum conversion used may differ
     from the one that made the file by a few metres, which the registration
     check (tt align on the prepared site) measures and --shift removes. Most
-    polygons must fall on a mosaic, or it stops.
+    polygons must fall on a mosaic, or it stops. Polygons named in notTrees
+    (e.g. SHRUB) are not crowns: they are left out, so with --wholeMosaics a
+    detection on one counts as a false positive.
     """
     polygons = gpd.read_file(path)
+    excluded = {}
+    if notTrees and "name" in polygons:
+        names = polygons["name"].astype(str).str.upper()
+        drop = names.isin([n.upper() for n in notTrees])
+        excluded = names[drop].value_counts().to_dict()
+        polygons = polygons[~drop].reset_index(drop=True)
     converted = None
     if polygons.crs is None:
         polygons = polygons.set_crs(crs)
@@ -202,7 +210,9 @@ def polygonCrowns(path, footprints, shifts, crs, minCrownM2):
                          % (placed.sum(), len(polygons)))
     return byPart, notes, {"polygons": int(len(polygons)),
                            "offMosaic": int((~placed).sum()),
-                           "convertedFrom": converted}
+                           "convertedFrom": converted,
+                           "notTrees": {k: int(v) for k, v in
+                                        excluded.items()}}
 
 
 def footprint(mosaic, resolution=0.25):
@@ -478,7 +488,11 @@ def prepare(args):
         with rasterio.open(next(iter(parts.values()))[0]) as src:
             crs = src.crs
         byPart, dropped, polygonNotes = polygonCrowns(
-            args.crowns, original, shifts, crs, args.minCrownM2)
+            args.crowns, original, shifts, crs, args.minCrownM2,
+            args.notTrees or ())
+        if polygonNotes["notTrees"]:
+            print("[enshurin] not crowns, left out: %s"
+                  % polygonNotes["notTrees"])
         if polygonNotes["convertedFrom"]:
             print("[enshurin] crowns converted from %s to the mosaics' system"
                   % polygonNotes["convertedFrom"])
@@ -528,7 +542,11 @@ def parseArguments(argv=None):
     parser.add_argument("--crowns", default=None,
                         help="crown polygons (one per tree, drawn on the part "
                              "mosaics) instead of the class masks; every "
-                             "polygon is a crown, whatever its species")
+                             "polygon is a crown, whatever its species, "
+                             "except those named in --notTrees")
+    parser.add_argument("--notTrees", nargs="+", default=None,
+                        help="names (the polygons' 'name') that are not "
+                             "trees, left out of the crowns, e.g. SHRUB")
     parser.add_argument("--wholeMosaics", action="store_true",
                         help="score the whole image of every mosaic: no "
                              "annotation-share rule for the area and no "
