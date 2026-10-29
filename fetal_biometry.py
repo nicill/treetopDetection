@@ -5,13 +5,14 @@ Fetal brain US biometry measured in the frame of the skull ellipse.
 The skull ellipse defines the frame: "horizontal" is the direction of its
 major axis and "vertical" is perpendicular to it. All values are in mm.
 
-    DTC   longest vertical segment contained in the cerebellum
-    CM    longest horizontal segment contained in the cisterna magna
-          (along the brain's front-to-back axis)
-    PN    longest segment of the nuchal fold cut by a line through the
-          ellipse centre (all line directions are tried)
-    CSPV  longest vertical segment contained in the cavum
-    CSPH  longest horizontal segment contained in the cavum
+    DTC   longest vertical segment anywhere in the cerebellum
+    CM    cisterna magna cut by the major axis of the skull ellipse
+    PN    longest piece of nuchal fold cut by a ray from the ellipse centre
+    CSPV  longest vertical segment anywhere in the cavum
+    CSPH  cavum cut by the major axis of the skull ellipse
+
+CM and CSPH are measured on the major-axis line itself (through the ellipse
+centre); if that line misses the structure the value is NaN.
 
 Segments are contiguous runs inside the structure: a line that leaves the
 structure and comes back gives two segments, and only the longer counts.
@@ -203,8 +204,23 @@ def longest_parallel(mask, spacing, direction):
                          t.min() - pad, t.max() + pad, h)
 
 
-def longest_through_point(mask, spacing, centre):
-    """Longest segment inside the mask along any line through centre (mm)."""
+def longest_on_axis(mask, spacing, centre, direction):
+    """Longest piece of the mask cut by the single line through centre along
+    direction (mm). NaN if the line misses the structure."""
+    if not mask.any():
+        return Segment(np.nan)
+    sx, sy = spacing
+    h = STEP_PX * min(sx, sy)
+    ys, xs = np.nonzero(mask)
+    t = (np.column_stack([xs * sx, ys * sy]) - centre) @ direction
+    pad = max(sx, sy)
+    seg = _longest_runs(mask, spacing, np.asarray(centre, float)[None], direction,
+                        t.min() - pad, t.max() + pad, h)
+    return seg if seg.length_mm > 0 else Segment(np.nan)
+
+
+def longest_on_rays(mask, spacing, centre):
+    """Longest piece of the mask cut by any ray starting at centre (mm)."""
     if not mask.any():
         return Segment(np.nan)
     sx, sy = spacing
@@ -212,11 +228,12 @@ def longest_through_point(mask, spacing, centre):
     ys, xs = np.nonzero(mask)
     r = np.hypot(xs * sx - centre[0], ys * sy - centre[1])
     r_max = r.max() + max(sx, sy)
-    dphi = h / r_max                      # < half a pixel apart at the far end
-    phi = np.arange(0, np.pi, dphi)
+    dphi = h / r_max                      # rays < half a pixel apart at the far end
+    phi = np.arange(0, 2 * np.pi, dphi)
     dirs = np.column_stack([np.cos(phi), np.sin(phi)])
     origins = np.broadcast_to(centre, dirs.shape)
-    return _longest_runs(mask, spacing, origins, dirs, -r_max, r_max, h)
+    seg = _longest_runs(mask, spacing, origins, dirs, 0.0, r_max, h)
+    return seg if seg.length_mm > 0 else Segment(np.nan)
 
 
 def measure(masks, spacing, ellipse):
@@ -226,10 +243,10 @@ def measure(masks, spacing, ellipse):
     get = lambda k: masks.get(k, empty)
     return {
         'DTC':  longest_parallel(get('cerebellum'), spacing, v),
-        'CM':   longest_parallel(get('cisterna_magna'), spacing, u),
-        'PN':   longest_through_point(get('nuchal_fold'), spacing, c),
+        'CM':   longest_on_axis(get('cisterna_magna'), spacing, c, u),
+        'PN':   longest_on_rays(get('nuchal_fold'), spacing, c),
         'CSPV': longest_parallel(get('cavum'), spacing, v),
-        'CSPH': longest_parallel(get('cavum'), spacing, u),
+        'CSPH': longest_on_axis(get('cavum'), spacing, c, u),
     }
 
 
