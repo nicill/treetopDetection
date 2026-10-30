@@ -13,6 +13,9 @@ site and across sites, from the runs exp4.sh makes:
     DeepForest      as downloaded, at its fixed threshold (exp4/runs/deepforestRgb)
     CC on DF        CC tuned on DeepForest's boxes (exp4/runs/ccAutoDfP1)
     DF+CC on DF     their union at DeepForest's fixed threshold
+    Mask R-CNN, COCO, untrained
+                    the curve's 0% point (tt.dl maskrcnn --epochs 0): COCO weights,
+                    the new tree head at its random start; mean over its draws
   learning curves (DROP/exp4/curves, tt.learningCurve)
     F1 of CC and of the RGB network at each annotated fraction, mean over draws
 
@@ -49,7 +52,8 @@ SITES = ([(s.split("_")[1], os.path.join(DB, "study_edge", s)) for s in QUEBEC]
          + [("enshurinV2", os.path.join(DB, "study_enshurinVlad2"))])
 DATASETS = ("P1", "chm")
 HYBRID = ("RGB", "CC", "CC auto", "RGB+CC", "RGB+CC auto")
-NONE = ("DeepForest", "CC on DF", "DF+CC on DF")
+UNTRAINED = "Mask R-CNN COCO, untrained"
+NONE = ("DeepForest", "CC on DF", "DF+CC on DF", UNTRAINED)
 
 
 def has(path):
@@ -107,7 +111,11 @@ def site(name, folder):
         else:
             print("      %-30s not run yet" % method)
 
+    curve = os.path.join(DB, "exp4", "curves", name)
+    rows = siteRows(curve) if os.path.isdir(curve) else []
+    untrained = next((r for r in rows if r["method"] == "mrcnnRgb" and r["point"] == "0%"), None)
     df, ccDf = os.path.join(exp4, "deepforestRgb"), os.path.join(exp4, "ccAutoDfP1")
+    record["noAnnotation"] = {}
     if has(df):
         evaluator = Evaluator(reference)
         none = {"DeepForest": blockScores(RunSet.load(df), blocks, evaluator, blocks)}
@@ -118,17 +126,18 @@ def site(name, folder):
         none, n = shared(none)
         record["noAnnotation"] = {m: pooled(f) for m, f in none.items()}
         print("    no annotation (%d blocks)" % n)
-        for method in NONE:
-            if method in record["noAnnotation"]:
-                p = record["noAnnotation"][method]
-                print("      %-30s %.3f  %.3f  %.3f" % (method, p["recall"], p["precision"], p["f1"]))
-            else:
-                print("      %-30s not run yet" % method)
     else:
         print("    no annotation: no DeepForest run yet")
+    if untrained:
+        record["noAnnotation"][UNTRAINED] = {k: untrained[k] for k in ("recall", "precision", "f1", "draws")}
+    for method in NONE:
+        if method in record["noAnnotation"]:
+            p = record["noAnnotation"][method]
+            extra = "   (%d draws)" % p["draws"] if "draws" in p else ""
+            print("      %-30s %.3f  %.3f  %.3f%s" % (method, p["recall"], p["precision"], p["f1"], extra))
+        else:
+            print("      %-30s not run yet" % method)
 
-    curve = os.path.join(DB, "exp4", "curves", name)
-    rows = siteRows(curve) if os.path.isdir(curve) else []
     if rows:
         record["curve"] = rows
         print("    learning curve (F1, mean over draws +- sd)")
@@ -146,6 +155,18 @@ def means(records, part, methods):
             print("  %-30s sites %2d  R %.3f  P %.3f  F1 %.3f" % (
                 method, len(values), *[float(np.mean([v[k] for v in values]))
                                        for k in ("recall", "precision", "f1")]))
+
+
+def noAnnotationTable(records, reference=None):
+    """Per site, F1 (recall / precision) of the methods that use no annotation of the site."""
+    print("\nno annotation of the site, per site: F1 (recall / precision); no averaging")
+    print("%-13s %s" % ("site", " ".join("%-27s" % m[:27] for m in NONE)))
+    for r in records:
+        cells = []
+        for method in NONE:
+            p = r.get("noAnnotation", {}).get(method)
+            cells.append("%-27s" % ("%.3f (%.2f / %.2f)" % (p["f1"], p["recall"], p["precision"]) if p else "-"))
+        print("%-13s %s" % (r["site"], " ".join(cells)))
 
 
 def curveMeans(records):
@@ -170,7 +191,7 @@ def main(argv=None):
     sites = [tuple(s.split("=", 1)) for s in args.site] if args.site else SITES
     records = [r for r in (site(n, f) for n, f in sites) if r]
     means(records, "hybrid", HYBRID)
-    means(records, "noAnnotation", NONE)
+    noAnnotationTable(records)
     curveMeans(records)
     with open(args.output, "w") as handle:
         json.dump(records, handle, indent=1, default=float)
