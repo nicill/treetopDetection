@@ -738,6 +738,29 @@ class TestCurveRowsOfAnotherNetwork(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+class TestCurveZeroPoint(unittest.TestCase):
+    """The untrained network (--epochs 0, folder mrcnn_f0_s<seed>) is the curve's 0% point."""
+
+    def testZeroFractionIsReadWithNoCrownsUsed(self):
+        import json
+        from tt.learningCurve import siteRows
+        d = tempfile.mkdtemp(prefix="ttZero")
+        try:
+            for name, f1 in (("mrcnn_f0_s1", 0.05), ("mrcnn_f0_s2", 0.15), ("mrcnn_f0.05_s1", 0.6),
+                             ("mrcnn_f1_s1", 0.9)):
+                os.makedirs(os.path.join(d, name))
+                json.dump(TestCurveRowsOfAnotherNetwork.results(f1),
+                          open(os.path.join(d, name, "results.json"), "w"))
+            rows = siteRows(d)
+            self.assertEqual([r["point"] for r in rows], ["0%", "5%", "100%"])
+            zero = rows[0]
+            self.assertEqual(zero["draws"], 2)                       # two random heads
+            self.assertAlmostEqual(zero["recall"], 0.10)             # the mean of the two
+            self.assertEqual(zero["crownsUsedPerFold"], 0.0)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 class TestHeightSourceCompare(unittest.TestCase):
     """Per-block paired tests between two studies' height runs."""
 

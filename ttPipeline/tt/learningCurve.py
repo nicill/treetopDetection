@@ -138,7 +138,7 @@ def rowsFor(name, points, keep, crowns):
                 continue
             p = repool(folds, keep)
             used = crowns.get((f, seed), {})
-            p["crownsUsedPerFold"] = float(np.mean(
+            p["crownsUsedPerFold"] = 0.0 if f == 0 else float(np.mean(
                 [used[dc.blockSuffix(x["block"])] for x in folds
                  if dc.blockSuffix(x["block"]) in used])) if used else np.nan
             pooled.append(p)

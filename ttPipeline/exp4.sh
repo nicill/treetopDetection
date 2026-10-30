@@ -23,7 +23,10 @@
 #   netCurve    RGB Mask R-CNN's learning curve: the RGB run's own settings,
 #               replayed with --trainFraction F --subsetSeed S, for F in
 #               NET_FRACTIONS and S in NET_SEEDS: curves/<site>/mrcnn_fF_sS;
-#               the full run is linked as mrcnn_f1_s1. The expensive stage:
+#               the full run is linked as mrcnn_f1_s1. The 0% point is the same
+#               network with --epochs 0 (COCO weights, untrained tree head),
+#               one run per seed (curves/<site>/mrcnn_f0_sS, a minute each;
+#               the head is not seeded, so each draw differs). The expensive stage:
 #               with the defaults about 2.7 full trainings per site.
 # Two lanes run at once: the CPU lane (hybrid, ccCurve, then the CC tuned on
 # DeepForest, once DeepForest has run) and the GPU lane (DeepForest, then the
@@ -178,6 +181,18 @@ netCurve() {
         args=$(python -m tt.replayRun "$S/runs/mrcnnRgb/results.json" tt.dl maskrcnn 2>> "$S/exp4/logs/netCurve.replay") \
             || { log "$name: FAILED to replay runs/mrcnnRgb; network curve skipped"; return 0; }
     fi
+    for s in $NET_SEEDS; do      # the 0% point: no training, COCO weights and a random tree head
+        if [ "$DRYRUN" = 1 ]; then
+            step "$name/mrcnn_f0_s${s}" /dev/null "$CURVES/$name/mrcnn_f0_s${s}/results.json" \
+                python -m tt.dl maskrcnn --dataset "$rgb" "$args" --epochs 0
+            continue
+        fi
+        eval "set -- $args"
+        step "$name/mrcnn_f0_s${s}" "$S/exp4/logs/mrcnn_f0_s${s}.log" \
+            "$CURVES/$name/mrcnn_f0_s${s}/results.json" \
+            python -m tt.dl maskrcnn --dataset "$rgb" --output "$CURVES/$name/mrcnn_f0_s${s}" \
+            "$@" --epochs 0
+    done
     for f in $NET_FRACTIONS; do
         for s in $NET_SEEDS; do
             if [ "$DRYRUN" = 1 ]; then
