@@ -22,7 +22,8 @@
 #               the draws): DROP/exp4/curves/<site>/ccCurve_ccP1.json
 #   netCurve    RGB Mask R-CNN's learning curve: the RGB run's own settings,
 #               replayed with --trainFraction F --subsetSeed S, for F in
-#               NET_FRACTIONS and S in NET_SEEDS: curves/<site>/mrcnn_fF_sS;
+#               NET_FRACTIONS and S in NET_SEEDS, for the RGB run's epochs / F (at most
+#               400): curves/<site>/mrcnnScaled_fF_sS (NET_PREFIX);
 #               the full run is linked as mrcnn_f1_s1. The 0% point is the same
 #               network with --epochs 0 (COCO weights, untrained tree head),
 #               one run per seed (curves/<site>/mrcnn_f0_sS, a minute each;
@@ -36,7 +37,7 @@
 #
 # Settings from the environment: DROP, JOBS (16), STAGES (all), ONLY,
 # DF_PYTHON (the python with DeepForest installed; default python),
-# NET_FRACTIONS ("0.05 0.1 0.25 0.5"), NET_SEEDS ("1 2 3"), DRYRUN.
+# NET_FRACTIONS ("0.05 0.1 0.25 0.5"), NET_SEEDS ("1 2 3"), NET_PREFIX (mrcnnScaled), DRYRUN.
 
 set -u
 cd "$(dirname "$0")" || exit 1
@@ -51,6 +52,7 @@ ONLY=${ONLY:-}
 DF_PYTHON=${DF_PYTHON:-python}
 NET_FRACTIONS=${NET_FRACTIONS:-"0.05 0.1 0.25 0.5"}
 NET_SEEDS=${NET_SEEDS:-"1 2 3"}
+NET_PREFIX=${NET_PREFIX:-mrcnnScaled}
 DRYRUN=${DRYRUN:-0}
 OUT="$DROP/exp4"
 CURVES="$OUT/curves"
@@ -171,10 +173,15 @@ deepforest() {
 }
 
 netCurve() {
-    local name=$1 S=$2 rgb args f s
+    # writes ${NET_PREFIX}_f<F>_s<S>; each fraction trains for the RGB run's epochs / F (at most 400),
+    # the previous protocol, so small subsets are not stopped after a handful of steps. The 0% point
+    # (untrained) and the 100% point (the full run) do not depend on the epochs: they are linked.
+    local name=$1 S=$2 rgb args f s e E P=$NET_PREFIX
     rgb=$(rgbDataset "$S")
     mkdir -p "$CURVES/$name"
-    [ -e "$CURVES/$name/mrcnn_f1_s1" ] || ln -s "$S/runs/mrcnnRgb" "$CURVES/$name/mrcnn_f1_s1"
+    [ -e "$CURVES/$name/${P}_f1_s1" ] || ln -s "$S/runs/mrcnnRgb" "$CURVES/$name/${P}_f1_s1"
+    E=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['settings'].get('epochs', 40))" \
+        "$S/runs/mrcnnRgb/results.json" 2>/dev/null || echo 40)
     if [ "$DRYRUN" = 1 ]; then
         args="(the RGB run's settings)"
     else
@@ -182,29 +189,34 @@ netCurve() {
             || { log "$name: FAILED to replay runs/mrcnnRgb; network curve skipped"; return 0; }
     fi
     for s in $NET_SEEDS; do      # the 0% point: no training, COCO weights and a random tree head
+        if [ "$P" != mrcnn ] && [ -e "$CURVES/$name/mrcnn_f0_s${s}/results.json" ]; then
+            [ -e "$CURVES/$name/${P}_f0_s${s}" ] || ln -s "$CURVES/$name/mrcnn_f0_s${s}" "$CURVES/$name/${P}_f0_s${s}"
+            continue
+        fi
         if [ "$DRYRUN" = 1 ]; then
-            step "$name/mrcnn_f0_s${s}" /dev/null "$CURVES/$name/mrcnn_f0_s${s}/results.json" \
+            step "$name/${P}_f0_s${s}" /dev/null "$CURVES/$name/${P}_f0_s${s}/results.json" \
                 python -m tt.dl maskrcnn --dataset "$rgb" "$args" --epochs 0
             continue
         fi
         eval "set -- $args"
-        step "$name/mrcnn_f0_s${s}" "$S/exp4/logs/mrcnn_f0_s${s}.log" \
-            "$CURVES/$name/mrcnn_f0_s${s}/results.json" \
-            python -m tt.dl maskrcnn --dataset "$rgb" --output "$CURVES/$name/mrcnn_f0_s${s}" \
+        step "$name/${P}_f0_s${s}" "$S/exp4/logs/${P}_f0_s${s}.log" \
+            "$CURVES/$name/${P}_f0_s${s}/results.json" \
+            python -m tt.dl maskrcnn --dataset "$rgb" --output "$CURVES/$name/${P}_f0_s${s}" \
             "$@" --epochs 0
     done
     for f in $NET_FRACTIONS; do
+        e=$(python -c "print(min(400, int(round($E / $f))))")
         for s in $NET_SEEDS; do
             if [ "$DRYRUN" = 1 ]; then
-                step "$name/mrcnn_f${f}_s${s}" /dev/null "$CURVES/$name/mrcnn_f${f}_s${s}/results.json" \
-                    python -m tt.dl maskrcnn --dataset "$rgb" "$args" --trainFraction "$f" --subsetSeed "$s"
+                step "$name/${P}_f${f}_s${s}" /dev/null "$CURVES/$name/${P}_f${f}_s${s}/results.json" \
+                    python -m tt.dl maskrcnn --dataset "$rgb" "$args" --trainFraction "$f" --subsetSeed "$s" --epochs "$e"
                 continue
             fi
             eval "set -- $args"
-            step "$name/mrcnn_f${f}_s${s}" "$S/exp4/logs/mrcnn_f${f}_s${s}.log" \
-                "$CURVES/$name/mrcnn_f${f}_s${s}/results.json" \
-                python -m tt.dl maskrcnn --dataset "$rgb" --output "$CURVES/$name/mrcnn_f${f}_s${s}" \
-                "$@" --trainFraction "$f" --subsetSeed "$s"
+            step "$name/${P}_f${f}_s${s}" "$S/exp4/logs/${P}_f${f}_s${s}.log" \
+                "$CURVES/$name/${P}_f${f}_s${s}/results.json" \
+                python -m tt.dl maskrcnn --dataset "$rgb" --output "$CURVES/$name/${P}_f${f}_s${s}" \
+                "$@" --trainFraction "$f" --subsetSeed "$s" --epochs "$e"
         done
     done
 }

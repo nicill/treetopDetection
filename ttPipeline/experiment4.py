@@ -28,6 +28,7 @@ part shares.
 """
 
 import argparse
+import glob
 import json
 import os
 
@@ -112,7 +113,11 @@ def site(name, folder):
             print("      %-30s not run yet" % method)
 
     curve = os.path.join(DB, "exp4", "curves", name)
-    rows = siteRows(curve) if os.path.isdir(curve) else []
+    # the curve with epochs scaled to the fraction (exp4.sh, NET_PREFIX) when it exists, else the first one
+    scaled = glob.glob(os.path.join(curve, "mrcnnScaled_f*_s*", "results.json"))
+    rows = (siteRows(curve, prefix="mrcnnScaled", name="mrcnnRgb") if scaled else siteRows(curve)) \
+        if os.path.isdir(curve) else []
+    record["curveRuns"] = "mrcnnScaled" if scaled else "mrcnn"
     untrained = next((r for r in rows if r["method"] == "mrcnnRgb" and r["point"] == "0%"), None)
     df, ccDf = os.path.join(exp4, "deepforestRgb"), os.path.join(exp4, "ccAutoDfP1")
     record["noAnnotation"] = {}
